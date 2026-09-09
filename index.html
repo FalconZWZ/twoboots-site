@@ -562,16 +562,16 @@ const PRODUCTS = [
   {id:'softdry-pro', cat:'blades', name:'Чехлы фетровые SoftDry Pro', price:1690,
     desc:'Плотный фетр держит форму лезвия и мягко впитывает влагу — вариант для ежедневных тренировок.',
     specs:[['Материал','технический фетр'],['Размер','универсальный'],['Уход','сушить в расправленном виде']]},
-  {id:'two-boots-silver-m', cat:'bags', name:'Чемодан Two Boots (серебро)', price:23500, img:'images/two-boots-s-silver.jpg', color:'серебро', size:'M',
+  {id:'two-boots-silver-m', cat:'bags', name:'Чемодан Two Boots M (серебро)', price:23500, img:'images/two-boots-s-silver.jpg', color:'серебро', size:'M',
     desc:'Дорожный чемодан для сборов, соревнований и тренировок: прочные колёса, надёжная ручка, крепкие замки, устойчивая конструкция.',
     specs:[['Размеры','Д54×Ш29×В43 см'],['Материал','алюминий'],['Особенность','высокая прочность']]},
-  {id:'two-boots-black-m', cat:'bags', name:'Чемодан Two Boots (черный)', price:23500, img:'images/two-boots-s-black.jpg', color:'черный', size:'M',
+  {id:'two-boots-black-m', cat:'bags', name:'Чемодан Two Boots M (черный)', price:23500, img:'images/two-boots-s-black.jpg', color:'черный', size:'M',
     desc:'Дорожный чемодан для сборов, соревнований и тренировок: прочные колёса, надёжная ручка, крепкие замки, устойчивая конструкция.',
     specs:[['Размеры','Д54×Ш29×В43 см'],['Материал','алюминий'],['Особенность','высокая прочность']]},
-  {id:'two-boots-black-xl', cat:'bags', name:'Чемодан Two Boots (черный)', price:31000, img:'images/two-boots-s-black.jpg', color:'черный', size:'XL',
+  {id:'two-boots-black-xl', cat:'bags', name:'Чемодан Two Boots XL (черный)', price:31000, img:'images/two-boots-s-black.jpg', color:'черный', size:'XL',
     desc:'Дорожный чемодан для сборов, соревнований и тренировок: прочные колёса, надёжная ручка, крепкие замки, устойчивая конструкция.',
     specs:[['Размеры','Д59×Ш32.7×В51.5 см'],['Материал','алюминий'],['Особенность','высокая прочность']]},
-  {id:'two-boots-graphite-m', cat:'bags', name:'Чемодан Two Boots (графит)', price:23500, img:'images/two-boots-s-graphite.jpg', color:'графит', size:'M',
+  {id:'two-boots-graphite-m', cat:'bags', name:'Чемодан Two Boots M (графит)', price:23500, img:'images/two-boots-s-graphite.jpg', color:'графит', size:'M',
     desc:'Дорожный чемодан для сборов, соревнований и тренировок: прочные колёса, надёжная ручка, крепкие замки, устойчивая конструкция.',
     specs:[['Размеры','Д54×Ш29×В43 см'],['Материал','алюминий'],['Особенность','высокая прочность']]},
   {id:'speedjump', cat:'ropes', name:'Скакалка скоростная SpeedJump Carbon', price:1990,
@@ -609,7 +609,7 @@ function addToCart(id, qty=1, size=null){
   const line = cart.find(l => lineKey(l.id, l.size) === key);
   if(line){ line.qty += qty; } else { cart.push({id, qty, size, price: unitPrice}); }
   updateCartUI();
-  showToast('Добавлено в корзину — ' + p.name + (size ? ` (${size})` : ''));
+  showToast('Добавлено в корзину — ' + p.name);
 }
 function removeFromCart(key){
   cart = cart.filter(l => lineKey(l.id, l.size) !== key);
@@ -637,7 +637,7 @@ function updateCartUI(){
     return `<div class="cart-line">
       <div class="thumb">${p.img ? `<img src="${p.img}" alt="${p.name}" style="width:100%;height:100%;object-fit:cover;border-radius:10px;">` : ICONS[p.cat]}</div>
       <div class="info">
-        <h5>${p.name}${l.size ? ` · ${l.size}` : ''}</h5>
+        <h5>${p.name}</h5>
         <div class="row"><span>${l.qty} × ${fmt(l.price)} ₽</span><a class="remove" data-remove="${key}">Удалить</a></div>
       </div>
     </div>`;
@@ -696,7 +696,7 @@ function productCard(p){
     </a>
     <div class="product-body">
       <span class="eyebrow">${CATEGORIES[p.cat]}</span>
-      <a class="card-link" href="#/product/${p.id}"><h3>${p.name}${p.size ? ` · ${p.size}` : ''}</h3></a>
+      <a class="card-link" href="#/product/${p.id}"><h3>${p.name}</h3></a>
       <div class="product-foot">
         <span class="price">${fmt(p.price)} ₽</span>
         <button class="add-btn" data-add="${p.id}" aria-label="В корзину">
