@@ -856,7 +856,11 @@ function pageProduct(id){
             <div class="swatches" id="sizeSwatches">
               ${(() => {
                 if(p.cat === 'ropes'){
-                  return ['200 см','210 см','220 см','230 см','240 см'].map((s,i) => `<button class="swatch ${i===2?'active':''}" data-size="${s}">${s}</button>`).join('');
+                  const lengths = [250,260,270,280,290,300,310,320];
+                  return lengths.map(len => {
+                    const isAvailable = len === 300;
+                    return `<button class="swatch ${isAvailable?'active':''}" data-size="${len} см" ${isAvailable?'':'disabled'}>${len} см</button>`;
+                  }).join('');
                 }
                 if(p.color && p.size){
                   const allSizes = ['XS','S','M','L','XL'];
