@@ -565,7 +565,7 @@ const PRODUCTS = [
   {id:'rink-traveler', cat:'bags', name:'Чемодан Two Boots (серебро)', price:23500, img:'images/two-boots-s-silver.jpg', sizes:['S'],
     desc:'Дорожный чемодан для сборов, соревнований и тренировок: прочные колёса, надёжная ручка, крепкие замки, устойчивая конструкция.',
     specs:[['Объём','60 л'],['Материал','алюминий'],['Особенность','высокая прочность']]},
-  {id:'classic-bag', cat:'bags', name:'Чемодан Two Boots (черный)', price:23500, img:'images/two-boots-s-black.jpg', sizes:['XL'],
+  {id:'classic-bag', cat:'bags', name:'Чемодан Two Boots (черный)', price:23500, img:'images/two-boots-s-black.jpg', sizes:['M','XL'], sizePrices:{M:23500,XL:31000},
     desc:'Дорожный чемодан для сборов, соревнований и тренировок: прочные колёса, надёжная ручка, крепкие замки, устойчивая конструкция.',
     specs:[['Объём','28 л'],['Материал','алюминий'],['Особенность','высокая прочность']]},
   {id:'ice-pack', cat:'bags', name:'Чемодан Two Boots (графит)', price:23500, img:'images/two-boots-s-graphite.jpg', sizes:['S'],
@@ -594,20 +594,35 @@ const PRODUCTS = [
 const productById = id => PRODUCTS.find(p => p.id === id);
 
 /* ============ Cart ============ */
-let cart = []; // {id, qty}
+let cart = []; // {id, qty, size, price}
 
-function addToCart(id, qty=1){
-  const line = cart.find(l => l.id === id);
-  if(line){ line.qty += qty; } else { cart.push({id, qty}); }
-  updateCartUI();
-  showToast('Добавлено в корзину — ' + productById(id).name);
+function defaultSizeAndPrice(p){
+  if(p.sizePrices){
+    const size = (p.sizes && p.sizes[0]) || Object.keys(p.sizePrices)[0];
+    return {size, price: p.sizePrices[size]};
+  }
+  return {size: null, price: p.price};
 }
-function removeFromCart(id){
-  cart = cart.filter(l => l.id !== id);
+function lineKey(id, size){ return id + '|' + (size || ''); }
+
+function addToCart(id, qty=1, size=null, unitPrice=null){
+  const p = productById(id);
+  if(unitPrice == null){
+    if(size && p.sizePrices && p.sizePrices[size] != null){ unitPrice = p.sizePrices[size]; }
+    else { const d = defaultSizeAndPrice(p); unitPrice = d.price; if(!size) size = d.size; }
+  }
+  const key = lineKey(id, size);
+  const line = cart.find(l => lineKey(l.id, l.size) === key);
+  if(line){ line.qty += qty; } else { cart.push({id, qty, size, price: unitPrice}); }
+  updateCartUI();
+  showToast('Добавлено в корзину — ' + p.name + (size ? ` (${size})` : ''));
+}
+function removeFromCart(key){
+  cart = cart.filter(l => lineKey(l.id, l.size) !== key);
   updateCartUI();
 }
 function cartCount(){ return cart.reduce((s,l)=>s+l.qty,0); }
-function cartTotal(){ return cart.reduce((s,l)=>s+l.qty*productById(l.id).price,0); }
+function cartTotal(){ return cart.reduce((s,l)=>s+l.qty*l.price,0); }
 
 function updateCartUI(){
   const count = cartCount();
@@ -624,11 +639,12 @@ function updateCartUI(){
   }
   itemsEl.innerHTML = cart.map(l => {
     const p = productById(l.id);
+    const key = lineKey(l.id, l.size);
     return `<div class="cart-line">
       <div class="thumb">${p.img ? `<img src="${p.img}" alt="${p.name}" style="width:100%;height:100%;object-fit:cover;border-radius:10px;">` : ICONS[p.cat]}</div>
       <div class="info">
-        <h5>${p.name}</h5>
-        <div class="row"><span>${l.qty} × ${fmt(p.price)} ₽</span><a class="remove" data-remove="${p.id}">Удалить</a></div>
+        <h5>${p.name}${l.size ? ` · ${l.size}` : ''}</h5>
+        <div class="row"><span>${l.qty} × ${fmt(l.price)} ₽</span><a class="remove" data-remove="${key}">Удалить</a></div>
       </div>
     </div>`;
   }).join('');
@@ -688,7 +704,7 @@ function productCard(p){
       <span class="eyebrow">${CATEGORIES[p.cat]}</span>
       <a class="card-link" href="#/product/${p.id}"><h3>${p.name}</h3></a>
       <div class="product-foot">
-        <span class="price">${fmt(p.price)} ₽</span>
+        <span class="price">${p.sizePrices ? 'от ' + fmt(Math.min(...Object.values(p.sizePrices))) : fmt(p.price)} ₽</span>
         <button class="add-btn" data-add="${p.id}" aria-label="В корзину">
           <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
         </button>
@@ -818,7 +834,7 @@ function pageProduct(id){
         <div class="pdp-info">
           <span class="eyebrow">${CATEGORIES[p.cat]}</span>
           <h1 style="margin-top:10px;">${p.name}</h1>
-          <div class="pdp-price price">${fmt(p.price)} ₽</div>
+          <div class="pdp-price price" id="pdpPrice">${fmt(p.sizePrices ? defaultSizeAndPrice(p).price : p.price)} ₽</div>
           <p class="pdp-desc">${p.desc}</p>
           <ul class="spec-list">
             ${p.specs.map(([k,v]) => `<li><b>${k}:</b> ${v}</li>`).join('')}
@@ -1026,10 +1042,17 @@ function bindPageEvents(path){
   }
 
   if(path.startsWith('/product/')){
+    const pdpId = path.replace('/product/','');
+    const pdpProduct = productById(pdpId);
     document.querySelectorAll('.swatch').forEach(sw => {
       sw.addEventListener('click', () => {
         document.querySelectorAll('.swatch').forEach(s => s.classList.remove('active'));
         sw.classList.add('active');
+        if(pdpProduct && pdpProduct.sizePrices){
+          const size = sw.getAttribute('data-size');
+          const priceEl = document.getElementById('pdpPrice');
+          if(pdpProduct.sizePrices[size] != null) priceEl.textContent = fmt(pdpProduct.sizePrices[size]) + ' ₽';
+        }
       });
     });
     const qtyVal = document.getElementById('qtyVal');
@@ -1042,8 +1065,13 @@ function bindPageEvents(path){
     const addBtn = document.getElementById('pdpAdd');
     if(addBtn){
       addBtn.addEventListener('click', () => {
-        const id = path.replace('/product/','');
-        addToCart(id, parseInt(qtyVal.textContent));
+        let size = null, unitPrice = null;
+        if(pdpProduct.sizes){
+          const activeSwatch = document.querySelector('.swatch.active');
+          size = activeSwatch ? activeSwatch.getAttribute('data-size') : null;
+          if(pdpProduct.sizePrices && size) unitPrice = pdpProduct.sizePrices[size];
+        }
+        addToCart(pdpId, parseInt(qtyVal.textContent), size, unitPrice);
       });
     }
   }
