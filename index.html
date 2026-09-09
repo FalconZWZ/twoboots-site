@@ -574,15 +574,33 @@ const PRODUCTS = [
   {id:'two-boots-graphite-m', cat:'bags', name:'Чемодан Two Boots M (графит)', price:23500, img:'images/two-boots-s-graphite.jpg', color:'графит', size:'M',
     desc:'Дорожный чемодан для сборов, соревнований и тренировок: прочные колёса, надёжная ручка, крепкие замки, устойчивая конструкция.',
     specs:[['Размеры','Д54×Ш29×В43 см'],['Материал','алюминий'],['Особенность','высокая прочность']]},
-  {id:'speedjump', cat:'ropes', name:'Скакалка скоростная SpeedJump Carbon', price:1990,
+  {id:'speedjump-purple', cat:'ropes', name:'Скакалка скоростная Two Boots (фиолетовый)', price:650, img:'images/speedjump-purple.jpg', color:'фиолетовый',
     desc:'Лёгкий карбоновый трос и подшипники в ручках — для скоростных прыжков и общефизической подготовки.',
-    specs:[['Трос','карбон, регулируемая длина'],['Подшипники','да'],['Вес','~120 г']]},
-  {id:'powerrope', cat:'ropes', name:'Скакалка утяжелённая PowerRope 300', price:2390,
-    desc:'Утяжелённые ручки добавляют нагрузку на плечевой пояс — используется в общефизической подготовке между сезонами.',
-    specs:[['Вес ручек','300 г пара'],['Трос','ПВХ, регулируемый'],['Уровень','средний/продвинутый']]},
-  {id:'basic-jump', cat:'ropes', name:'Скакалка для разминки Basic Jump', price:890,
-    desc:'Простая и лёгкая скакалка для разминки перед тренировкой на льду.',
-    specs:[['Трос','ПВХ'],['Длина','регулируется под рост'],['Вес','лёгкая']]},
+    specs:[['Трос','металл, регулируемая длина'],['Подшипник','да'],['Вес','~110 г']]},
+  {id:'speedjump-red', cat:'ropes', name:'Скакалка скоростная Two Boots (красный)', price:650, img:'images/speedjump-red.jpg', color:'красный',
+    desc:'Лёгкий карбоновый трос и подшипники в ручках — для скоростных прыжков и общефизической подготовки.',
+    specs:[['Трос','металл, регулируемая длина'],['Подшипник','да'],['Вес','~110 г']]},
+  {id:'speedjump-green', cat:'ropes', name:'Скакалка скоростная Two Boots (зелёный)', price:650, img:'images/speedjump-green.jpg', color:'зелёный',
+    desc:'Лёгкий карбоновый трос и подшипники в ручках — для скоростных прыжков и общефизической подготовки.',
+    specs:[['Трос','металл, регулируемая длина'],['Подшипник','да'],['Вес','~110 г']]},
+  {id:'speedjump-blue', cat:'ropes', name:'Скакалка скоростная Two Boots (голубой)', price:650, img:'images/speedjump-blue.jpg', color:'голубой',
+    desc:'Лёгкий карбоновый трос и подшипники в ручках — для скоростных прыжков и общефизической подготовки.',
+    specs:[['Трос','металл, регулируемая длина'],['Подшипник','да'],['Вес','~110 г']]},
+  {id:'speedjump-pink', cat:'ropes', name:'Скакалка скоростная Two Boots (розовый)', price:650, img:'images/speedjump-pink.jpg', color:'розовый',
+    desc:'Лёгкий карбоновый трос и подшипники в ручках — для скоростных прыжков и общефизической подготовки.',
+    specs:[['Трос','металл, регулируемая длина'],['Подшипник','да'],['Вес','~110 г']]},
+  {id:'speedjump-yellow', cat:'ropes', name:'Скакалка скоростная Two Boots (жёлтый)', price:650, img:'images/speedjump-yellow.jpg', color:'жёлтый',
+    desc:'Лёгкий карбоновый трос и подшипники в ручках — для скоростных прыжков и общефизической подготовки.',
+    specs:[['Трос','металл, регулируемая длина'],['Подшипник','да'],['Вес','~110 г']]},
+  {id:'speedjump-orange', cat:'ropes', name:'Скакалка скоростная Two Boots (оранжевый)', price:650, img:'images/speedjump-orange.jpg', color:'оранжевый',
+    desc:'Лёгкий карбоновый трос и подшипники в ручках — для скоростных прыжков и общефизической подготовки.',
+    specs:[['Трос','металл, регулируемая длина'],['Подшипник','да'],['Вес','~110 г']]},
+  {id:'speedjump-navy', cat:'ropes', name:'Скакалка скоростная Two Boots (синий)', price:650, img:'images/speedjump-navy.jpg', color:'синий',
+    desc:'Лёгкий карбоновый трос и подшипники в ручках — для скоростных прыжков и общефизической подготовки.',
+    specs:[['Трос','металл, регулируемая длина'],['Подшипник','да'],['Вес','~110 г']]},
+  {id:'speedjump-lavender', cat:'ropes', name:'Скакалка скоростная Two Boots (лавандовый)', price:650, img:'images/speedjump-lavender.jpg', color:'лавандовый',
+    desc:'Лёгкий карбоновый трос и подшипники в ручках — для скоростных прыжков и общефизической подготовки.',
+    specs:[['Трос','металл, регулируемая длина'],['Подшипник','да'],['Вес','~110 г']]},
   {id:'grip-lace', cat:'access', name:'Шнурки вощёные Grip Lace 240', price:390,
     desc:'Вощёные шнурки не развязываются во время проката и держат фиксацию ботинка увереннее.',
     specs:[['Длина','240 см'],['Материал','хлопок с восковой пропиткой'],['В комплекте','1 пара']]},
@@ -716,7 +734,7 @@ function catTile(cat, label, hint){
 
 /* ============ Pages ============ */
 function pageHome(){
-  const featured = PRODUCTS.filter(p => ['two-boots-silver-m','speedjump','dry-glide','two-boots-black-m'].includes(p.id));
+  const featured = PRODUCTS.filter(p => ['two-boots-silver-m','speedjump-purple','dry-glide','two-boots-black-m'].includes(p.id));
   return `
   <section class="hero">
     <div class="wrap">
@@ -834,10 +852,13 @@ function pageProduct(id){
             ${p.specs.map(([k,v]) => `<li><b>${k}:</b> ${v}</li>`).join('')}
           </ul>
           <div class="option-group">
-            <span class="label">Размер</span>
+            <span class="label">${p.cat === 'ropes' ? 'Длина' : 'Размер'}</span>
             <div class="swatches" id="sizeSwatches">
               ${(() => {
-                if(p.color){
+                if(p.cat === 'ropes'){
+                  return ['200 см','210 см','220 см','230 см','240 см'].map((s,i) => `<button class="swatch ${i===2?'active':''}" data-size="${s}">${s}</button>`).join('');
+                }
+                if(p.color && p.size){
                   const allSizes = ['XS','S','M','L','XL'];
                   const variantBySize = {};
                   PRODUCTS.filter(v => v.color === p.color).forEach(v => { variantBySize[v.size] = v.id; });
