@@ -561,13 +561,13 @@ const PRODUCTS = [
   {id:'softdry-pro', cat:'blades', name:'Чехлы фетровые SoftDry Pro', price:1690,
     desc:'Плотный фетр держит форму лезвия и мягко впитывает влагу — вариант для ежедневных тренировок.',
     specs:[['Материал','технический фетр'],['Размер','универсальный'],['Уход','сушить в расправленном виде']]},
-  {id:'rink-traveler', cat:'bags', name:'Чемодан Two Boots S (серебро)', price:12990,
+  {id:'rink-traveler', cat:'bags', name:'Чемодан Two Boots S (серебро)', price:23500, img:'images/two-boots-s-silver.jpg',
     desc:'Дорожный чемодан для сборов и соревнований: отдельный отсек для коньков, вентиляция, прочные колёса.',
     specs:[['Объём','60 л'],['Материал','полиэстер 900D'],['Особенность','отсек для коньков с вентиляцией']]},
-  {id:'classic-bag', cat:'bags', name:'Чемодан Two Boots S (черный)', price:4290,
+  {id:'classic-bag', cat:'bags', name:'Чемодан Two Boots S (черный)', price:23500, img:'images/two-boots-s-black.jpg',
     desc:'Компактная сумка на каждый день с жёстким дном и карманом для чехлов и мелочей.',
     specs:[['Объём','28 л'],['Материал','полиэстер 600D'],['Особенность','жёсткое дно, плечевой ремень']]},
-  {id:'ice-pack', cat:'bags', name:'Чемодан Two Boots S (графит)', price:5490,
+  {id:'ice-pack', cat:'bags', name:'Чемодан Two Boots S (графит)', price:23500, img:'images/two-boots-s-graphite.jpg',
     desc:'Рюкзак для тренировок и школы одновременно — отдельное отделение для коньков и обуви.',
     specs:[['Объём','25 л'],['Материал','рипстоп'],['Особенность','отделение для обуви/коньков']]},
   {id:'speedjump', cat:'ropes', name:'Скакалка скоростная SpeedJump Carbon', price:1990,
@@ -624,7 +624,7 @@ function updateCartUI(){
   itemsEl.innerHTML = cart.map(l => {
     const p = productById(l.id);
     return `<div class="cart-line">
-      <div class="thumb">${ICONS[p.cat]}</div>
+      <div class="thumb">${p.img ? `<img src="${p.img}" alt="${p.name}" style="width:100%;height:100%;object-fit:cover;border-radius:10px;">` : ICONS[p.cat]}</div>
       <div class="info">
         <h5>${p.name}</h5>
         <div class="row"><span>${l.qty} × ${fmt(p.price)} ₽</span><a class="remove" data-remove="${p.id}">Удалить</a></div>
@@ -681,7 +681,7 @@ function showToast(msg){
 function productCard(p){
   return `<div class="product-card">
     <a class="card-link" href="#/product/${p.id}">
-      <div class="product-media">${ICONS[p.cat]}</div>
+      <div class="product-media">${p.img ? `<img src="${p.img}" alt="${p.name}" style="width:100%;height:100%;object-fit:cover;">` : ICONS[p.cat]}</div>
     </a>
     <div class="product-body">
       <span class="eyebrow">${CATEGORIES[p.cat]}</span>
@@ -813,7 +813,7 @@ function pageProduct(id){
         <span>${p.name}</span>
       </div>
       <div class="pdp">
-        <div class="pdp-media">${ICONS[p.cat]}</div>
+        <div class="pdp-media">${p.img ? `<img src="${p.img}" alt="${p.name}" style="width:100%;height:100%;object-fit:cover;">` : ICONS[p.cat]}</div>
         <div class="pdp-info">
           <span class="eyebrow">${CATEGORIES[p.cat]}</span>
           <h1 style="margin-top:10px;">${p.name}</h1>
