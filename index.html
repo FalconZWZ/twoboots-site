@@ -562,13 +562,16 @@ const PRODUCTS = [
   {id:'softdry-pro', cat:'blades', name:'Чехлы фетровые SoftDry Pro', price:1690,
     desc:'Плотный фетр держит форму лезвия и мягко впитывает влагу — вариант для ежедневных тренировок.',
     specs:[['Материал','технический фетр'],['Размер','универсальный'],['Уход','сушить в расправленном виде']]},
-  {id:'rink-traveler', cat:'bags', name:'Чемодан Two Boots (серебро)', price:23500, img:'images/two-boots-s-silver.jpg', sizes:['S'],
+  {id:'two-boots-silver-m', cat:'bags', name:'Чемодан Two Boots (серебро)', price:23500, img:'images/two-boots-s-silver.jpg', color:'серебро', size:'M',
     desc:'Дорожный чемодан для сборов, соревнований и тренировок: прочные колёса, надёжная ручка, крепкие замки, устойчивая конструкция.',
     specs:[['Объём','60 л'],['Материал','алюминий'],['Особенность','высокая прочность']]},
-  {id:'classic-bag', cat:'bags', name:'Чемодан Two Boots (черный)', price:23500, img:'images/two-boots-s-black.jpg', sizes:['M','XL'], sizePrices:{M:23500,XL:31000},
+  {id:'two-boots-black-m', cat:'bags', name:'Чемодан Two Boots (черный)', price:23500, img:'images/two-boots-s-black.jpg', color:'черный', size:'M',
     desc:'Дорожный чемодан для сборов, соревнований и тренировок: прочные колёса, надёжная ручка, крепкие замки, устойчивая конструкция.',
     specs:[['Объём','28 л'],['Материал','алюминий'],['Особенность','высокая прочность']]},
-  {id:'ice-pack', cat:'bags', name:'Чемодан Two Boots (графит)', price:23500, img:'images/two-boots-s-graphite.jpg', sizes:['S'],
+  {id:'two-boots-black-xl', cat:'bags', name:'Чемодан Two Boots (черный)', price:31000, img:'images/two-boots-s-black.jpg', color:'черный', size:'XL',
+    desc:'Дорожный чемодан для сборов, соревнований и тренировок: прочные колёса, надёжная ручка, крепкие замки, устойчивая конструкция.',
+    specs:[['Объём','40 л'],['Материал','алюминий'],['Особенность','высокая прочность']]},
+  {id:'two-boots-graphite-m', cat:'bags', name:'Чемодан Two Boots (графит)', price:23500, img:'images/two-boots-s-graphite.jpg', color:'графит', size:'M',
     desc:'Дорожный чемодан для сборов, соревнований и тренировок: прочные колёса, надёжная ручка, крепкие замки, устойчивая конструкция.',
     specs:[['Объём','25 л'],['Материал','алюминий'],['Особенность','высокая прочность']]},
   {id:'speedjump', cat:'ropes', name:'Скакалка скоростная SpeedJump Carbon', price:1990,
@@ -596,21 +599,12 @@ const productById = id => PRODUCTS.find(p => p.id === id);
 /* ============ Cart ============ */
 let cart = []; // {id, qty, size, price}
 
-function defaultSizeAndPrice(p){
-  if(p.sizePrices){
-    const size = (p.sizes && p.sizes[0]) || Object.keys(p.sizePrices)[0];
-    return {size, price: p.sizePrices[size]};
-  }
-  return {size: null, price: p.price};
-}
 function lineKey(id, size){ return id + '|' + (size || ''); }
 
-function addToCart(id, qty=1, size=null, unitPrice=null){
+function addToCart(id, qty=1, size=null){
   const p = productById(id);
-  if(unitPrice == null){
-    if(size && p.sizePrices && p.sizePrices[size] != null){ unitPrice = p.sizePrices[size]; }
-    else { const d = defaultSizeAndPrice(p); unitPrice = d.price; if(!size) size = d.size; }
-  }
+  if(!size) size = p.size || null;
+  const unitPrice = p.price;
   const key = lineKey(id, size);
   const line = cart.find(l => lineKey(l.id, l.size) === key);
   if(line){ line.qty += qty; } else { cart.push({id, qty, size, price: unitPrice}); }
@@ -702,9 +696,9 @@ function productCard(p){
     </a>
     <div class="product-body">
       <span class="eyebrow">${CATEGORIES[p.cat]}</span>
-      <a class="card-link" href="#/product/${p.id}"><h3>${p.name}</h3></a>
+      <a class="card-link" href="#/product/${p.id}"><h3>${p.name}${p.size ? ` · ${p.size}` : ''}</h3></a>
       <div class="product-foot">
-        <span class="price">${p.sizePrices ? 'от ' + fmt(Math.min(...Object.values(p.sizePrices))) : fmt(p.price)} ₽</span>
+        <span class="price">${fmt(p.price)} ₽</span>
         <button class="add-btn" data-add="${p.id}" aria-label="В корзину">
           <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
         </button>
@@ -722,7 +716,7 @@ function catTile(cat, label, hint){
 
 /* ============ Pages ============ */
 function pageHome(){
-  const featured = PRODUCTS.filter(p => ['rink-traveler','speedjump','dry-glide','classic-bag'].includes(p.id));
+  const featured = PRODUCTS.filter(p => ['two-boots-silver-m','speedjump','dry-glide','two-boots-black-m'].includes(p.id));
   return `
   <section class="hero">
     <div class="wrap">
@@ -834,7 +828,7 @@ function pageProduct(id){
         <div class="pdp-info">
           <span class="eyebrow">${CATEGORIES[p.cat]}</span>
           <h1 style="margin-top:10px;">${p.name}</h1>
-          <div class="pdp-price price" id="pdpPrice">${fmt(p.sizePrices ? defaultSizeAndPrice(p).price : p.price)} ₽</div>
+          <div class="pdp-price price" id="pdpPrice">${fmt(p.price)} ₽</div>
           <p class="pdp-desc">${p.desc}</p>
           <ul class="spec-list">
             ${p.specs.map(([k,v]) => `<li><b>${k}:</b> ${v}</li>`).join('')}
@@ -843,13 +837,18 @@ function pageProduct(id){
             <span class="label">Размер</span>
             <div class="swatches" id="sizeSwatches">
               ${(() => {
-                const allSizes = ['XS','S','M','L','XL'];
-                const available = p.sizes || ['XS','S','M','L'];
-                return allSizes.map(s => {
-                  const isAvailable = available.includes(s);
-                  const isActive = isAvailable && s === available[0];
-                  return `<button class="swatch ${isActive?'active':''}" data-size="${s}" ${isAvailable?'':'disabled'}>${s}</button>`;
-                }).join('');
+                if(p.color){
+                  const allSizes = ['XS','S','M','L','XL'];
+                  const variantBySize = {};
+                  PRODUCTS.filter(v => v.color === p.color).forEach(v => { variantBySize[v.size] = v.id; });
+                  return allSizes.map(s => {
+                    const variantId = variantBySize[s];
+                    const isAvailable = !!variantId;
+                    const isActive = variantId === p.id;
+                    return `<button class="swatch ${isActive?'active':''}" data-variant="${variantId||''}" ${isAvailable?'':'disabled'}>${s}</button>`;
+                  }).join('');
+                }
+                return ['XS','S','M','L'].map((s,i) => `<button class="swatch ${i===1?'active':''}" data-size="${s}">${s}</button>`).join('');
               })()}
             </div>
           </div>
@@ -1043,16 +1042,15 @@ function bindPageEvents(path){
 
   if(path.startsWith('/product/')){
     const pdpId = path.replace('/product/','');
-    const pdpProduct = productById(pdpId);
     document.querySelectorAll('.swatch').forEach(sw => {
       sw.addEventListener('click', () => {
+        const variantId = sw.getAttribute('data-variant');
+        if(variantId && variantId !== pdpId){
+          location.hash = '/product/' + variantId;
+          return;
+        }
         document.querySelectorAll('.swatch').forEach(s => s.classList.remove('active'));
         sw.classList.add('active');
-        if(pdpProduct && pdpProduct.sizePrices){
-          const size = sw.getAttribute('data-size');
-          const priceEl = document.getElementById('pdpPrice');
-          if(pdpProduct.sizePrices[size] != null) priceEl.textContent = fmt(pdpProduct.sizePrices[size]) + ' ₽';
-        }
       });
     });
     const qtyVal = document.getElementById('qtyVal');
@@ -1065,13 +1063,7 @@ function bindPageEvents(path){
     const addBtn = document.getElementById('pdpAdd');
     if(addBtn){
       addBtn.addEventListener('click', () => {
-        let size = null, unitPrice = null;
-        if(pdpProduct.sizes){
-          const activeSwatch = document.querySelector('.swatch.active');
-          size = activeSwatch ? activeSwatch.getAttribute('data-size') : null;
-          if(pdpProduct.sizePrices && size) unitPrice = pdpProduct.sizePrices[size];
-        }
-        addToCart(pdpId, parseInt(qtyVal.textContent), size, unitPrice);
+        addToCart(pdpId, parseInt(qtyVal.textContent));
       });
     }
   }
