@@ -300,6 +300,7 @@
     background:var(--surface);color:var(--ink-soft);
   }
   .swatch.active{border-color:var(--ink);color:var(--ink);background:var(--bg-alt);}
+  .swatch:disabled{opacity:.35;cursor:not-allowed;text-decoration:line-through;}
   .qty-row{display:flex;align-items:center;gap:16px;margin-bottom:20px;}
   .qty-stepper{display:flex;align-items:center;border:1px solid var(--border);border-radius:999px;overflow:hidden;}
   .qty-stepper button{width:38px;height:38px;background:var(--surface);border:none;font-size:1.1rem;color:var(--ink);}
@@ -561,15 +562,15 @@ const PRODUCTS = [
   {id:'softdry-pro', cat:'blades', name:'Чехлы фетровые SoftDry Pro', price:1690,
     desc:'Плотный фетр держит форму лезвия и мягко впитывает влагу — вариант для ежедневных тренировок.',
     specs:[['Материал','технический фетр'],['Размер','универсальный'],['Уход','сушить в расправленном виде']]},
-  {id:'rink-traveler', cat:'bags', name:'Чемодан Two Boots S (серебро)', price:23500, img:'images/two-boots-s-silver.jpg',
-    desc:'Дорожный чемодан для сборов и соревнований: отдельный отсек для коньков, вентиляция, прочные колёса.',
-    specs:[['Объём','60 л'],['Материал','полиэстер 900D'],['Особенность','отсек для коньков с вентиляцией']]},
-  {id:'classic-bag', cat:'bags', name:'Чемодан Two Boots S (черный)', price:23500, img:'images/two-boots-s-black.jpg',
-    desc:'Компактная сумка на каждый день с жёстким дном и карманом для чехлов и мелочей.',
-    specs:[['Объём','28 л'],['Материал','полиэстер 600D'],['Особенность','жёсткое дно, плечевой ремень']]},
-  {id:'ice-pack', cat:'bags', name:'Чемодан Two Boots S (графит)', price:23500, img:'images/two-boots-s-graphite.jpg',
-    desc:'Рюкзак для тренировок и школы одновременно — отдельное отделение для коньков и обуви.',
-    specs:[['Объём','25 л'],['Материал','рипстоп'],['Особенность','отделение для обуви/коньков']]},
+  {id:'rink-traveler', cat:'bags', name:'Чемодан Two Boots (серебро)', price:23500, img:'images/two-boots-s-silver.jpg', sizes:['S'],
+    desc:'Дорожный чемодан для сборов, соревнований и тренировок: прочные колёса, надёжная ручка, крепкие замки, устойчивая конструкция.',
+    specs:[['Объём','60 л'],['Материал','алюминий'],['Особенность','высокая прочность']]},
+  {id:'classic-bag', cat:'bags', name:'Чемодан Two Boots (черный)', price:23500, img:'images/two-boots-s-black.jpg', sizes:['XL'],
+    desc:'Дорожный чемодан для сборов, соревнований и тренировок: прочные колёса, надёжная ручка, крепкие замки, устойчивая конструкция.',
+    specs:[['Объём','28 л'],['Материал','алюминий'],['Особенность','высокая прочность']]},
+  {id:'ice-pack', cat:'bags', name:'Чемодан Two Boots (графит)', price:23500, img:'images/two-boots-s-graphite.jpg', sizes:['S'],
+    desc:'Дорожный чемодан для сборов, соревнований и тренировок: прочные колёса, надёжная ручка, крепкие замки, устойчивая конструкция.',
+    specs:[['Объём','25 л'],['Материал','алюминий'],['Особенность','высокая прочность']]},
   {id:'speedjump', cat:'ropes', name:'Скакалка скоростная SpeedJump Carbon', price:1990,
     desc:'Лёгкий карбоновый трос и подшипники в ручках — для скоростных прыжков и общефизической подготовки.',
     specs:[['Трос','карбон, регулируемая длина'],['Подшипники','да'],['Вес','~120 г']]},
@@ -825,7 +826,15 @@ function pageProduct(id){
           <div class="option-group">
             <span class="label">Размер</span>
             <div class="swatches" id="sizeSwatches">
-              ${['XS','S','M','L'].map((s,i) => `<button class="swatch ${i===1?'active':''}" data-size="${s}">${s}</button>`).join('')}
+              ${(() => {
+                const allSizes = ['XS','S','M','L','XL'];
+                const available = p.sizes || ['XS','S','M','L'];
+                return allSizes.map(s => {
+                  const isAvailable = available.includes(s);
+                  const isActive = isAvailable && s === available[0];
+                  return `<button class="swatch ${isActive?'active':''}" data-size="${s}" ${isAvailable?'':'disabled'}>${s}</button>`;
+                }).join('');
+              })()}
             </div>
           </div>
           <div class="qty-row">
