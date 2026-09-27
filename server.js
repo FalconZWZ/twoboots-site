@@ -3,6 +3,7 @@ const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
 const session = require('express-session');
+const FileStore = require('session-file-store')(session);
 const multer = require('multer');
 const nodemailer = require('nodemailer');
 
@@ -12,6 +13,7 @@ const port = process.env.PORT || 3000;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data-runtime');
 const DATA_FILE = path.join(DATA_DIR, 'store.json');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
+const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
 const SEED_FILE = path.join(__dirname, 'data', 'seed.json');
 
 const ADMIN_USER = process.env.ADMIN_USER || 'admin';
@@ -106,6 +108,7 @@ function notifyOwnerNewOrder(order) {
 }
 
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 if (!fs.existsSync(DATA_FILE)) {
   fs.copyFileSync(SEED_FILE, DATA_FILE);
 }
@@ -194,6 +197,7 @@ const upload = multer({
 
 app.use(express.json());
 app.use(session({
+  store: new FileStore({ path: SESSIONS_DIR, ttl: 7 * 24 * 60 * 60, retries: 0 }),
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
