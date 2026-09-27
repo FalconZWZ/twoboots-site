@@ -325,6 +325,31 @@ app.post('/api/orders', requireUser, (req, res) => {
   res.json({ order });
 });
 
+/* ===== Admin: orders ===== */
+const ORDER_STATUSES = ['new', 'processing', 'shipped', 'completed', 'cancelled'];
+
+app.get('/api/admin/orders', requireAdmin, (req, res) => {
+  const store = readStore();
+  const orders = [...store.orders]
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .map(o => {
+      const user = store.users.find(u => u.id === o.userId);
+      return { ...o, email: user ? user.email : null };
+    });
+  res.json({ orders });
+});
+
+app.patch('/api/admin/orders/:id', requireAdmin, (req, res) => {
+  const { status } = req.body || {};
+  if (!ORDER_STATUSES.includes(status)) return res.status(400).json({ error: 'Некорректный статус' });
+  const store = readStore();
+  const order = store.orders.find(o => o.id === req.params.id);
+  if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+  order.status = status;
+  writeStore(store);
+  res.json({ order });
+});
+
 /* ===== Admin: categories ===== */
 app.post('/api/admin/categories', requireAdmin, (req, res) => {
   const { id, label } = req.body || {};

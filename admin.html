@@ -63,6 +63,14 @@
   <div id="globalMsg"></div>
 
   <div class="card">
+    <h2>Заказы</h2>
+    <table>
+      <thead><tr><th>Дата</th><th>Клиент</th><th>Товары</th><th>Сумма</th><th>Статус</th></tr></thead>
+      <tbody id="ordersBody"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
     <h2>Администраторы</h2>
     <div id="adminsList"></div>
     <form id="adminForm" class="row" style="margin-top:12px;">
@@ -191,6 +199,42 @@ async function loadAll(){
   renderCatSelect();
   renderProducts();
   await loadAdmins();
+  await loadOrders();
+}
+
+const ORDER_STATUS_LABELS = { new:'Новый', processing:'В обработке', shipped:'Отправлен', completed:'Выполнен', cancelled:'Отменён' };
+
+async function loadOrders(){
+  const { orders } = await api('/api/admin/orders');
+  renderOrders(orders);
+}
+
+function renderOrders(orders){
+  el('ordersBody').innerHTML = orders.map(o => `
+    <tr>
+      <td style="white-space:nowrap;">${new Date(o.createdAt).toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
+      <td>${o.name || ''}<br><small style="color:var(--ink-soft);">${o.email || ''}${o.phone ? ' · ' + o.phone : ''}</small>${o.city || o.address ? `<br><small style="color:var(--ink-soft);">${[o.city, o.address].filter(Boolean).join(', ')}</small>` : ''}</td>
+      <td>${o.items.map(it => `${it.name}${it.size ? ' · ' + it.size : ''} × ${it.qty}`).join('<br>')}</td>
+      <td>${o.total.toLocaleString('ru-RU')} ₽</td>
+      <td>
+        <select data-order-status="${o.id}">
+          ${Object.entries(ORDER_STATUS_LABELS).map(([val,label]) => `<option value="${val}" ${val===o.status?'selected':''}>${label}</option>`).join('')}
+        </select>
+      </td>
+    </tr>
+  `).join('') || '<tr><td colspan="5" style="color:var(--ink-soft)">Заказов пока нет.</td></tr>';
+
+  el('ordersBody').querySelectorAll('[data-order-status]').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      try{
+        await api('/api/admin/orders/' + sel.getAttribute('data-order-status'), {
+          method:'PATCH', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ status: sel.value })
+        });
+        showMsg(el('globalMsg'), 'Статус заказа обновлён', 'ok');
+      }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+    });
+  });
 }
 
 async function loadAdmins(){
