@@ -55,7 +55,8 @@
 | `MAIL_FROM` | адрес отправителя писем | `Two Boots <no-reply@two-boots.ru>` |
 | `OWNER_EMAIL` | почта владельца — на неё приходит уведомление о каждом новом заказе (в том числе «в 1 клик») | `dmitry-sokol@mail.ru` |
 | `OWNER_PHONE` | телефон владельца для WhatsApp-уведомлений (в международном формате без `+`) | `79263497586` |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | токен Telegram-бота и ID чата — включают уведомления о заказах в Telegram | — |
+| `BOTORDER_URL` / `BOTORDER_SECRET` | адрес и секрет вебхука бота заявок twoboots-botorder (рассылает заказ с кнопкой «Взял в работу») — если заданы, заказы уходят туда вместо прямого Telegram-уведомления | — |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | токен Telegram-бота и ID чата — резервный канал уведомлений о заказах в Telegram, используется только если не настроен `BOTORDER_URL` | — |
 | `WHATSAPP_CALLMEBOT_APIKEY` | ключ бесплатного сервиса [CallMeBot](https://www.callmebot.com/blog/free-api-whatsapp-messages/) для уведомлений в WhatsApp на `OWNER_PHONE` | — |
 
 На Railway нужно подключить **Volume** и примонтировать его, например, в `/data`, затем
