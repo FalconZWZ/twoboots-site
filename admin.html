@@ -84,8 +84,15 @@
 
   <div class="card">
     <h2>Товары</h2>
+    <div id="bulkBar" class="row" style="align-items:flex-end;margin-bottom:14px;">
+      <div class="field" style="flex:none;width:140px;"><label>Скидка, % (для выбранных)</label><input id="bulkDiscount" type="number" min="0" max="95" placeholder="0"></div>
+      <div class="field" style="flex:none;align-self:flex-end;"><button type="button" class="btn-primary btn-sm" id="bulkApplyDiscountBtn">Применить скидку</button></div>
+      <div class="field" style="flex:none;align-self:flex-end;"><button type="button" class="btn-ghost btn-sm" id="bulkClearDiscountBtn">Сбросить скидку</button></div>
+      <div class="field" style="flex:none;align-self:flex-end;"><button type="button" class="btn-ghost btn-sm" id="bulkHideBtn">Скрыть выбранные</button></div>
+      <div class="field" style="flex:none;align-self:flex-end;"><button type="button" class="btn-ghost btn-sm" id="bulkShowBtn">Показать выбранные</button></div>
+    </div>
     <table>
-      <thead><tr><th></th><th>Название</th><th>Категория</th><th>Цена</th><th></th></tr></thead>
+      <thead><tr><th><input type="checkbox" id="selectAllChk"></th><th></th><th>Название</th><th>Категория</th><th>Цена</th><th>Скидка</th><th>Статус</th><th></th></tr></thead>
       <tbody id="productsBody"></tbody>
     </table>
   </div>
@@ -102,6 +109,14 @@
         <div class="field"><label>Цена, ₽</label><input id="pPrice" type="number" min="0" required></div>
         <div class="field"><label>Цвет (необязательно)</label><input id="pColor"></div>
         <div class="field"><label>Размер (необязательно)</label><input id="pSize"></div>
+      </div>
+      <div class="row">
+        <div class="field" style="flex:none;width:160px;"><label>Скидка, % (0 — нет)</label><input id="pDiscount" type="number" min="0" max="95" value="0"></div>
+        <div class="field" style="flex:none;align-self:center;padding-top:14px;">
+          <label style="display:flex;align-items:center;gap:8px;font-weight:600;color:var(--ink);">
+            <input type="checkbox" id="pHidden" style="width:auto;"> Скрыть от покупателей
+          </label>
+        </div>
       </div>
       <div class="field"><label>Описание</label><textarea id="pDesc"></textarea></div>
       <div class="field">
@@ -168,7 +183,7 @@ el('logoutBtn').addEventListener('click', async () => {
 });
 
 async function loadAll(){
-  const data = await api('/api/data');
+  const data = await api('/api/admin/data');
   STATE = data;
   renderCategories();
   renderCatSelect();
@@ -271,16 +286,20 @@ el('catForm').addEventListener('submit', async (e) => {
 function renderProducts(){
   el('productsBody').innerHTML = STATE.products.map(p => `
     <tr>
+      <td><input type="checkbox" class="prod-chk" value="${p.id}"></td>
       <td>${p.img ? `<img class="thumb" src="${p.img}">` : ''}</td>
       <td>${p.name}${p.size ? ' · ' + p.size : ''}</td>
       <td>${STATE.categories[p.cat] || p.cat}</td>
-      <td>${p.price.toLocaleString('ru-RU')} ₽</td>
+      <td>${p.discountPercent ? `<span class="price-old-admin" style="color:var(--ink-soft);text-decoration:line-through;">${p.price.toLocaleString('ru-RU')} ₽</span> ${Math.round(p.price*(1-p.discountPercent/100)).toLocaleString('ru-RU')} ₽` : p.price.toLocaleString('ru-RU') + ' ₽'}</td>
+      <td>${p.discountPercent ? '−' + p.discountPercent + '%' : '—'}</td>
+      <td>${p.hidden ? '<span style="color:#e0433a;">Скрыт</span>' : 'Виден'}</td>
       <td style="white-space:nowrap;">
+        <button type="button" class="btn-ghost btn-sm" data-toggle-hidden="${p.id}" data-hidden="${p.hidden ? '1' : '0'}">${p.hidden ? 'Показать' : 'Скрыть'}</button>
         <button type="button" class="btn-ghost btn-sm" data-edit="${p.id}">Изменить</button>
         <button type="button" class="btn-danger btn-sm" data-del="${p.id}">Удалить</button>
       </td>
     </tr>
-  `).join('') || '<tr><td colspan="5" style="color:var(--ink-soft)">Товаров пока нет.</td></tr>';
+  `).join('') || '<tr><td colspan="8" style="color:var(--ink-soft)">Товаров пока нет.</td></tr>';
 
   el('productsBody').querySelectorAll('[data-edit]').forEach(btn => {
     btn.addEventListener('click', () => startEdit(btn.getAttribute('data-edit')));
@@ -295,7 +314,51 @@ function renderProducts(){
       }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
     });
   });
+  el('productsBody').querySelectorAll('[data-toggle-hidden]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-toggle-hidden');
+      const currentlyHidden = btn.getAttribute('data-hidden') === '1';
+      try{
+        await api('/api/admin/products/' + id, {
+          method:'PATCH', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ hidden: !currentlyHidden })
+        });
+        await loadAll();
+      }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+    });
+  });
+  el('selectAllChk').checked = false;
 }
+
+function selectedProductIds(){
+  return Array.from(el('productsBody').querySelectorAll('.prod-chk:checked')).map(c => c.value);
+}
+
+el('selectAllChk').addEventListener('change', (e) => {
+  el('productsBody').querySelectorAll('.prod-chk').forEach(c => c.checked = e.target.checked);
+});
+
+async function bulkUpdate(patch){
+  const ids = selectedProductIds();
+  if(ids.length === 0){ showMsg(el('globalMsg'), 'Сначала выберите товары галочками', 'error'); return; }
+  try{
+    const result = await api('/api/admin/products/bulk', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ ids, ...patch })
+    });
+    showMsg(el('globalMsg'), 'Обновлено товаров: ' + result.count, 'ok');
+    await loadAll();
+  }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+}
+
+el('bulkApplyDiscountBtn').addEventListener('click', () => {
+  const pct = Number(el('bulkDiscount').value) || 0;
+  if(pct <= 0){ showMsg(el('globalMsg'), 'Укажите скидку больше 0%', 'error'); return; }
+  bulkUpdate({ discountPercent: pct });
+});
+el('bulkClearDiscountBtn').addEventListener('click', () => bulkUpdate({ discountPercent: 0 }));
+el('bulkHideBtn').addEventListener('click', () => bulkUpdate({ hidden: true }));
+el('bulkShowBtn').addEventListener('click', () => bulkUpdate({ hidden: false }));
 
 function specRow(k, v){
   const row = document.createElement('div');
@@ -328,6 +391,8 @@ function startEdit(id){
   el('pColor').value = p.color || '';
   el('pSize').value = p.size || '';
   el('pDesc').value = p.desc || '';
+  el('pDiscount').value = p.discountPercent || 0;
+  el('pHidden').checked = !!p.hidden;
   el('specsList').innerHTML = '';
   (p.specs || []).forEach(([k,v]) => el('specsList').appendChild(specRow(k,v)));
   if(p.img){ el('currentImg').src = p.img; el('currentImgWrap').hidden = false; } else { el('currentImgWrap').hidden = true; }
@@ -351,6 +416,8 @@ el('productForm').addEventListener('submit', async (e) => {
   fd.append('size', el('pSize').value);
   fd.append('desc', el('pDesc').value);
   fd.append('specs', JSON.stringify(specs));
+  fd.append('discountPercent', el('pDiscount').value || '0');
+  fd.append('hidden', el('pHidden').checked ? 'true' : 'false');
   if(el('pImage').files[0]) fd.append('image', el('pImage').files[0]);
 
   const id = el('pId').value;
