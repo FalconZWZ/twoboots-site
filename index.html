@@ -393,6 +393,17 @@
   .cart-foot{padding:20px 22px;border-top:1px solid var(--border);}
   .cart-foot .row{display:flex;justify-content:space-between;margin-bottom:16px;font-weight:700;}
 
+  /* ===== Quick order modal ===== */
+  .qo-overlay{
+    position:fixed;inset:0;background:rgba(10,14,18,.45);z-index:96;
+    display:none;align-items:center;justify-content:center;padding:20px;
+  }
+  .qo-overlay.open{display:flex;}
+  .qo-box{background:var(--surface);border-radius:var(--radius-m);padding:28px;max-width:380px;width:100%;position:relative;}
+  .qo-box h3{font-size:1.15rem;margin-bottom:6px;}
+  .qo-box p.qo-hint{color:var(--ink-soft);font-size:.85rem;margin-bottom:18px;}
+  .qo-close{position:absolute;top:16px;right:16px;width:32px;height:32px;border-radius:999px;border:1px solid var(--border);background:transparent;display:flex;align-items:center;justify-content:center;}
+
   .toast{
     position:fixed;bottom:26px;left:50%;transform:translateX(-50%) translateY(20px);
     background:var(--ink);color:var(--bg);padding:14px 22px;border-radius:999px;font-size:.88rem;font-weight:600;
@@ -489,7 +500,7 @@
         <h4>Мы на связи</h4>
         <ul class="footer-links">
           <li><span>hello@twoboots.ru</span></li>
-          <li><span>+7 (999) 000-00-00</span></li>
+          <li><span>+7 (926) 349-75-86</span></li>
         </ul>
         <div class="social-row" style="margin-top:14px;">
           <a href="#" aria-label="Telegram">TG</a>
@@ -914,9 +925,24 @@ function pageProduct(id){
           </div>
           <div class="pdp-actions">
             <button class="btn btn-primary" id="pdpAdd">Добавить в корзину</button>
-            <a href="#/catalog?cat=${p.cat}" class="btn btn-ghost">Похожие модели</a>
+            <button class="btn btn-ghost" id="pdpBuyOneClick">Купить в 1 клик</button>
           </div>
+          <div style="margin-top:10px;"><a href="#/catalog?cat=${p.cat}" style="font-size:.88rem;text-decoration:underline;color:var(--ink-soft);">Похожие модели</a></div>
         </div>
+      </div>
+    </div>
+
+    <div class="qo-overlay" id="qoOverlay">
+      <div class="qo-box">
+        <button class="qo-close" id="qoClose" aria-label="Закрыть" type="button">✕</button>
+        <h3>Купить в 1 клик</h3>
+        <p class="qo-hint">Оставьте имя и телефон — мы перезвоним и подтвердим заказ «${p.name}».</p>
+        <form id="qoForm">
+          <div class="field"><label for="qo-name">Ваше имя</label><input id="qo-name" required></div>
+          <div class="field"><label for="qo-phone">Телефон</label><input id="qo-phone" type="tel" placeholder="+7 ..." required></div>
+          <div id="qoErr"></div>
+          <button type="submit" class="btn btn-primary btn-block">Заказать</button>
+        </form>
       </div>
     </div>
   </section>
@@ -999,7 +1025,7 @@ function pageContact(){
       <div class="contact-grid">
         <div>
           <div class="contact-card"><h4>Почта</h4><div>hello@twoboots.ru</div></div>
-          <div class="contact-card"><h4>Телефон</h4><div>+7 (999) 000-00-00</div></div>
+          <div class="contact-card"><h4>Телефон</h4><div>+7 (926) 349-75-86</div></div>
           <div class="contact-card"><h4>Шоурум</h4><div>Москва, по предварительной записи</div></div>
           <div style="margin-top:32px;">
             <h2 style="font-size:1.4rem;margin-bottom:16px;">Частые вопросы</h2>
@@ -1223,6 +1249,35 @@ function bindPageEvents(path, params){
     if(addBtn){
       addBtn.addEventListener('click', () => {
         addToCart(pdpId, parseInt(qtyVal.textContent));
+      });
+    }
+
+    const qoOverlay = document.getElementById('qoOverlay');
+    const buyOneClickBtn = document.getElementById('pdpBuyOneClick');
+    if(buyOneClickBtn && qoOverlay){
+      buyOneClickBtn.addEventListener('click', () => qoOverlay.classList.add('open'));
+      qoOverlay.addEventListener('click', e => { if(e.target === qoOverlay) qoOverlay.classList.remove('open'); });
+      document.getElementById('qoClose').addEventListener('click', () => qoOverlay.classList.remove('open'));
+      document.getElementById('qoForm').addEventListener('submit', async e => {
+        e.preventDefault();
+        const errEl = document.getElementById('qoErr');
+        errEl.innerHTML = '';
+        try{
+          const res = await fetch('/api/quick-order', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({
+              productId: pdpId,
+              qty: parseInt(qtyVal.textContent),
+              name: document.getElementById('qo-name').value,
+              phone: document.getElementById('qo-phone').value,
+            })
+          });
+          const data = await res.json();
+          if(!res.ok) throw new Error(data.error || 'Не удалось оформить заказ');
+          qoOverlay.classList.remove('open');
+          document.getElementById('qoForm').reset();
+          showToast(`Заказ №${data.order.number} принят — мы перезвоним для подтверждения`);
+        }catch(err){ errEl.innerHTML = `<p style="color:var(--accent);font-size:.85rem;margin:8px 0 0;">${err.message}</p>`; }
       });
     }
   }
