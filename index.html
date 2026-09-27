@@ -475,12 +475,7 @@
       </div>
       <div>
         <h4>Каталог</h4>
-        <ul class="footer-links">
-          <li><a href="#/catalog?cat=blades">Чехлы для лезвий</a></li>
-          <li><a href="#/catalog?cat=bags">Сумки и чемоданы</a></li>
-          <li><a href="#/catalog?cat=ropes">Скакалки</a></li>
-          <li><a href="#/catalog?cat=access">Аксессуары</a></li>
-        </ul>
+        <ul class="footer-links" id="footerCatalogLinks"></ul>
       </div>
       <div>
         <h4>Бренд</h4>
@@ -579,6 +574,12 @@ async function loadData(){
   const data = await res.json();
   CATEGORIES = data.categories;
   PRODUCTS = data.products;
+  renderFooterCatalogLinks();
+}
+function renderFooterCatalogLinks(){
+  const el = document.getElementById('footerCatalogLinks');
+  if(!el) return;
+  el.innerHTML = Object.keys(CATEGORIES).map(cat => `<li><a href="#/catalog?cat=${cat}">${CATEGORIES[cat]}</a></li>`).join('');
 }
 
 let CURRENT_USER = null;
@@ -734,10 +735,18 @@ function productCard(p){
   </div>`;
 }
 
-function catTile(cat, label, hint){
+const CAT_HINTS = {
+  blades: 'сушилки и прогулочные',
+  bags: 'на каждый день и в дорогу',
+  ropes: 'для разминки и ОФП',
+  access: 'шнурки, гетры, напульсники',
+};
+function catTile(cat){
+  const count = PRODUCTS.filter(p => p.cat === cat).length;
+  const hint = CAT_HINTS[cat] || (count ? `${count} товар${count % 10 === 1 && count % 100 !== 11 ? '' : count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 10 || count % 100 >= 20) ? 'а' : 'ов'}` : '');
   return `<a class="cat-tile" href="#/catalog?cat=${cat}">
     ${catIcon(cat)}
-    <div><h3>${label}</h3><span>${hint}</span></div>
+    <div><h3>${CATEGORIES[cat]}</h3><span>${hint}</span></div>
   </a>`;
 }
 
@@ -759,7 +768,7 @@ function pageHome(){
         <div class="hero-stats">
           <div class="stat"><b>12+</b><span>моделей в каталоге</span></div>
           <div class="stat"><b>1–3 дня</b><span>отправка по РФ</span></div>
-          <div class="stat"><b>4</b><span>категории экипировки</span></div>
+          <div class="stat"><b>${Object.keys(CATEGORIES).length}</b><span>категори${Object.keys(CATEGORIES).length === 1 ? 'я' : 'и'} экипировки</span></div>
         </div>
       </div>
       <div class="hero-art"><div class="mark">${brandMark(260)}</div></div>
@@ -780,10 +789,7 @@ function pageHome(){
     <div class="wrap">
       <div class="section-head"><h2>Категории</h2></div>
       <div class="cat-grid">
-        ${catTile('blades','Чехлы для лезвий','сушилки и прогулочные')}
-        ${catTile('bags','Сумки и чемоданы','на каждый день и в дорогу')}
-        ${catTile('ropes','Скакалки','для разминки и ОФП')}
-        ${catTile('access','Аксессуары','шнурки, гетры, напульсники')}
+        ${Object.keys(CATEGORIES).map(catTile).join('')}
       </div>
     </div>
   </section>
