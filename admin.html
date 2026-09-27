@@ -65,7 +65,7 @@
   <div class="card">
     <h2>Заказы</h2>
     <table>
-      <thead><tr><th>№</th><th>Дата</th><th>Клиент</th><th>Товары</th><th>Сумма</th><th>Статус</th></tr></thead>
+      <thead><tr><th>№</th><th>Дата</th><th>Клиент</th><th>Товары</th><th>Сумма</th><th>Статус</th><th></th></tr></thead>
       <tbody id="ordersBody"></tbody>
     </table>
   </div>
@@ -222,8 +222,9 @@ function renderOrders(orders){
           ${Object.entries(ORDER_STATUS_LABELS).map(([val,label]) => `<option value="${val}" ${val===o.status?'selected':''}>${label}</option>`).join('')}
         </select>
       </td>
+      <td>${IS_SUPER ? `<button class="btn-ghost" data-delete-order="${o.id}">Удалить</button>` : ''}</td>
     </tr>
-  `).join('') || '<tr><td colspan="6" style="color:var(--ink-soft)">Заказов пока нет.</td></tr>';
+  `).join('') || '<tr><td colspan="7" style="color:var(--ink-soft)">Заказов пока нет.</td></tr>';
 
   el('ordersBody').querySelectorAll('[data-order-status]').forEach(sel => {
     sel.addEventListener('change', async () => {
@@ -233,6 +234,18 @@ function renderOrders(orders){
           body: JSON.stringify({ status: sel.value })
         });
         showMsg(el('globalMsg'), 'Статус заказа обновлён', 'ok');
+      }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+    });
+  });
+
+  el('ordersBody').querySelectorAll('[data-delete-order]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-delete-order');
+      if(!confirm('Удалить этот заказ? Отменить будет нельзя.')) return;
+      try{
+        await api('/api/admin/orders/' + id, { method:'DELETE' });
+        showMsg(el('globalMsg'), 'Заказ удалён', 'ok');
+        loadOrders();
       }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
     });
   });
