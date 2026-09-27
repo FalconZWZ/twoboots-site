@@ -469,6 +469,15 @@ app.patch('/api/admin/orders/:id', requireAdmin, (req, res) => {
   res.json({ order });
 });
 
+app.delete('/api/admin/orders/:id', requireSuperAdmin, (req, res) => {
+  const store = readStore();
+  const idx = store.orders.findIndex(o => o.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Заказ не найден' });
+  store.orders.splice(idx, 1);
+  writeStore(store);
+  res.json({ ok: true });
+});
+
 /* ===== Admin: categories ===== */
 app.post('/api/admin/categories', requireAdmin, (req, res) => {
   const { id, label } = req.body || {};
