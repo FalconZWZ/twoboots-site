@@ -99,7 +99,7 @@ function requireAdmin(req, res, next) {
 /* ===== Public data API ===== */
 app.get('/api/data', (req, res) => {
   const { categories, products } = readStore();
-  res.json({ categories, products });
+  res.json({ categories, products: products.filter(p => !p.hidden) });
 });
 
 /* ===== Auth ===== */
@@ -165,6 +165,12 @@ app.delete('/api/admin/admins/:username', requireAdmin, (req, res) => {
   }
 });
 
+/* ===== Admin: full data (includes hidden products) ===== */
+app.get('/api/admin/data', requireAdmin, (req, res) => {
+  const { categories, products } = readStore();
+  res.json({ categories, products });
+});
+
 /* ===== Admin: categories ===== */
 app.post('/api/admin/categories', requireAdmin, (req, res) => {
   const { id, label } = req.body || {};
@@ -202,6 +208,7 @@ function parseProductBody(body) {
   if (body.specs) {
     try { specs = JSON.parse(body.specs); } catch (e) { specs = []; }
   }
+  const discountPercent = Math.min(95, Math.max(0, Number(body.discountPercent) || 0));
   return {
     cat: body.cat,
     name: body.name,
@@ -210,6 +217,8 @@ function parseProductBody(body) {
     color: body.color || undefined,
     size: body.size || undefined,
     specs,
+    discountPercent: discountPercent || undefined,
+    hidden: body.hidden === 'true' || body.hidden === true || undefined,
   };
 }
 
@@ -255,6 +264,46 @@ app.put('/api/admin/products/:id', requireAdmin, upload.single('image'), (req, r
   store.products[idx] = updated;
   writeStore(store);
   res.json(updated);
+});
+
+app.patch('/api/admin/products/:id', requireAdmin, (req, res) => {
+  const store = readStore();
+  const idx = store.products.findIndex(p => p.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Товар не найден' });
+  const { hidden, discountPercent } = req.body || {};
+  if (hidden !== undefined) {
+    if (hidden) store.products[idx].hidden = true;
+    else delete store.products[idx].hidden;
+  }
+  if (discountPercent !== undefined) {
+    const pct = Math.min(95, Math.max(0, Number(discountPercent) || 0));
+    if (pct > 0) store.products[idx].discountPercent = pct;
+    else delete store.products[idx].discountPercent;
+  }
+  writeStore(store);
+  res.json(store.products[idx]);
+});
+
+app.post('/api/admin/products/bulk', requireAdmin, (req, res) => {
+  const { ids, hidden, discountPercent } = req.body || {};
+  if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: 'Не выбраны товары' });
+  const store = readStore();
+  let count = 0;
+  store.products.forEach(p => {
+    if (!ids.includes(p.id)) return;
+    count++;
+    if (hidden !== undefined) {
+      if (hidden) p.hidden = true;
+      else delete p.hidden;
+    }
+    if (discountPercent !== undefined) {
+      const pct = Math.min(95, Math.max(0, Number(discountPercent) || 0));
+      if (pct > 0) p.discountPercent = pct;
+      else delete p.discountPercent;
+    }
+  });
+  writeStore(store);
+  res.json({ ok: true, count });
 });
 
 app.delete('/api/admin/products/:id', requireAdmin, (req, res) => {

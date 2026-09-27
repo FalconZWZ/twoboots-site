@@ -264,6 +264,11 @@
     position:relative;
   }
   .product-media svg{width:46%;stroke:var(--ink);}
+  .discount-badge{
+    position:absolute;top:10px;right:10px;z-index:2;background:var(--accent);color:var(--accent-ink);
+    font-family:var(--font-mono);font-weight:700;font-size:.78rem;padding:4px 9px;border-radius:999px;
+  }
+  .price-old{color:var(--ink-faint);text-decoration:line-through;font-family:var(--font-mono);font-size:.85rem;}
   .product-body{padding:18px;display:flex;flex-direction:column;gap:8px;flex:1;}
   .product-body h3{font-size:.98rem;font-weight:700;}
   .product-foot{display:flex;align-items:center;justify-content:space-between;margin-top:auto;padding-top:10px;}
@@ -566,11 +571,14 @@ const productById = id => PRODUCTS.find(p => p.id === id);
 let cart = []; // {id, qty, size, price}
 
 function lineKey(id, size){ return id + '|' + (size || ''); }
+function effectivePrice(p){
+  return p.discountPercent ? Math.round(p.price * (1 - p.discountPercent/100)) : p.price;
+}
 
 function addToCart(id, qty=1, size=null){
   const p = productById(id);
   if(!size) size = p.size || null;
-  const unitPrice = p.price;
+  const unitPrice = effectivePrice(p);
   const key = lineKey(id, size);
   const line = cart.find(l => lineKey(l.id, l.size) === key);
   if(line){ line.qty += qty; } else { cart.push({id, qty, size, price: unitPrice}); }
@@ -656,15 +664,20 @@ function showToast(msg){
 
 /* ============ Templates ============ */
 function productCard(p){
+  const hasDiscount = !!p.discountPercent;
+  const newPrice = effectivePrice(p);
   return `<div class="product-card">
     <a class="card-link" href="#/product/${p.id}">
-      <div class="product-media">${p.img ? `<img src="${p.img}" alt="${p.name}" style="width:100%;height:100%;object-fit:cover;">` : catIcon(p.cat)}</div>
+      <div class="product-media">
+        ${hasDiscount ? `<span class="discount-badge">−${p.discountPercent}%</span>` : ''}
+        ${p.img ? `<img src="${p.img}" alt="${p.name}" style="width:100%;height:100%;object-fit:cover;">` : catIcon(p.cat)}
+      </div>
     </a>
     <div class="product-body">
       <span class="eyebrow">${CATEGORIES[p.cat]}</span>
       <a class="card-link" href="#/product/${p.id}"><h3>${p.name}</h3></a>
       <div class="product-foot">
-        <span class="price">${fmt(p.price)} ₽</span>
+        <span>${hasDiscount ? `<span class="price-old">${fmt(p.price)} ₽</span> ` : ''}<span class="price">${fmt(newPrice)} ₽</span></span>
         <button class="add-btn" data-add="${p.id}" aria-label="В корзину">
           <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
         </button>
@@ -683,6 +696,7 @@ function catTile(cat, label, hint){
 /* ============ Pages ============ */
 function pageHome(){
   const featured = PRODUCTS.filter(p => ['two-boots-silver-m','speedjump-purple','dry-glide','two-boots-black-m'].includes(p.id));
+  const saleItems = PRODUCTS.filter(p => p.discountPercent > 0);
   return `
   <section class="hero">
     <div class="wrap">
@@ -703,6 +717,16 @@ function pageHome(){
       <div class="hero-art"><div class="mark">${brandMark(260)}</div></div>
     </div>
   </section>
+
+  ${saleItems.length ? `
+  <section class="block">
+    <div class="wrap">
+      <div class="section-head">
+        <div><h2>Распродажа</h2><p>Ограниченные предложения по сниженным ценам.</p></div>
+      </div>
+      <div class="product-grid">${saleItems.map(productCard).join('')}</div>
+    </div>
+  </section>` : ''}
 
   <section class="block">
     <div class="wrap">
@@ -790,11 +814,14 @@ function pageProduct(id){
         <span>${p.name}</span>
       </div>
       <div class="pdp">
-        <div class="pdp-media">${p.img ? `<img src="${p.img}" alt="${p.name}" style="width:100%;height:100%;object-fit:cover;">` : catIcon(p.cat)}</div>
+        <div class="pdp-media">
+          ${p.discountPercent ? `<span class="discount-badge">−${p.discountPercent}%</span>` : ''}
+          ${p.img ? `<img src="${p.img}" alt="${p.name}" style="width:100%;height:100%;object-fit:cover;">` : catIcon(p.cat)}
+        </div>
         <div class="pdp-info">
           <span class="eyebrow">${CATEGORIES[p.cat]}</span>
           <h1 style="margin-top:10px;">${p.name}</h1>
-          <div class="pdp-price price" id="pdpPrice">${fmt(p.price)} ₽</div>
+          <div class="pdp-price" id="pdpPrice">${p.discountPercent ? `<span class="price-old" style="font-size:1.1rem;margin-right:10px;">${fmt(p.price)} ₽</span>` : ''}<span class="price">${fmt(effectivePrice(p))} ₽</span></div>
           <p class="pdp-desc">${p.desc}</p>
           <ul class="spec-list">
             ${p.specs.map(([k,v]) => `<li><b>${k}:</b> ${v}</li>`).join('')}
