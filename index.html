@@ -671,6 +671,12 @@ document.getElementById('cartFoot').addEventListener('click', async e => {
     location.hash = '/account';
     return;
   }
+  if(!CURRENT_USER.name || !CURRENT_USER.phone){
+    showToast('Укажите имя и телефон в профиле, чтобы оформить заказ');
+    closeCart();
+    location.hash = '/account?tab=profile';
+    return;
+  }
   try{
     const res = await fetch('/api/orders', {
       method:'POST', headers:{'Content-Type':'application/json'},
@@ -681,7 +687,7 @@ document.getElementById('cartFoot').addEventListener('click', async e => {
     cart = [];
     updateCartUI();
     closeCart();
-    showToast('Заказ оформлен — смотрите в личном кабинете');
+    showToast(`Заказ №${data.order.number} оформлен — в ближайшее время с вами свяжется менеджер`);
     location.hash = '/account';
   }catch(err){ showToast(err.message); }
 });
@@ -1049,7 +1055,7 @@ function pageAccount(){
               <div class="field"><label for="rg-name">ФИО</label><input id="rg-name" required></div>
               <div class="field"><label for="rg-email">Email</label><input id="rg-email" type="email" required></div>
               <div class="field"><label for="rg-pass">Пароль (мин. 6 символов)</label><input id="rg-pass" type="password" minlength="6" required></div>
-              <div class="field"><label for="rg-phone">Телефон</label><input id="rg-phone" placeholder="+7 ..."></div>
+              <div class="field"><label for="rg-phone">Телефон</label><input id="rg-phone" type="tel" placeholder="+7 ..." required></div>
               <div class="field"><label for="rg-city">Город</label><input id="rg-city"></div>
               <div class="field"><label for="rg-address">Адрес</label><input id="rg-address"></div>
               <div id="registerErr"></div>
@@ -1079,7 +1085,7 @@ function pageAccount(){
         <div class="contact-card" style="max-width:520px;">
           <form id="profileForm">
             <div class="field"><label for="pf-name">ФИО</label><input id="pf-name" value="${escAttr(CURRENT_USER.name)}" required></div>
-            <div class="field"><label for="pf-phone">Телефон</label><input id="pf-phone" value="${escAttr(CURRENT_USER.phone)}"></div>
+            <div class="field"><label for="pf-phone">Телефон</label><input id="pf-phone" type="tel" value="${escAttr(CURRENT_USER.phone)}" required></div>
             <div class="field"><label for="pf-city">Город</label><input id="pf-city" value="${escAttr(CURRENT_USER.city)}"></div>
             <div class="field"><label for="pf-address">Адрес</label><input id="pf-address" value="${escAttr(CURRENT_USER.address)}"></div>
             <div id="profileMsg"></div>
@@ -1103,7 +1109,7 @@ function renderOrders(orders){
       <div class="order-card-head">
         <div>
           <div style="font-weight:700;">Заказ от ${new Date(o.createdAt).toLocaleDateString('ru-RU')}</div>
-          <div style="color:var(--ink-faint);font-size:.82rem;">№ ${o.id.slice(0,8)}</div>
+          <div style="color:var(--ink-faint);font-size:.82rem;">№ ${o.number || o.id.slice(0,8)}</div>
         </div>
         <span class="order-status ${o.status}">${orderStatusLabel(o.status)}</span>
       </div>
@@ -1164,10 +1170,10 @@ function render(){
     a.classList.toggle('active', a.getAttribute('data-route') === routeKey);
   });
 
-  bindPageEvents(path);
+  bindPageEvents(path, params);
 }
 
-function bindPageEvents(path){
+function bindPageEvents(path, params){
   // add-to-cart buttons present on grids
   document.querySelectorAll('[data-add]').forEach(btn => {
     btn.addEventListener('click', e => {
@@ -1279,6 +1285,10 @@ function bindPageEvents(path){
           document.getElementById('accountTabProfile').hidden = tab !== 'profile';
         });
       });
+      if(params && params.get('tab') === 'profile'){
+        const profileTabBtn = document.querySelector('.account-tabs button[data-tab="profile"]');
+        if(profileTabBtn) profileTabBtn.click();
+      }
       document.getElementById('profileForm').addEventListener('submit', async e => {
         e.preventDefault();
         const msgEl = document.getElementById('profileMsg');
