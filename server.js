@@ -53,6 +53,9 @@ const OWNER_PHONE = process.env.OWNER_PHONE || '79263497586';
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
 const WHATSAPP_CALLMEBOT_APIKEY = process.env.WHATSAPP_CALLMEBOT_APIKEY || '';
+// Бот заявок twoboots-botorder: рассылает заказ получателям с кнопкой «Взял в работу»
+const BOTORDER_URL = process.env.BOTORDER_URL || '';
+const BOTORDER_SECRET = process.env.BOTORDER_SECRET || '';
 
 function orderNotifyText(order) {
   const itemsList = order.items.map(it => `${it.name}${it.size ? ' (' + it.size + ')' : ''} — ${it.qty} шт. × ${it.price.toLocaleString('ru-RU')} ₽`).join('\n');
@@ -74,7 +77,20 @@ function notifyOwnerNewOrder(order) {
     }).catch(err => console.error('Не удалось отправить письмо-уведомление владельцу:', err.message));
   }
 
-  if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+  if (BOTORDER_URL && BOTORDER_SECRET) {
+    fetch(BOTORDER_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Webhook-Token': BOTORDER_SECRET },
+      body: JSON.stringify({
+        'Заказ': `№${order.number}${order.quick ? ' (в 1 клик)' : ''}`,
+        name: order.name,
+        phone: order.phone,
+        'Состав': order.items.map(it => `${it.name}${it.size ? ' (' + it.size + ')' : ''} — ${it.qty} шт. × ${it.price.toLocaleString('ru-RU')} ₽`).join('\n'),
+        'Итого': `${order.total.toLocaleString('ru-RU')} ₽`,
+      }),
+    }).then(r => { if (!r.ok) return r.text().then(t => { throw new Error(t); }); })
+      .catch(err => console.error('Не удалось отправить заказ в бот заявок:', err.message));
+  } else if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
     fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -646,7 +662,13 @@ app.listen(port, () => {
       'Set SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS (and optionally MAIL_FROM) to enable them.'
     );
   }
-  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+  if (!BOTORDER_URL || !BOTORDER_SECRET) {
+    console.warn(
+      '⚠ Order-desk bot (twoboots-botorder) is not configured — orders won\'t be forwarded there. ' +
+      'Set BOTORDER_URL and BOTORDER_SECRET to enable it.'
+    );
+  }
+  if ((!BOTORDER_URL || !BOTORDER_SECRET) && (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID)) {
     console.warn(
       '⚠ Telegram is not configured — new-order notifications will not be sent there. ' +
       'Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to enable them.'
