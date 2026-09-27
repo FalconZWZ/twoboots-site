@@ -326,4 +326,11 @@ app.get('*', (req, res) => {
 app.listen(port, () => {
   console.log(`Two Boots site running on port ${port}`);
   console.log(`Data dir: ${DATA_DIR}`);
+  if (!process.env.DATA_DIR) {
+    console.warn(
+      '⚠ DATA_DIR is not set — data is stored inside the container and will be LOST on the next ' +
+      'redeploy/restart (added admins, categories, products, uploaded photos, discounts). ' +
+      'Attach a Volume in Railway and set DATA_DIR to its mount path (e.g. /data) to persist it.'
+    );
+  }
 });
