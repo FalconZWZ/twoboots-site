@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const express = require('express');
 const session = require('express-session');
 const multer = require('multer');
@@ -26,6 +27,28 @@ function readStore() {
 }
 function writeStore(store) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(store, null, 2));
+}
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return salt + ':' + hash;
+}
+function verifyPassword(password, stored) {
+  const [salt, hash] = stored.split(':');
+  const check = crypto.scryptSync(password, salt, 64).toString('hex');
+  const a = Buffer.from(hash, 'hex');
+  const b = Buffer.from(check, 'hex');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// Migrate/seed the admin list from env vars if the store has none yet
+// (fresh install, or an older store.json created before multi-admin support).
+{
+  const store = readStore();
+  if (!store.admins || store.admins.length === 0) {
+    store.admins = [{ username: ADMIN_USER, passwordHash: hashPassword(ADMIN_PASSWORD) }];
+    writeStore(store);
+  }
 }
 function slugify(text) {
   const translit = {
@@ -75,14 +98,18 @@ function requireAdmin(req, res, next) {
 
 /* ===== Public data API ===== */
 app.get('/api/data', (req, res) => {
-  res.json(readStore());
+  const { categories, products } = readStore();
+  res.json({ categories, products });
 });
 
 /* ===== Auth ===== */
 app.post('/admin/login', (req, res) => {
   const { username, password } = req.body || {};
-  if (username === ADMIN_USER && password === ADMIN_PASSWORD) {
+  const store = readStore();
+  const admin = (store.admins || []).find(a => a.username === username);
+  if (admin && verifyPassword(password || '', admin.passwordHash)) {
     req.session.isAdmin = true;
+    req.session.username = username;
     return res.json({ ok: true });
   }
   res.status(401).json({ error: 'Неверный логин или пароль' });
@@ -91,10 +118,40 @@ app.post('/admin/logout', (req, res) => {
   req.session.destroy(() => res.json({ ok: true }));
 });
 app.get('/admin/session', (req, res) => {
-  res.json({ loggedIn: !!(req.session && req.session.isAdmin) });
+  res.json({ loggedIn: !!(req.session && req.session.isAdmin), username: req.session && req.session.username });
 });
 app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, 'admin.html'));
+});
+
+/* ===== Admin: manage admin accounts ===== */
+app.get('/api/admin/admins', requireAdmin, (req, res) => {
+  const store = readStore();
+  res.json({ admins: store.admins.map(a => a.username), me: req.session.username });
+});
+app.post('/api/admin/admins', requireAdmin, (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) return res.status(400).json({ error: 'Логин и пароль обязательны' });
+  if (password.length < 6) return res.status(400).json({ error: 'Пароль должен быть не короче 6 символов' });
+  const store = readStore();
+  if (store.admins.some(a => a.username === username)) return res.status(400).json({ error: 'Такой логин уже существует' });
+  store.admins.push({ username, passwordHash: hashPassword(password) });
+  writeStore(store);
+  res.json({ admins: store.admins.map(a => a.username) });
+});
+app.delete('/api/admin/admins/:username', requireAdmin, (req, res) => {
+  const store = readStore();
+  const { username } = req.params;
+  if (store.admins.length <= 1) return res.status(400).json({ error: 'Нельзя удалить последнего администратора' });
+  const idx = store.admins.findIndex(a => a.username === username);
+  if (idx === -1) return res.status(404).json({ error: 'Администратор не найден' });
+  store.admins.splice(idx, 1);
+  writeStore(store);
+  if (req.session.username === username) {
+    req.session.destroy(() => res.json({ ok: true, selfDeleted: true }));
+  } else {
+    res.json({ ok: true });
+  }
 });
 
 /* ===== Admin: categories ===== */
@@ -106,7 +163,7 @@ app.post('/api/admin/categories', requireAdmin, (req, res) => {
   if (store.categories[slug]) return res.status(400).json({ error: 'Категория с таким id уже существует' });
   store.categories[slug] = label;
   writeStore(store);
-  res.json(store);
+  res.json({ categories: store.categories, products: store.products });
 });
 app.put('/api/admin/categories/:id', requireAdmin, (req, res) => {
   const store = readStore();
@@ -115,7 +172,7 @@ app.put('/api/admin/categories/:id', requireAdmin, (req, res) => {
   if (!store.categories[id]) return res.status(404).json({ error: 'Категория не найдена' });
   store.categories[id] = label;
   writeStore(store);
-  res.json(store);
+  res.json({ categories: store.categories, products: store.products });
 });
 app.delete('/api/admin/categories/:id', requireAdmin, (req, res) => {
   const store = readStore();
@@ -125,7 +182,7 @@ app.delete('/api/admin/categories/:id', requireAdmin, (req, res) => {
   if (inUse) return res.status(400).json({ error: 'В категории ещё есть товары — сначала удалите или перенесите их' });
   delete store.categories[id];
   writeStore(store);
-  res.json(store);
+  res.json({ categories: store.categories, products: store.products });
 });
 
 /* ===== Admin: products ===== */

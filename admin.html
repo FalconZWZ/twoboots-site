@@ -57,10 +57,20 @@
     <h1>Two Boots — Админка</h1>
     <div>
       <a href="/" class="btn-ghost" style="text-decoration:none;display:inline-block;padding:9px 18px;border:1px solid var(--border);border-radius:999px;">На сайт</a>
-      <button class="btn-ghost" id="logoutBtn">Выйти</button>
+      <button class="btn-ghost" id="logoutBtn">Выйти (<span id="meLabel"></span>)</button>
     </div>
   </div>
   <div id="globalMsg"></div>
+
+  <div class="card">
+    <h2>Администраторы</h2>
+    <div id="adminsList"></div>
+    <form id="adminForm" class="row" style="margin-top:12px;">
+      <div class="field"><label>Логин</label><input id="adminUsername" required></div>
+      <div class="field"><label>Пароль (мин. 6 символов)</label><input id="adminPassword" type="password" minlength="6" required></div>
+      <div class="field" style="flex:none;align-self:flex-end;"><button class="btn-primary" type="submit">Добавить</button></div>
+    </form>
+  </div>
 
   <div class="card">
     <h2>Категории</h2>
@@ -123,9 +133,13 @@ async function api(url, opts){
   return data;
 }
 
+let ME = null;
+
 async function checkSession(){
-  const { loggedIn } = await api('/admin/session');
+  const { loggedIn, username } = await api('/admin/session');
   if(loggedIn){
+    ME = username;
+    el('meLabel').textContent = username;
     el('loginScreen').hidden = true;
     el('adminScreen').hidden = false;
     await loadAll();
@@ -159,7 +173,48 @@ async function loadAll(){
   renderCategories();
   renderCatSelect();
   renderProducts();
+  await loadAdmins();
 }
+
+async function loadAdmins(){
+  const { admins } = await api('/api/admin/admins');
+  renderAdmins(admins);
+}
+
+function renderAdmins(admins){
+  const wrap = el('adminsList');
+  wrap.innerHTML = admins.map(username => `
+    <span class="cat-pill">${username}${username===ME ? ' <small style="color:var(--ink-soft)">(вы)</small>' : ''}
+      ${admins.length > 1 ? `<button type="button" class="btn-ghost btn-sm" data-del-admin="${username}" title="Удалить">×</button>` : ''}
+    </span>
+  `).join('');
+
+  wrap.querySelectorAll('[data-del-admin]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const username = btn.getAttribute('data-del-admin');
+      if(!confirm('Удалить администратора "' + username + '"?')) return;
+      try{
+        const result = await api('/api/admin/admins/' + encodeURIComponent(username), { method:'DELETE' });
+        if(result.selfDeleted){ checkSession(); return; }
+        showMsg(el('globalMsg'), 'Администратор удалён', 'ok');
+        await loadAdmins();
+      }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+    });
+  });
+}
+
+el('adminForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try{
+    await api('/api/admin/admins', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ username: el('adminUsername').value, password: el('adminPassword').value })
+    });
+    el('adminForm').reset();
+    showMsg(el('globalMsg'), 'Администратор добавлен', 'ok');
+    await loadAdmins();
+  }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+});
 
 function renderCategories(){
   const wrap = el('categoriesList');
