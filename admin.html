@@ -214,7 +214,7 @@ function renderOrders(orders){
     <tr>
       <td style="white-space:nowrap;font-weight:700;">№${o.number || o.id.slice(0,8)}</td>
       <td style="white-space:nowrap;">${new Date(o.createdAt).toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
-      <td>${o.name || ''}<br><small style="color:var(--ink-soft);">${o.email || ''}${o.phone ? ' · ' + o.phone : ''}</small>${o.city || o.address ? `<br><small style="color:var(--ink-soft);">${[o.city, o.address].filter(Boolean).join(', ')}</small>` : ''}</td>
+      <td>${o.quick ? '<span style="display:inline-block;font-size:.72rem;font-weight:700;color:#1c5e26;background:#dff3e0;padding:2px 8px;border-radius:999px;margin-bottom:4px;">В 1 клик</span><br>' : ''}${o.name || ''}<br><small style="color:var(--ink-soft);">${o.email || ''}${o.phone ? ' · ' + o.phone : ''}</small>${o.city || o.address ? `<br><small style="color:var(--ink-soft);">${[o.city, o.address].filter(Boolean).join(', ')}</small>` : ''}</td>
       <td>${o.items.map(it => `${it.name}${it.size ? ' · ' + it.size : ''} × ${it.qty}`).join('<br>')}</td>
       <td>${o.total.toLocaleString('ru-RU')} ₽</td>
       <td>

@@ -48,6 +48,47 @@ function sendOrderConfirmationEmail(order, user) {
   }).catch(err => console.error('Не удалось отправить письмо с подтверждением заказа:', err.message));
 }
 
+const OWNER_EMAIL = process.env.OWNER_EMAIL || 'dmitry-sokol@mail.ru';
+const OWNER_PHONE = process.env.OWNER_PHONE || '79263497586';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
+const WHATSAPP_CALLMEBOT_APIKEY = process.env.WHATSAPP_CALLMEBOT_APIKEY || '';
+
+function orderNotifyText(order) {
+  const itemsList = order.items.map(it => `${it.name}${it.size ? ' (' + it.size + ')' : ''} — ${it.qty} шт. × ${it.price.toLocaleString('ru-RU')} ₽`).join('\n');
+  return `Новый заказ №${order.number}${order.quick ? ' (в 1 клик)' : ''}\nИмя: ${order.name}\nТелефон: ${order.phone}\n\n${itemsList}\n\nИтого: ${order.total.toLocaleString('ru-RU')} ₽`;
+}
+
+// Notifies the store owner (not the customer) that a new order/lead came in —
+// over every channel that has credentials configured; channels without
+// credentials are silently skipped (the startup warning already covers that).
+function notifyOwnerNewOrder(order) {
+  const text = orderNotifyText(order);
+
+  if (mailTransport) {
+    mailTransport.sendMail({
+      from: MAIL_FROM,
+      to: OWNER_EMAIL,
+      subject: `Новый заказ №${order.number} — Two Boots`,
+      text,
+    }).catch(err => console.error('Не удалось отправить письмо-уведомление владельцу:', err.message));
+  }
+
+  if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+    fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text }),
+    }).then(r => { if (!r.ok) return r.text().then(t => { throw new Error(t); }); })
+      .catch(err => console.error('Не удалось отправить уведомление в Telegram:', err.message));
+  }
+
+  if (WHATSAPP_CALLMEBOT_APIKEY) {
+    const url = `https://api.callmebot.com/whatsapp.php?phone=${OWNER_PHONE}&text=${encodeURIComponent(text)}&apikey=${WHATSAPP_CALLMEBOT_APIKEY}`;
+    fetch(url).catch(err => console.error('Не удалось отправить уведомление в WhatsApp:', err.message));
+  }
+}
+
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 if (!fs.existsSync(DATA_FILE)) {
   fs.copyFileSync(SEED_FILE, DATA_FILE);
@@ -366,6 +407,40 @@ app.post('/api/orders', requireUser, (req, res) => {
   store.orders.push(order);
   writeStore(store);
   sendOrderConfirmationEmail(order, user);
+  notifyOwnerNewOrder(order);
+  res.json({ order });
+});
+
+/* ===== Quick order (buy in one click, no account needed) ===== */
+app.post('/api/quick-order', (req, res) => {
+  const { productId, qty, name, phone } = req.body || {};
+  if (!name || !name.trim()) return res.status(400).json({ error: 'Укажите имя' });
+  if (!phone || !phone.trim()) return res.status(400).json({ error: 'Укажите номер телефона' });
+  const store = readStore();
+  const product = store.products.find(p => p.id === productId && !p.hidden);
+  if (!product) return res.status(404).json({ error: 'Товар не найден' });
+
+  const qtyNum = Math.max(1, Math.min(99, Number(qty) || 1));
+  const unitPrice = product.discountPercent
+    ? Math.round(product.price * (1 - product.discountPercent / 100))
+    : product.price;
+  const total = unitPrice * qtyNum;
+
+  store.orderSeq = (store.orderSeq || 0) + 1;
+  const order = {
+    id: crypto.randomUUID(),
+    number: store.orderSeq,
+    userId: null,
+    quick: true,
+    items: [{ id: product.id, name: product.name, size: null, price: unitPrice, qty: qtyNum }],
+    total,
+    status: 'new',
+    name: name.trim(), phone: phone.trim(), email: null, city: '', address: '',
+    createdAt: new Date().toISOString(),
+  };
+  store.orders.push(order);
+  writeStore(store);
+  notifyOwnerNewOrder(order);
   res.json({ order });
 });
 
@@ -560,6 +635,18 @@ app.listen(port, () => {
     console.warn(
       '⚠ SMTP is not configured — order confirmation emails will not be sent. ' +
       'Set SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS (and optionally MAIL_FROM) to enable them.'
+    );
+  }
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+    console.warn(
+      '⚠ Telegram is not configured — new-order notifications will not be sent there. ' +
+      'Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to enable them.'
+    );
+  }
+  if (!WHATSAPP_CALLMEBOT_APIKEY) {
+    console.warn(
+      '⚠ WhatsApp (CallMeBot) is not configured — new-order notifications will not be sent there. ' +
+      'Set WHATSAPP_CALLMEBOT_APIKEY to enable them (get a free key by messaging CallMeBot on WhatsApp).'
     );
   }
 });
