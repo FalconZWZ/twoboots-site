@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const express = require('express');
 const session = require('express-session');
 const multer = require('multer');
+const nodemailer = require('nodemailer');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -16,6 +17,36 @@ const SEED_FILE = path.join(__dirname, 'data', 'seed.json');
 const ADMIN_USER = process.env.ADMIN_USER || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'changeme123';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'two-boots-dev-secret-change-me';
+
+const SMTP_HOST = process.env.SMTP_HOST || '';
+const SMTP_PORT = Number(process.env.SMTP_PORT) || 587;
+const SMTP_USER = process.env.SMTP_USER || '';
+const SMTP_PASS = process.env.SMTP_PASS || '';
+const MAIL_FROM = process.env.MAIL_FROM || 'Two Boots <no-reply@two-boots.ru>';
+
+const mailTransport = SMTP_HOST
+  ? nodemailer.createTransport({
+      host: SMTP_HOST,
+      port: SMTP_PORT,
+      secure: SMTP_PORT === 465,
+      auth: SMTP_USER ? { user: SMTP_USER, pass: SMTP_PASS } : undefined,
+    })
+  : null;
+
+function sendOrderConfirmationEmail(order, user) {
+  if (!mailTransport) return;
+  const itemsList = order.items.map(it => `${it.name}${it.size ? ' (' + it.size + ')' : ''} — ${it.qty} шт. × ${it.price.toLocaleString('ru-RU')} ₽`).join('\n');
+  const itemsHtml = order.items.map(it => `<tr><td style="padding:4px 8px;">${it.name}${it.size ? ' (' + it.size + ')' : ''}</td><td style="padding:4px 8px;">${it.qty}</td><td style="padding:4px 8px;">${it.price.toLocaleString('ru-RU')} ₽</td></tr>`).join('');
+  mailTransport.sendMail({
+    from: MAIL_FROM,
+    to: user.email,
+    subject: `Заказ №${order.number} принят — Two Boots`,
+    text: `Спасибо за заказ №${order.number}!\n\nВ ближайшее время с вами свяжется менеджер.\n\nСостав заказа:\n${itemsList}\n\nИтого: ${order.total.toLocaleString('ru-RU')} ₽`,
+    html: `<p>Спасибо за заказ <b>№${order.number}</b>!</p><p>В ближайшее время с вами свяжется менеджер.</p>
+      <table style="border-collapse:collapse;">${itemsHtml}</table>
+      <p><b>Итого: ${order.total.toLocaleString('ru-RU')} ₽</b></p>`,
+  }).catch(err => console.error('Не удалось отправить письмо с подтверждением заказа:', err.message));
+}
 
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 if (!fs.existsSync(DATA_FILE)) {
@@ -68,6 +99,10 @@ function roleFor(username) {
   }
   if (!store.users) { store.users = []; changed = true; }
   if (!store.orders) { store.orders = []; changed = true; }
+  if (!store.orderSeq) {
+    store.orderSeq = store.orders.reduce((max, o) => Math.max(max, o.number || 0), 0);
+    changed = true;
+  }
   if (changed) writeStore(store);
 }
 function slugify(text) {
@@ -224,7 +259,8 @@ app.post('/api/register', (req, res) => {
   const { email, password, name, phone, city, address } = req.body || {};
   if (!email || !EMAIL_RE.test(email)) return res.status(400).json({ error: 'Укажите корректный email' });
   if (!password || password.length < 6) return res.status(400).json({ error: 'Пароль должен быть не короче 6 символов' });
-  if (!name) return res.status(400).json({ error: 'Укажите ФИО' });
+  if (!name || !name.trim()) return res.status(400).json({ error: 'Укажите ФИО' });
+  if (!phone || !phone.trim()) return res.status(400).json({ error: 'Укажите номер телефона' });
   const store = readStore();
   const normalizedEmail = email.trim().toLowerCase();
   if (store.users.some(u => u.email.toLowerCase() === normalizedEmail)) {
@@ -270,6 +306,8 @@ app.get('/api/me', (req, res) => {
 
 app.put('/api/me', requireUser, (req, res) => {
   const { name, phone, city, address } = req.body || {};
+  if (name !== undefined && !name.trim()) return res.status(400).json({ error: 'Укажите ФИО' });
+  if (phone !== undefined && !phone.trim()) return res.status(400).json({ error: 'Укажите номер телефона' });
   const store = readStore();
   const user = store.users.find(u => u.id === req.session.userId);
   if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
@@ -296,6 +334,9 @@ app.post('/api/orders', requireUser, (req, res) => {
   const store = readStore();
   const user = store.users.find(u => u.id === req.session.userId);
   if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  if (!user.name || !user.name.trim() || !user.phone || !user.phone.trim() || !user.email) {
+    return res.status(400).json({ error: 'Заполните имя, телефон и email в профиле, чтобы оформить заказ' });
+  }
 
   const lines = [];
   let total = 0;
@@ -311,17 +352,20 @@ app.post('/api/orders', requireUser, (req, res) => {
   }
   if (lines.length === 0) return res.status(400).json({ error: 'Товары не найдены' });
 
+  store.orderSeq = (store.orderSeq || 0) + 1;
   const order = {
     id: crypto.randomUUID(),
+    number: store.orderSeq,
     userId: user.id,
     items: lines,
     total,
     status: 'new',
-    name: user.name, phone: user.phone, city: user.city, address: user.address,
+    name: user.name, phone: user.phone, email: user.email, city: user.city, address: user.address,
     createdAt: new Date().toISOString(),
   };
   store.orders.push(order);
   writeStore(store);
+  sendOrderConfirmationEmail(order, user);
   res.json({ order });
 });
 
@@ -510,6 +554,12 @@ app.listen(port, () => {
       '⚠ DATA_DIR is not set — data is stored inside the container and will be LOST on the next ' +
       'redeploy/restart (added admins, categories, products, uploaded photos, discounts). ' +
       'Attach a Volume in Railway and set DATA_DIR to its mount path (e.g. /data) to persist it.'
+    );
+  }
+  if (!mailTransport) {
+    console.warn(
+      '⚠ SMTP is not configured — order confirmation emails will not be sent. ' +
+      'Set SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS (and optionally MAIL_FROM) to enable them.'
     );
   }
 });
