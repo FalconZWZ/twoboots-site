@@ -66,6 +66,8 @@ function roleFor(username) {
       changed = true;
     }
   }
+  if (!store.users) { store.users = []; changed = true; }
+  if (!store.orders) { store.orders = []; changed = true; }
   if (changed) writeStore(store);
 }
 function slugify(text) {
@@ -116,6 +118,13 @@ function requireAdmin(req, res, next) {
 function requireSuperAdmin(req, res, next) {
   if (req.session && req.session.isAdmin && req.session.role === 'super') return next();
   res.status(403).json({ error: 'Только главный администратор может это делать' });
+}
+function requireUser(req, res, next) {
+  if (req.session && req.session.userId) return next();
+  res.status(401).json({ error: 'Войдите в личный кабинет' });
+}
+function safeUser(u) {
+  return { id: u.id, email: u.email, name: u.name, phone: u.phone, city: u.city, address: u.address };
 }
 
 /* ===== Public data API ===== */
@@ -206,6 +215,114 @@ app.delete('/api/admin/admins/:username', requireSuperAdmin, (req, res) => {
 app.get('/api/admin/data', requireAdmin, (req, res) => {
   const { categories, products } = readStore();
   res.json({ categories, products });
+});
+
+/* ===== Customer accounts ===== */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+app.post('/api/register', (req, res) => {
+  const { email, password, name, phone, city, address } = req.body || {};
+  if (!email || !EMAIL_RE.test(email)) return res.status(400).json({ error: 'Укажите корректный email' });
+  if (!password || password.length < 6) return res.status(400).json({ error: 'Пароль должен быть не короче 6 символов' });
+  if (!name) return res.status(400).json({ error: 'Укажите ФИО' });
+  const store = readStore();
+  const normalizedEmail = email.trim().toLowerCase();
+  if (store.users.some(u => u.email.toLowerCase() === normalizedEmail)) {
+    return res.status(400).json({ error: 'Пользователь с таким email уже зарегистрирован' });
+  }
+  const user = {
+    id: crypto.randomUUID(),
+    email: email.trim(),
+    passwordHash: hashPassword(password),
+    name, phone: phone || '', city: city || '', address: address || '',
+    createdAt: new Date().toISOString(),
+  };
+  store.users.push(user);
+  writeStore(store);
+  req.session.userId = user.id;
+  res.json({ user: safeUser(user) });
+});
+
+app.post('/api/login', (req, res) => {
+  const { email, password } = req.body || {};
+  const store = readStore();
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const user = store.users.find(u => u.email.toLowerCase() === normalizedEmail);
+  if (!user || !verifyPassword(password || '', user.passwordHash)) {
+    return res.status(401).json({ error: 'Неверный email или пароль' });
+  }
+  req.session.userId = user.id;
+  res.json({ user: safeUser(user) });
+});
+
+app.post('/api/logout', (req, res) => {
+  delete req.session.userId;
+  res.json({ ok: true });
+});
+
+app.get('/api/me', (req, res) => {
+  if (!req.session || !req.session.userId) return res.json({ loggedIn: false });
+  const store = readStore();
+  const user = store.users.find(u => u.id === req.session.userId);
+  if (!user) return res.json({ loggedIn: false });
+  res.json({ loggedIn: true, user: safeUser(user) });
+});
+
+app.put('/api/me', requireUser, (req, res) => {
+  const { name, phone, city, address } = req.body || {};
+  const store = readStore();
+  const user = store.users.find(u => u.id === req.session.userId);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  if (name !== undefined) user.name = name;
+  if (phone !== undefined) user.phone = phone;
+  if (city !== undefined) user.city = city;
+  if (address !== undefined) user.address = address;
+  writeStore(store);
+  res.json({ user: safeUser(user) });
+});
+
+/* ===== Orders ===== */
+app.get('/api/orders', requireUser, (req, res) => {
+  const store = readStore();
+  const orders = store.orders
+    .filter(o => o.userId === req.session.userId)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  res.json({ orders });
+});
+
+app.post('/api/orders', requireUser, (req, res) => {
+  const { items } = req.body || {};
+  if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'Корзина пуста' });
+  const store = readStore();
+  const user = store.users.find(u => u.id === req.session.userId);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+
+  const lines = [];
+  let total = 0;
+  for (const item of items) {
+    const product = store.products.find(p => p.id === item.id);
+    if (!product) continue;
+    const qty = Math.max(1, Math.min(99, Number(item.qty) || 1));
+    const unitPrice = product.discountPercent
+      ? Math.round(product.price * (1 - product.discountPercent / 100))
+      : product.price;
+    lines.push({ id: product.id, name: product.name, size: item.size || null, price: unitPrice, qty });
+    total += unitPrice * qty;
+  }
+  if (lines.length === 0) return res.status(400).json({ error: 'Товары не найдены' });
+
+  const order = {
+    id: crypto.randomUUID(),
+    userId: user.id,
+    items: lines,
+    total,
+    status: 'new',
+    name: user.name, phone: user.phone, city: user.city, address: user.address,
+    createdAt: new Date().toISOString(),
+  };
+  store.orders.push(order);
+  writeStore(store);
+  res.json({ order });
 });
 
 /* ===== Admin: categories ===== */
