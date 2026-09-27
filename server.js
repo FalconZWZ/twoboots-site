@@ -139,6 +139,17 @@ app.post('/api/admin/admins', requireAdmin, (req, res) => {
   writeStore(store);
   res.json({ admins: store.admins.map(a => a.username) });
 });
+app.put('/api/admin/admins/:username/password', requireAdmin, (req, res) => {
+  const store = readStore();
+  const { username } = req.params;
+  const { password } = req.body || {};
+  if (!password || password.length < 6) return res.status(400).json({ error: 'Пароль должен быть не короче 6 символов' });
+  const admin = store.admins.find(a => a.username === username);
+  if (!admin) return res.status(404).json({ error: 'Администратор не найден' });
+  admin.passwordHash = hashPassword(password);
+  writeStore(store);
+  res.json({ ok: true });
+});
 app.delete('/api/admin/admins/:username', requireAdmin, (req, res) => {
   const store = readStore();
   const { username } = req.params;
