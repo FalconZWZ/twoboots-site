@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Two Boots — Админка</title>
+<style>
+  :root{
+    --bg:#F1F5F7; --surface:#fff; --ink:#0F161D; --ink-soft:#51606B; --border:#D7E0E5;
+    --accent:#FF4B2B; --accent-hover:#E63E20; --radius:12px;
+  }
+  *,*::before,*::after{box-sizing:border-box;}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;background:var(--bg);color:var(--ink);}
+  .wrap{max-width:960px;margin:0 auto;padding:32px 20px 80px;}
+  h1{font-size:1.5rem;margin:0 0 24px;}
+  h2{font-size:1.15rem;margin:0 0 14px;}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:24px;}
+  label{display:block;font-size:.82rem;font-weight:600;color:var(--ink-soft);margin-bottom:6px;}
+  input,select,textarea{width:100%;padding:9px 12px;border-radius:8px;border:1px solid var(--border);font:inherit;background:#fff;color:var(--ink);}
+  textarea{min-height:70px;resize:vertical;}
+  .field{margin-bottom:12px;}
+  .row{display:flex;gap:12px;}
+  .row .field{flex:1;}
+  button{font:inherit;cursor:pointer;border-radius:999px;border:1px solid transparent;padding:9px 18px;font-weight:600;}
+  .btn-primary{background:var(--accent);color:#fff;}
+  .btn-primary:hover{background:var(--accent-hover);}
+  .btn-ghost{background:transparent;border-color:var(--border);color:var(--ink);}
+  .btn-danger{background:#fff;border-color:#e0433a;color:#e0433a;}
+  .btn-sm{padding:5px 12px;font-size:.82rem;}
+  table{width:100%;border-collapse:collapse;font-size:.88rem;}
+  th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--border);vertical-align:middle;}
+  th{color:var(--ink-soft);font-weight:600;font-size:.78rem;text-transform:uppercase;}
+  .thumb{width:44px;height:44px;object-fit:cover;border-radius:6px;background:#eee;display:block;}
+  .specs-row{display:flex;gap:8px;margin-bottom:8px;align-items:center;}
+  .specs-row input{flex:1;}
+  .top-bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;}
+  .msg{padding:10px 14px;border-radius:8px;margin-bottom:16px;font-size:.88rem;}
+  .msg.error{background:#fde2de;color:#8a2418;}
+  .msg.ok{background:#dff3e0;color:#1c5e26;}
+  #loginScreen{max-width:360px;margin:80px auto;}
+  [hidden]{display:none!important;}
+  .cat-pill{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:999px;padding:4px 6px 4px 14px;margin:0 8px 8px 0;font-size:.85rem;}
+</style>
+</head>
+<body>
+
+<div id="loginScreen" class="card">
+  <h1>Вход в админку</h1>
+  <div id="loginMsg"></div>
+  <div class="field"><label>Логин</label><input id="loginUser" autocomplete="username"></div>
+  <div class="field"><label>Пароль</label><input id="loginPass" type="password" autocomplete="current-password"></div>
+  <button class="btn-primary" id="loginBtn">Войти</button>
+</div>
+
+<div id="adminScreen" class="wrap" hidden>
+  <div class="top-bar">
+    <h1>Two Boots — Админка</h1>
+    <div>
+      <a href="/" class="btn-ghost" style="text-decoration:none;display:inline-block;padding:9px 18px;border:1px solid var(--border);border-radius:999px;">На сайт</a>
+      <button class="btn-ghost" id="logoutBtn">Выйти</button>
+    </div>
+  </div>
+  <div id="globalMsg"></div>
+
+  <div class="card">
+    <h2>Категории</h2>
+    <div id="categoriesList"></div>
+    <form id="catForm" class="row" style="margin-top:12px;">
+      <div class="field"><label>ID (латиницей)</label><input id="catId" placeholder="new-cat" required></div>
+      <div class="field"><label>Название</label><input id="catLabel" placeholder="Новая категория" required></div>
+      <div class="field" style="flex:none;align-self:flex-end;"><button class="btn-primary" type="submit">Добавить</button></div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Товары</h2>
+    <table>
+      <thead><tr><th></th><th>Название</th><th>Категория</th><th>Цена</th><th></th></tr></thead>
+      <tbody id="productsBody"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2 id="formTitle">Добавить товар</h2>
+    <form id="productForm">
+      <input type="hidden" id="pId">
+      <div class="row">
+        <div class="field"><label>Категория</label><select id="pCat" required></select></div>
+        <div class="field"><label>Название</label><input id="pName" required></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>Цена, ₽</label><input id="pPrice" type="number" min="0" required></div>
+        <div class="field"><label>Цвет (необязательно)</label><input id="pColor"></div>
+        <div class="field"><label>Размер (необязательно)</label><input id="pSize"></div>
+      </div>
+      <div class="field"><label>Описание</label><textarea id="pDesc"></textarea></div>
+      <div class="field">
+        <label>Характеристики</label>
+        <div id="specsList"></div>
+        <button type="button" class="btn-ghost btn-sm" id="addSpecBtn">+ характеристика</button>
+      </div>
+      <div class="field"><label>Фото</label><input id="pImage" type="file" accept="image/*"></div>
+      <div class="field" id="currentImgWrap" hidden><img id="currentImg" class="thumb" style="width:80px;height:80px;"></div>
+      <button class="btn-primary" type="submit">Сохранить</button>
+      <button class="btn-ghost" type="button" id="cancelEditBtn" hidden>Отменить редактирование</button>
+    </form>
+  </div>
+</div>
+
+<script>
+let STATE = { categories: {}, products: [] };
+
+function el(id){ return document.getElementById(id); }
+function showMsg(target, text, type){
+  target.innerHTML = text ? `<div class="msg ${type}">${text}</div>` : '';
+}
+
+async function api(url, opts){
+  const res = await fetch(url, opts);
+  let data = null;
+  try { data = await res.json(); } catch(e) {}
+  if(!res.ok) throw new Error((data && data.error) || 'Ошибка запроса');
+  return data;
+}
+
+async function checkSession(){
+  const { loggedIn } = await api('/admin/session');
+  if(loggedIn){
+    el('loginScreen').hidden = true;
+    el('adminScreen').hidden = false;
+    await loadAll();
+  } else {
+    el('loginScreen').hidden = false;
+    el('adminScreen').hidden = true;
+  }
+}
+
+el('loginBtn').addEventListener('click', async () => {
+  try{
+    await api('/admin/login', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ username: el('loginUser').value, password: el('loginPass').value })
+    });
+    showMsg(el('loginMsg'), '', '');
+    checkSession();
+  }catch(e){
+    showMsg(el('loginMsg'), e.message, 'error');
+  }
+});
+
+el('logoutBtn').addEventListener('click', async () => {
+  await api('/admin/logout', { method:'POST' });
+  checkSession();
+});
+
+async function loadAll(){
+  const data = await api('/api/data');
+  STATE = data;
+  renderCategories();
+  renderCatSelect();
+  renderProducts();
+}
+
+function renderCategories(){
+  const wrap = el('categoriesList');
+  wrap.innerHTML = Object.entries(STATE.categories).map(([id,label]) => `
+    <span class="cat-pill">${label} <small style="color:var(--ink-soft)">(${id})</small>
+      <button type="button" class="btn-ghost btn-sm" data-del-cat="${id}" title="Удалить">×</button>
+    </span>
+  `).join('') || '<p style="color:var(--ink-soft)">Категорий пока нет.</p>';
+
+  wrap.querySelectorAll('[data-del-cat]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if(!confirm('Удалить категорию "' + btn.getAttribute('data-del-cat') + '"?')) return;
+      try{
+        STATE = await api('/api/admin/categories/' + btn.getAttribute('data-del-cat'), { method:'DELETE' });
+        showMsg(el('globalMsg'), 'Категория удалена', 'ok');
+        renderCategories(); renderCatSelect(); renderProducts();
+      }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+    });
+  });
+}
+
+function renderCatSelect(){
+  el('pCat').innerHTML = Object.entries(STATE.categories).map(([id,label]) => `<option value="${id}">${label}</option>`).join('');
+}
+
+el('catForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try{
+    STATE = await api('/api/admin/categories', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ id: el('catId').value, label: el('catLabel').value })
+    });
+    el('catForm').reset();
+    showMsg(el('globalMsg'), 'Категория добавлена', 'ok');
+    renderCategories(); renderCatSelect();
+  }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+});
+
+function renderProducts(){
+  el('productsBody').innerHTML = STATE.products.map(p => `
+    <tr>
+      <td>${p.img ? `<img class="thumb" src="${p.img}">` : ''}</td>
+      <td>${p.name}${p.size ? ' · ' + p.size : ''}</td>
+      <td>${STATE.categories[p.cat] || p.cat}</td>
+      <td>${p.price.toLocaleString('ru-RU')} ₽</td>
+      <td style="white-space:nowrap;">
+        <button type="button" class="btn-ghost btn-sm" data-edit="${p.id}">Изменить</button>
+        <button type="button" class="btn-danger btn-sm" data-del="${p.id}">Удалить</button>
+      </td>
+    </tr>
+  `).join('') || '<tr><td colspan="5" style="color:var(--ink-soft)">Товаров пока нет.</td></tr>';
+
+  el('productsBody').querySelectorAll('[data-edit]').forEach(btn => {
+    btn.addEventListener('click', () => startEdit(btn.getAttribute('data-edit')));
+  });
+  el('productsBody').querySelectorAll('[data-del]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if(!confirm('Удалить товар?')) return;
+      try{
+        await api('/api/admin/products/' + btn.getAttribute('data-del'), { method:'DELETE' });
+        showMsg(el('globalMsg'), 'Товар удалён', 'ok');
+        await loadAll();
+      }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+    });
+  });
+}
+
+function specRow(k, v){
+  const row = document.createElement('div');
+  row.className = 'specs-row';
+  row.innerHTML = `<input placeholder="Параметр" value="${k||''}" class="spec-k">
+    <input placeholder="Значение" value="${v||''}" class="spec-v">
+    <button type="button" class="btn-ghost btn-sm spec-remove">×</button>`;
+  row.querySelector('.spec-remove').addEventListener('click', () => row.remove());
+  return row;
+}
+el('addSpecBtn').addEventListener('click', () => el('specsList').appendChild(specRow('','')));
+
+function resetForm(){
+  el('productForm').reset();
+  el('pId').value = '';
+  el('specsList').innerHTML = '';
+  el('currentImgWrap').hidden = true;
+  el('formTitle').textContent = 'Добавить товар';
+  el('cancelEditBtn').hidden = true;
+}
+el('cancelEditBtn').addEventListener('click', resetForm);
+
+function startEdit(id){
+  const p = STATE.products.find(x => x.id === id);
+  if(!p) return;
+  el('pId').value = p.id;
+  el('pCat').value = p.cat;
+  el('pName').value = p.name;
+  el('pPrice').value = p.price;
+  el('pColor').value = p.color || '';
+  el('pSize').value = p.size || '';
+  el('pDesc').value = p.desc || '';
+  el('specsList').innerHTML = '';
+  (p.specs || []).forEach(([k,v]) => el('specsList').appendChild(specRow(k,v)));
+  if(p.img){ el('currentImg').src = p.img; el('currentImgWrap').hidden = false; } else { el('currentImgWrap').hidden = true; }
+  el('formTitle').textContent = 'Изменить товар';
+  el('cancelEditBtn').hidden = false;
+  window.scrollTo({top: document.body.scrollHeight, behavior:'smooth'});
+}
+
+el('productForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const specs = Array.from(el('specsList').querySelectorAll('.specs-row')).map(row => [
+    row.querySelector('.spec-k').value.trim(),
+    row.querySelector('.spec-v').value.trim(),
+  ]).filter(([k,v]) => k || v);
+
+  const fd = new FormData();
+  fd.append('cat', el('pCat').value);
+  fd.append('name', el('pName').value);
+  fd.append('price', el('pPrice').value);
+  fd.append('color', el('pColor').value);
+  fd.append('size', el('pSize').value);
+  fd.append('desc', el('pDesc').value);
+  fd.append('specs', JSON.stringify(specs));
+  if(el('pImage').files[0]) fd.append('image', el('pImage').files[0]);
+
+  const id = el('pId').value;
+  try{
+    if(id){
+      await api('/api/admin/products/' + id, { method:'PUT', body: fd });
+      showMsg(el('globalMsg'), 'Товар обновлён', 'ok');
+    } else {
+      await api('/api/admin/products', { method:'POST', body: fd });
+      showMsg(el('globalMsg'), 'Товар добавлен', 'ok');
+    }
+    resetForm();
+    await loadAll();
+  }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+});
+
+checkSession();
+</script>
+</body>
+</html>
