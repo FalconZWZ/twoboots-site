@@ -41,14 +41,32 @@ function verifyPassword(password, stored) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+// Usernames that are always treated as the top-level "super admin" role,
+// regardless of case. Only super admins can add/remove other admins.
+const SUPER_ADMIN_USERNAMES = ['falconzzz', 'admin'];
+function roleFor(username) {
+  return SUPER_ADMIN_USERNAMES.includes(String(username).toLowerCase()) ? 'super' : 'admin';
+}
+
 // Migrate/seed the admin list from env vars if the store has none yet
-// (fresh install, or an older store.json created before multi-admin support).
+// (fresh install, or an older store.json created before multi-admin support),
+// and backfill a role on any admin that predates the super-admin split.
 {
   const store = readStore();
+  let changed = false;
   if (!store.admins || store.admins.length === 0) {
-    store.admins = [{ username: ADMIN_USER, passwordHash: hashPassword(ADMIN_PASSWORD) }];
-    writeStore(store);
+    store.admins = [{ username: ADMIN_USER, passwordHash: hashPassword(ADMIN_PASSWORD), role: 'super' }];
+    changed = true;
+  } else {
+    store.admins.forEach(a => {
+      if (!a.role) { a.role = roleFor(a.username); changed = true; }
+    });
+    if (!store.admins.some(a => a.role === 'super')) {
+      store.admins[0].role = 'super';
+      changed = true;
+    }
   }
+  if (changed) writeStore(store);
 }
 function slugify(text) {
   const translit = {
@@ -95,6 +113,10 @@ function requireAdmin(req, res, next) {
   if (req.session && req.session.isAdmin) return next();
   res.status(401).json({ error: 'unauthorized' });
 }
+function requireSuperAdmin(req, res, next) {
+  if (req.session && req.session.isAdmin && req.session.role === 'super') return next();
+  res.status(403).json({ error: 'Только главный администратор может это делать' });
+}
 
 /* ===== Public data API ===== */
 app.get('/api/data', (req, res) => {
@@ -110,6 +132,7 @@ app.post('/admin/login', (req, res) => {
   if (admin && verifyPassword(password || '', admin.passwordHash)) {
     req.session.isAdmin = true;
     req.session.username = username;
+    req.session.role = admin.role;
     return res.json({ ok: true });
   }
   res.status(401).json({ error: 'Неверный логин или пароль' });
@@ -118,7 +141,11 @@ app.post('/admin/logout', (req, res) => {
   req.session.destroy(() => res.json({ ok: true }));
 });
 app.get('/admin/session', (req, res) => {
-  res.json({ loggedIn: !!(req.session && req.session.isAdmin), username: req.session && req.session.username });
+  res.json({
+    loggedIn: !!(req.session && req.session.isAdmin),
+    username: req.session && req.session.username,
+    role: req.session && req.session.role,
+  });
 });
 app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, 'admin.html'));
@@ -127,22 +154,29 @@ app.get('/admin', (req, res) => {
 /* ===== Admin: manage admin accounts ===== */
 app.get('/api/admin/admins', requireAdmin, (req, res) => {
   const store = readStore();
-  res.json({ admins: store.admins.map(a => a.username), me: req.session.username });
+  res.json({
+    admins: store.admins.map(a => ({ username: a.username, role: a.role })),
+    me: req.session.username,
+    isSuper: req.session.role === 'super',
+  });
 });
-app.post('/api/admin/admins', requireAdmin, (req, res) => {
+app.post('/api/admin/admins', requireSuperAdmin, (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: 'Логин и пароль обязательны' });
   if (password.length < 6) return res.status(400).json({ error: 'Пароль должен быть не короче 6 символов' });
   const store = readStore();
   if (store.admins.some(a => a.username === username)) return res.status(400).json({ error: 'Такой логин уже существует' });
-  store.admins.push({ username, passwordHash: hashPassword(password) });
+  store.admins.push({ username, passwordHash: hashPassword(password), role: roleFor(username) });
   writeStore(store);
-  res.json({ admins: store.admins.map(a => a.username) });
+  res.json({ admins: store.admins.map(a => ({ username: a.username, role: a.role })) });
 });
 app.put('/api/admin/admins/:username/password', requireAdmin, (req, res) => {
   const store = readStore();
   const { username } = req.params;
   const { password } = req.body || {};
+  if (req.session.username !== username && req.session.role !== 'super') {
+    return res.status(403).json({ error: 'Можно менять только свой пароль' });
+  }
   if (!password || password.length < 6) return res.status(400).json({ error: 'Пароль должен быть не короче 6 символов' });
   const admin = store.admins.find(a => a.username === username);
   if (!admin) return res.status(404).json({ error: 'Администратор не найден' });
@@ -150,12 +184,15 @@ app.put('/api/admin/admins/:username/password', requireAdmin, (req, res) => {
   writeStore(store);
   res.json({ ok: true });
 });
-app.delete('/api/admin/admins/:username', requireAdmin, (req, res) => {
+app.delete('/api/admin/admins/:username', requireSuperAdmin, (req, res) => {
   const store = readStore();
   const { username } = req.params;
   if (store.admins.length <= 1) return res.status(400).json({ error: 'Нельзя удалить последнего администратора' });
   const idx = store.admins.findIndex(a => a.username === username);
   if (idx === -1) return res.status(404).json({ error: 'Администратор не найден' });
+  if (store.admins[idx].role === 'super' && store.admins.filter(a => a.role === 'super').length <= 1) {
+    return res.status(400).json({ error: 'Нельзя удалить последнего главного администратора' });
+  }
   store.admins.splice(idx, 1);
   writeStore(store);
   if (req.session.username === username) {
