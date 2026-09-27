@@ -149,11 +149,13 @@ async function api(url, opts){
 }
 
 let ME = null;
+let IS_SUPER = false;
 
 async function checkSession(){
-  const { loggedIn, username } = await api('/admin/session');
+  const { loggedIn, username, role } = await api('/admin/session');
   if(loggedIn){
     ME = username;
+    IS_SUPER = role === 'super';
     el('meLabel').textContent = username;
     el('loginScreen').hidden = true;
     el('adminScreen').hidden = false;
@@ -194,16 +196,22 @@ async function loadAll(){
 async function loadAdmins(){
   const { admins } = await api('/api/admin/admins');
   renderAdmins(admins);
+  el('adminForm').hidden = !IS_SUPER;
 }
 
 function renderAdmins(admins){
   const wrap = el('adminsList');
-  wrap.innerHTML = admins.map(username => `
-    <span class="cat-pill">${username}${username===ME ? ' <small style="color:var(--ink-soft)">(вы)</small>' : ''}
-      <button type="button" class="btn-ghost btn-sm" data-pwd-admin="${username}" title="Сменить пароль">Пароль</button>
-      ${admins.length > 1 ? `<button type="button" class="btn-ghost btn-sm" data-del-admin="${username}" title="Удалить">×</button>` : ''}
-    </span>
-  `).join('');
+  wrap.innerHTML = admins.map(({username, role}) => {
+    const isMe = username === ME;
+    const canChangePwd = isMe || IS_SUPER;
+    const canDelete = IS_SUPER && admins.length > 1;
+    return `
+    <span class="cat-pill">${username}
+      <small style="color:var(--ink-soft)">${role === 'super' ? '(главный)' : ''}${isMe ? ' (вы)' : ''}</small>
+      ${canChangePwd ? `<button type="button" class="btn-ghost btn-sm" data-pwd-admin="${username}" title="Сменить пароль">Пароль</button>` : ''}
+      ${canDelete ? `<button type="button" class="btn-ghost btn-sm" data-del-admin="${username}" title="Удалить">×</button>` : ''}
+    </span>`;
+  }).join('');
 
   wrap.querySelectorAll('[data-pwd-admin]').forEach(btn => {
     btn.addEventListener('click', async () => {
