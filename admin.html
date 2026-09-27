@@ -185,10 +185,25 @@ function renderAdmins(admins){
   const wrap = el('adminsList');
   wrap.innerHTML = admins.map(username => `
     <span class="cat-pill">${username}${username===ME ? ' <small style="color:var(--ink-soft)">(вы)</small>' : ''}
+      <button type="button" class="btn-ghost btn-sm" data-pwd-admin="${username}" title="Сменить пароль">Пароль</button>
       ${admins.length > 1 ? `<button type="button" class="btn-ghost btn-sm" data-del-admin="${username}" title="Удалить">×</button>` : ''}
     </span>
   `).join('');
 
+  wrap.querySelectorAll('[data-pwd-admin]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const username = btn.getAttribute('data-pwd-admin');
+      const password = prompt('Новый пароль для "' + username + '" (мин. 6 символов):');
+      if(password === null) return;
+      try{
+        await api('/api/admin/admins/' + encodeURIComponent(username) + '/password', {
+          method:'PUT', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ password })
+        });
+        showMsg(el('globalMsg'), 'Пароль обновлён', 'ok');
+      }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+    });
+  });
   wrap.querySelectorAll('[data-del-admin]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const username = btn.getAttribute('data-del-admin');
