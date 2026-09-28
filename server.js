@@ -8,6 +8,11 @@ const multer = require('multer');
 const nodemailer = require('nodemailer');
 const { rateLimit } = require('express-rate-limit');
 const archiver = require('archiver');
+// Optional: if the native image library fails to load, uploads are simply kept as they are.
+let sharp = null;
+try { sharp = require('sharp'); } catch (err) {
+  console.warn('⚠ sharp не загрузился — загружаемые фото не будут сжиматься:', err.message);
+}
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -267,7 +272,7 @@ const upload = multer({
       cb(null, unique + path.extname(file.originalname).toLowerCase());
     },
   }),
-  limits: { fileSize: 8 * 1024 * 1024 },
+  limits: { fileSize: 20 * 1024 * 1024 }, // phone photos are big; they're shrunk right after upload
   fileFilter: (req, file, cb) => {
     if (/^image\//.test(file.mimetype)) cb(null, true);
     else cb(new Error('Только изображения'));
@@ -305,11 +310,12 @@ const contactLimiter = limiter(5, 15, 'Слишком много сообщен�
 const promoLimiter = limiter(20, 15, 'Слишком много попыток ввода промокода. Попробуйте позже.');
 const resetLimiter = limiter(5, 60, 'Слишком много запросов на восстановление пароля. Попробуйте позже.');
 
-app.use('/uploads', express.static(UPLOADS_DIR));
+// Uploaded files get a unique name each time, so browsers may keep them for a month.
+app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '30d', immutable: true }));
 // Only the public assets are served — never the repo root itself, which holds server.js,
 // package.json, data/ and (when DATA_DIR is unset) data-runtime/store.json.
 // Everything else, "/" and /index.html included, reaches the SPA fallback below.
-app.use('/images', express.static(path.join(__dirname, 'images')));
+app.use('/images', express.static(path.join(__dirname, 'images'), { maxAge: '1d' }));
 const PUBLIC_ROOT_FILES = ['favicon.svg', 'robots.txt', 'yandex_1c7e02c88165d0f5.html'];
 PUBLIC_ROOT_FILES.forEach(file => {
   app.get('/' + file, (req, res) => res.sendFile(path.join(__dirname, file)));
@@ -1058,7 +1064,76 @@ function parseProductBody(body) {
   };
 }
 
-app.post('/api/admin/products', requireAdmin, upload.single('image'), (req, res) => {
+/* ===== Photo optimisation ===== */
+// Phone photos arrive at 3–8 MB and 4000px; the site never shows them larger than ~600px.
+// Every upload becomes a JPEG no bigger than IMAGE_MAX_SIDE, EXIF-rotated, transparency on white.
+const IMAGE_MAX_SIDE = 1200;
+const IMAGE_OK_BYTES = 400 * 1024;
+
+// Returns the filename to store: the optimised JPEG, or the original if it can't be processed
+// (unsupported format, sharp missing) or if re-encoding a JPEG wouldn't make it smaller.
+async function optimizeImage(filename) {
+  if (!sharp) return filename;
+  const src = path.join(UPLOADS_DIR, filename);
+  const outName = path.basename(filename, path.extname(filename)) + '.jpg';
+  const tmp = path.join(UPLOADS_DIR, outName + '.tmp');
+  try {
+    await sharp(src)
+      .rotate()
+      .resize(IMAGE_MAX_SIDE, IMAGE_MAX_SIDE, { fit: 'inside', withoutEnlargement: true })
+      .flatten({ background: '#ffffff' })
+      .jpeg({ quality: 82, mozjpeg: true })
+      .toFile(tmp);
+    if (outName === filename && fs.statSync(tmp).size >= fs.statSync(src).size) {
+      fs.unlinkSync(tmp);
+      return filename;
+    }
+    fs.renameSync(tmp, path.join(UPLOADS_DIR, outName));
+    if (outName !== filename) fs.unlinkSync(src);
+    return outName;
+  } catch (err) {
+    console.error(`Не удалось сжать фото ${filename}:`, err.message);
+    fs.rmSync(tmp, { force: true });
+    return filename;
+  }
+}
+
+// One-off pass over photos uploaded before optimisation existed. Each product is re-read and
+// written right after its own conversion, so concurrent admin edits aren't overwritten.
+async function optimizeExistingUploads() {
+  const marker = path.join(DATA_DIR, '.uploads-optimized-v1');
+  if (!sharp || fs.existsSync(marker)) return;
+  let saved = 0, count = 0;
+  for (const p of readStore().products) {
+    if (!p.img || !p.img.startsWith('/uploads/')) continue;
+    const name = path.basename(p.img);
+    const file = path.join(UPLOADS_DIR, name);
+    if (!fs.existsSync(file)) continue;
+    const before = fs.statSync(file).size;
+    let big = before > IMAGE_OK_BYTES || !/\.jpe?g$/i.test(name);
+    if (!big) {
+      try {
+        const { width, height } = await sharp(file).metadata();
+        big = width > IMAGE_MAX_SIDE || height > IMAGE_MAX_SIDE;
+      } catch (e) { continue; }
+    }
+    if (!big) continue;
+    const newName = await optimizeImage(name);
+    if (newName === name && fs.statSync(file).size === before) continue;
+    const store = readStore();
+    store.products.forEach(x => { if (x.img === p.img) x.img = '/uploads/' + newName; });
+    writeStore(store);
+    count++;
+    saved += before - fs.statSync(path.join(UPLOADS_DIR, newName)).size;
+  }
+  fs.writeFileSync(marker, new Date().toISOString());
+  if (count) console.log(`Сжато ранее загруженных фото: ${count}, освобождено ${Math.round(saved / 1024 / 1024 * 10) / 10} МБ`);
+}
+setTimeout(() => optimizeExistingUploads().catch(err => console.error('Сжатие старых фото:', err.message)), 5000);
+
+app.post('/api/admin/products', requireAdmin, upload.single('image'), async (req, res) => {
+  // Optimise before reading the store: nothing awaits after that, so no concurrent write is lost.
+  const imageName = req.file ? await optimizeImage(req.file.filename) : null;
   const store = readStore();
   const data = parseProductBody(req.body);
   if (!data.cat || !store.categories[data.cat]) return res.status(400).json({ error: 'Укажите существующую категорию' });
@@ -1070,14 +1145,15 @@ app.post('/api/admin/products', requireAdmin, upload.single('image'), (req, res)
   const product = { id, ...data };
   if (!product.color) delete product.color;
   if (!product.size) delete product.size;
-  if (req.file) product.img = '/uploads/' + req.file.filename;
+  if (imageName) product.img = '/uploads/' + imageName;
 
   store.products.push(product);
   writeStore(store);
   res.json(product);
 });
 
-app.put('/api/admin/products/:id', requireAdmin, upload.single('image'), (req, res) => {
+app.put('/api/admin/products/:id', requireAdmin, upload.single('image'), async (req, res) => {
+  const imageName = req.file ? await optimizeImage(req.file.filename) : null;
   const store = readStore();
   const idx = store.products.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Товар не найден' });
@@ -1089,12 +1165,12 @@ app.put('/api/admin/products/:id', requireAdmin, upload.single('image'), (req, r
   if (!data.color) delete updated.color;
   if (!data.size) delete updated.size;
 
-  if (req.file) {
+  if (imageName) {
     if (existing.img && existing.img.startsWith('/uploads/')) {
       const oldPath = path.join(UPLOADS_DIR, path.basename(existing.img));
       fs.unlink(oldPath, () => {});
     }
-    updated.img = '/uploads/' + req.file.filename;
+    updated.img = '/uploads/' + imageName;
   }
 
   store.products[idx] = updated;

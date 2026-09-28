@@ -755,7 +755,7 @@ function updateCartUI(){
     const p = productById(l.id);
     const key = lineKey(l.id, l.size);
     return `<div class="cart-line">
-      <div class="thumb">${p.img ? `<img src="${p.img}" alt="${p.name}" style="width:100%;height:100%;object-fit:cover;border-radius:10px;">` : catIcon(p.cat)}</div>
+      <div class="thumb">${p.img ? `<img src="${p.img}" alt="${p.name}" loading="lazy" decoding="async" style="width:100%;height:100%;object-fit:cover;border-radius:10px;">` : catIcon(p.cat)}</div>
       <div class="info">
         <h5>${p.name}</h5>
         <div class="row"><span>${l.qty} × ${fmt(l.price)} ₽</span><a class="remove" data-remove="${key}">Удалить</a></div>
@@ -886,7 +886,7 @@ function productCard(p){
       <div class="product-media">
         ${hasDiscount ? `<span class="discount-badge">−${p.discountPercent}%</span>` : ''}
         ${STOCK_LABEL[p.stock] ? `<span class="stock-badge ${p.stock}">${STOCK_LABEL[p.stock]}</span>` : ''}
-        ${p.img ? `<img src="${p.img}" alt="${p.name}" style="width:100%;height:100%;object-fit:cover;">` : catIcon(p.cat)}
+        ${p.img ? `<img src="${p.img}" alt="${p.name}" loading="lazy" decoding="async" style="width:100%;height:100%;object-fit:cover;">` : catIcon(p.cat)}
       </div>
     </a>
     <div class="product-body">
