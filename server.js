@@ -295,8 +295,14 @@ const contactLimiter = limiter(5, 15, 'Слишком много сообщен�
 const resetLimiter = limiter(5, 60, 'Слишком много запросов на восстановление пароля. Попробуйте позже.');
 
 app.use('/uploads', express.static(UPLOADS_DIR));
-// index: false — "/" must reach the SPA fallback below, which fills in per-page SEO tags.
-app.use(express.static(__dirname, { index: false }));
+// Only the public assets are served — never the repo root itself, which holds server.js,
+// package.json, data/ and (when DATA_DIR is unset) data-runtime/store.json.
+// Everything else, "/" and /index.html included, reaches the SPA fallback below.
+app.use('/images', express.static(path.join(__dirname, 'images')));
+const PUBLIC_ROOT_FILES = ['favicon.svg', 'robots.txt', 'yandex_1c7e02c88165d0f5.html'];
+PUBLIC_ROOT_FILES.forEach(file => {
+  app.get('/' + file, (req, res) => res.sendFile(path.join(__dirname, file)));
+});
 
 function requireAdmin(req, res, next) {
   if (req.session && req.session.isAdmin) return next();
