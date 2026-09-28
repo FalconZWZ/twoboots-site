@@ -446,6 +446,20 @@ app.post('/api/orders', requireUser, (req, res) => {
   res.json({ order });
 });
 
+const CUSTOMER_CANCELLABLE_STATUSES = ['new', 'processing'];
+
+app.patch('/api/orders/:id/cancel', requireUser, (req, res) => {
+  const store = readStore();
+  const order = store.orders.find(o => o.id === req.params.id && o.userId === req.session.userId);
+  if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+  if (!CUSTOMER_CANCELLABLE_STATUSES.includes(order.status)) {
+    return res.status(400).json({ error: 'Этот заказ уже нельзя отменить' });
+  }
+  order.status = 'cancelled';
+  writeStore(store);
+  res.json({ order });
+});
+
 /* ===== Quick order (buy in one click, no account needed) ===== */
 app.post('/api/quick-order', (req, res) => {
   const { productId, qty, name, phone } = req.body || {};
