@@ -102,6 +102,10 @@
       <div class="field" style="flex:none;align-self:flex-end;"><button type="button" class="btn-ghost btn-sm" id="bulkClearDiscountBtn">Сбросить скидку</button></div>
       <div class="field" style="flex:none;align-self:flex-end;"><button type="button" class="btn-ghost btn-sm" id="bulkHideBtn">Скрыть выбранные</button></div>
       <div class="field" style="flex:none;align-self:flex-end;"><button type="button" class="btn-ghost btn-sm" id="bulkShowBtn">Показать выбранные</button></div>
+      <div class="field" style="flex:none;width:160px;"><label>Наличие (для выбранных)</label><select id="bulkStock">
+        <option value="">В наличии</option><option value="order">Под заказ</option><option value="out">Нет в наличии</option>
+      </select></div>
+      <div class="field" style="flex:none;align-self:flex-end;"><button type="button" class="btn-ghost btn-sm" id="bulkStockBtn">Применить наличие</button></div>
     </div>
     <table>
       <thead><tr><th><input type="checkbox" id="selectAllChk"></th><th></th><th>Название</th><th>Категория</th><th>Цена</th><th>Скидка</th><th>Статус</th><th></th></tr></thead>
@@ -124,6 +128,9 @@
       </div>
       <div class="row">
         <div class="field" style="flex:none;width:160px;"><label>Скидка, % (0 — нет)</label><input id="pDiscount" type="number" min="0" max="95" value="0"></div>
+        <div class="field" style="flex:none;width:180px;"><label>Наличие</label><select id="pStock">
+          <option value="">В наличии</option><option value="order">Под заказ</option><option value="out">Нет в наличии</option>
+        </select></div>
         <div class="field" style="flex:none;align-self:center;padding-top:14px;">
           <label style="display:flex;align-items:center;gap:8px;font-weight:600;color:var(--ink);">
             <input type="checkbox" id="pHidden" style="width:auto;"> Скрыть от покупателей
@@ -373,7 +380,7 @@ function renderProducts(){
       <td>${STATE.categories[p.cat] || p.cat}</td>
       <td>${p.discountPercent ? `<span class="price-old-admin" style="color:var(--ink-soft);text-decoration:line-through;">${p.price.toLocaleString('ru-RU')} ₽</span> ${Math.round(p.price*(1-p.discountPercent/100)).toLocaleString('ru-RU')} ₽` : p.price.toLocaleString('ru-RU') + ' ₽'}</td>
       <td>${p.discountPercent ? '−' + p.discountPercent + '%' : '—'}</td>
-      <td>${p.hidden ? '<span style="color:#e0433a;">Скрыт</span>' : 'Виден'}</td>
+      <td>${p.hidden ? '<span style="color:#e0433a;">Скрыт</span>' : 'Виден'}${p.stock === 'out' ? '<br><span style="color:#e0433a;">Нет в наличии</span>' : p.stock === 'order' ? '<br><span style="color:var(--ink-soft);">Под заказ</span>' : ''}</td>
       <td style="white-space:nowrap;">
         <button type="button" class="btn-ghost btn-sm" data-toggle-hidden="${p.id}" data-hidden="${p.hidden ? '1' : '0'}">${p.hidden ? 'Показать' : 'Скрыть'}</button>
         <button type="button" class="btn-ghost btn-sm" data-edit="${p.id}">Изменить</button>
@@ -440,6 +447,7 @@ el('bulkApplyDiscountBtn').addEventListener('click', () => {
 el('bulkClearDiscountBtn').addEventListener('click', () => bulkUpdate({ discountPercent: 0 }));
 el('bulkHideBtn').addEventListener('click', () => bulkUpdate({ hidden: true }));
 el('bulkShowBtn').addEventListener('click', () => bulkUpdate({ hidden: false }));
+el('bulkStockBtn').addEventListener('click', () => bulkUpdate({ stock: el('bulkStock').value }));
 
 function specRow(k, v){
   const row = document.createElement('div');
@@ -474,6 +482,7 @@ function startEdit(id){
   el('pDesc').value = p.desc || '';
   el('pDiscount').value = p.discountPercent || 0;
   el('pHidden').checked = !!p.hidden;
+  el('pStock').value = p.stock || '';
   el('specsList').innerHTML = '';
   (p.specs || []).forEach(([k,v]) => el('specsList').appendChild(specRow(k,v)));
   if(p.img){ el('currentImg').src = p.img; el('currentImgWrap').hidden = false; } else { el('currentImgWrap').hidden = true; }
@@ -499,6 +508,7 @@ el('productForm').addEventListener('submit', async (e) => {
   fd.append('specs', JSON.stringify(specs));
   fd.append('discountPercent', el('pDiscount').value || '0');
   fd.append('hidden', el('pHidden').checked ? 'true' : 'false');
+  fd.append('stock', el('pStock').value);
   if(el('pImage').files[0]) fd.append('image', el('pImage').files[0]);
 
   const id = el('pId').value;
