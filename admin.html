@@ -75,6 +75,27 @@
   </div>
 
   <div class="card">
+    <h2>Промокоды</h2>
+    <table>
+      <thead><tr><th>Код</th><th>Скидка</th><th>Условия</th><th>Использован</th><th>Статус</th><th></th></tr></thead>
+      <tbody id="promosBody"></tbody>
+    </table>
+    <form id="promoForm" style="margin-top:14px;">
+      <div class="row">
+        <div class="field"><label>Код (латиница и цифры)</label><input id="promoCode" placeholder="SKATE10" required maxlength="30" style="text-transform:uppercase;"></div>
+        <div class="field" style="flex:none;width:150px;"><label>Тип</label><select id="promoType"><option value="percent">Процент, %</option><option value="fixed">Сумма, ₽</option></select></div>
+        <div class="field" style="flex:none;width:120px;"><label>Размер скидки</label><input id="promoValue" type="number" min="1" required></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>Мин. сумма заказа, ₽ (необязательно)</label><input id="promoMin" type="number" min="0" placeholder="0"></div>
+        <div class="field"><label>Действует до (необязательно)</label><input id="promoExpires" type="date"></div>
+        <div class="field"><label>Лимит использований (необязательно)</label><input id="promoMaxUses" type="number" min="0" placeholder="без лимита"></div>
+      </div>
+      <button class="btn-primary" type="submit">Создать промокод</button>
+    </form>
+  </div>
+
+  <div class="card">
     <h2>Администраторы</h2>
     <div id="adminsList"></div>
     <form id="adminForm" class="row" style="margin-top:12px;">
@@ -212,7 +233,78 @@ async function loadAll(){
   renderProducts();
   await loadAdmins();
   await loadOrders();
+  await loadPromos();
 }
+
+/* ===== Promo codes ===== */
+function promoConditions(p){
+  const parts = [];
+  if(p.minTotal) parts.push('от ' + p.minTotal.toLocaleString('ru-RU') + ' ₽');
+  if(p.expiresAt) parts.push('до ' + p.expiresAt.split('-').reverse().join('.'));
+  return parts.join(', ') || '—';
+}
+function renderPromos(promos){
+  el('promosBody').innerHTML = promos.map(p => {
+    const expired = p.expiresAt && new Date(p.expiresAt + 'T23:59:59+03:00') < new Date();
+    const exhausted = p.maxUses && p.uses >= p.maxUses;
+    const status = !p.active ? '<span style="color:var(--ink-soft);">Выключен</span>'
+      : expired ? '<span style="color:#e0433a;">Истёк</span>'
+      : exhausted ? '<span style="color:#e0433a;">Лимит исчерпан</span>'
+      : '<span style="color:#1c5e26;">Действует</span>';
+    return `<tr>
+      <td style="font-weight:700;font-family:monospace;">${p.code}</td>
+      <td>${p.type === 'percent' ? '−' + p.value + '%' : '−' + p.value.toLocaleString('ru-RU') + ' ₽'}</td>
+      <td>${promoConditions(p)}</td>
+      <td>${p.uses || 0}${p.maxUses ? ' из ' + p.maxUses : ''}</td>
+      <td>${status}</td>
+      <td style="white-space:nowrap;">
+        <button type="button" class="btn-ghost btn-sm" data-promo-toggle="${p.code}" data-active="${p.active ? '1' : '0'}">${p.active ? 'Выключить' : 'Включить'}</button>
+        <button type="button" class="btn-danger btn-sm" data-promo-del="${p.code}">Удалить</button>
+      </td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="6" style="color:var(--ink-soft)">Промокодов пока нет.</td></tr>';
+
+  el('promosBody').querySelectorAll('[data-promo-toggle]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      try{
+        const { promos } = await api('/api/admin/promos/' + encodeURIComponent(btn.getAttribute('data-promo-toggle')), {
+          method:'PATCH', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ active: btn.getAttribute('data-active') !== '1' })
+        });
+        renderPromos(promos);
+      }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+    });
+  });
+  el('promosBody').querySelectorAll('[data-promo-del]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if(!confirm('Удалить промокод ' + btn.getAttribute('data-promo-del') + '?')) return;
+      try{
+        const { promos } = await api('/api/admin/promos/' + encodeURIComponent(btn.getAttribute('data-promo-del')), { method:'DELETE' });
+        renderPromos(promos);
+        showMsg(el('globalMsg'), 'Промокод удалён', 'ok');
+      }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+    });
+  });
+}
+async function loadPromos(){
+  const { promos } = await api('/api/admin/promos');
+  renderPromos(promos);
+}
+el('promoForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  try{
+    const { promos } = await api('/api/admin/promos', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        code: el('promoCode').value, type: el('promoType').value, value: el('promoValue').value,
+        minTotal: el('promoMin').value, expiresAt: el('promoExpires').value, maxUses: el('promoMaxUses').value,
+      })
+    });
+    el('promoForm').reset();
+    renderPromos(promos);
+    showMsg(el('globalMsg'), 'Промокод создан', 'ok');
+  }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+});
 
 const ORDER_STATUS_LABELS = { new:'Новый', processing:'В обработке', shipped:'Отправлен', completed:'Выполнен', cancelled:'Отменён' };
 
@@ -238,7 +330,7 @@ function renderOrders(orders){
       <td style="white-space:nowrap;">${new Date(o.createdAt).toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
       <td>${o.quick ? '<span style="display:inline-block;font-size:.72rem;font-weight:700;color:#1c5e26;background:#dff3e0;padding:2px 8px;border-radius:999px;margin-bottom:4px;">В 1 клик</span><br>' : ''}${o.name || ''}<br><small style="color:var(--ink-soft);">${o.email || ''}${o.phone ? ' · ' + o.phone : ''}</small>${o.city || o.address ? `<br><small style="color:var(--ink-soft);">${[o.city, o.address].filter(Boolean).join(', ')}</small>` : ''}</td>
       <td>${o.items.map(it => `${it.name}${it.size ? ' · ' + it.size : ''} × ${it.qty}`).join('<br>')}</td>
-      <td>${o.total.toLocaleString('ru-RU')} ₽</td>
+      <td style="white-space:nowrap;">${o.total.toLocaleString('ru-RU')} ₽${o.promo ? `<br><small style="color:var(--ink-soft);">${o.promo.code}: −${o.promo.discount.toLocaleString('ru-RU')} ₽</small>` : ''}</td>
       <td>
         <select data-order-status="${o.id}">
           ${Object.entries(ORDER_STATUS_LABELS).map(([val,label]) => `<option value="${val}" ${val===o.status?'selected':''}>${label}</option>`).join('')}

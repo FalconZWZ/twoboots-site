@@ -470,6 +470,19 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   .cart-empty{padding:60px 0;text-align:center;color:var(--ink-faint);}
   .cart-foot{padding:20px 22px;border-top:1px solid var(--border);}
   .cart-foot .row{display:flex;justify-content:space-between;margin-bottom:16px;font-weight:700;}
+  .cart-foot .row.sub{font-weight:500;color:var(--ink-soft);margin-bottom:8px;font-size:.92rem;}
+  .cart-foot .row.promo{font-weight:600;color:#1c7a3a;margin-bottom:8px;font-size:.92rem;}
+  .promo-form{display:flex;gap:8px;margin-bottom:14px;}
+  .promo-form input{
+    flex:1;min-width:0;padding:10px 14px;border-radius:999px;border:1px solid var(--border);
+    background:var(--surface);color:var(--ink);font-size:.9rem;text-transform:uppercase;
+  }
+  .promo-form input::placeholder{text-transform:none;}
+  .promo-form input:focus{outline:none;border-color:var(--accent);}
+  .promo-note{font-size:.8rem;margin:-6px 0 12px;}
+  .promo-note.err{color:var(--accent);}
+  .promo-note.hint{color:var(--ink-faint);}
+  .cart-foot .remove{color:var(--ink-faint);text-decoration:underline;font-size:.78rem;font-weight:500;cursor:pointer;margin-left:6px;}
 
   /* ===== Quick order modal ===== */
   .qo-overlay{
@@ -714,6 +727,14 @@ function removeFromCart(key){
   cart = cart.filter(l => lineKey(l.id, l.size) !== key);
   updateCartUI();
 }
+/* promo code: the server re-checks the code and recomputes the discount on checkout */
+let APPLIED_PROMO = null; // {code, type, value, minTotal}
+function promoDiscount(subtotal){
+  const p = APPLIED_PROMO;
+  if(!p || subtotal < (p.minTotal || 0)) return 0;
+  return p.type === 'percent' ? Math.round(subtotal * p.value / 100) : Math.min(p.value, subtotal);
+}
+
 function cartCount(){ return cart.reduce((s,l)=>s+l.qty,0); }
 function cartTotal(){ return cart.reduce((s,l)=>s+l.qty*l.price,0); }
 
@@ -741,8 +762,19 @@ function updateCartUI(){
       </div>
     </div>`;
   }).join('');
+  const subtotal = cartTotal();
+  const discount = promoDiscount(subtotal);
   footEl.innerHTML = `
-    <div class="row"><span>Итого</span><span class="price">${fmt(cartTotal())} ₽</span></div>
+    ${APPLIED_PROMO ? `
+    <div class="row sub"><span>Товары</span><span>${fmt(subtotal)} ₽</span></div>
+    <div class="row promo"><span>Промокод ${APPLIED_PROMO.code}<a class="remove" id="promoRemove">убрать</a></span><span>${discount ? '−' + fmt(discount) + ' ₽' : '—'}</span></div>
+    ${discount ? '' : `<div class="promo-note hint">Промокод действует для заказов от ${fmt(APPLIED_PROMO.minTotal)} ₽</div>`}` : `
+    <form class="promo-form" id="promoForm">
+      <input id="promoInput" placeholder="Промокод" autocomplete="off" aria-label="Промокод">
+      <button type="submit" class="btn btn-ghost btn-sm">Применить</button>
+    </form>
+    <div id="promoErr"></div>`}
+    <div class="row"><span>Итого</span><span class="price">${fmt(subtotal - discount)} ₽</span></div>
     ${CURRENT_USER && !CURRENT_USER.consentAt ? consentField('cart-consent') : ''}
     <button class="btn btn-primary btn-block" id="checkoutBtn">Оформить заказ</button>
   `;
@@ -765,7 +797,25 @@ document.getElementById('cartItems').addEventListener('click', e => {
   const id = e.target.getAttribute('data-remove');
   if(id) removeFromCart(id);
 });
+document.getElementById('cartFoot').addEventListener('submit', async e => {
+  if(e.target.id !== 'promoForm') return;
+  e.preventDefault();
+  const input = document.getElementById('promoInput');
+  const errEl = document.getElementById('promoErr');
+  if(!input.value.trim()) return;
+  try{
+    const res = await fetch('/api/promo/check', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ code: input.value, items: cart.map(l => ({ id: l.id, qty: l.qty, size: l.size })) })
+    });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error || 'Не удалось проверить промокод');
+    APPLIED_PROMO = { code: data.code, type: data.type, value: data.value, minTotal: data.minTotal };
+    updateCartUI();
+  }catch(err){ errEl.innerHTML = `<div class="promo-note err">${err.message}</div>`; }
+});
 document.getElementById('cartFoot').addEventListener('click', async e => {
+  if(e.target.id === 'promoRemove'){ APPLIED_PROMO = null; updateCartUI(); return; }
   if(e.target.id !== 'checkoutBtn') return;
   if(!CURRENT_USER){
     showToast('Войдите в личный кабинет, чтобы оформить заказ');
@@ -788,11 +838,17 @@ document.getElementById('cartFoot').addEventListener('click', async e => {
   try{
     const res = await fetch('/api/orders', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ items: cart.map(l => ({ id: l.id, qty: l.qty, size: l.size })), consent: !!consentBox })
+      body: JSON.stringify({
+        items: cart.map(l => ({ id: l.id, qty: l.qty, size: l.size })),
+        consent: !!consentBox,
+        // below the promo's minimum the code gives nothing — don't send it, or the server rejects the order
+        promoCode: APPLIED_PROMO && promoDiscount(cartTotal()) ? APPLIED_PROMO.code : undefined,
+      })
     });
     const data = await res.json();
     if(!res.ok) throw new Error(data.error || 'Не удалось оформить заказ');
     if(consentBox) CURRENT_USER.consentAt = new Date().toISOString();
+    APPLIED_PROMO = null;
     cart = [];
     updateCartUI();
     closeCart();
@@ -1100,6 +1156,7 @@ function pageProduct(id){
         <form id="qoForm">
           <div class="field"><label for="qo-name">Ваше имя</label><input id="qo-name" required></div>
           <div class="field"><label for="qo-phone">Телефон</label><input id="qo-phone" type="tel" placeholder="+7 ..." required></div>
+          <div class="field"><label for="qo-promo">Промокод (если есть)</label><input id="qo-promo" autocomplete="off" style="text-transform:uppercase;"></div>
           ${consentField('qo-consent')}
           <div id="qoErr"></div>
           <button type="submit" class="btn btn-primary btn-block">Заказать</button>
@@ -1453,6 +1510,7 @@ function renderOrders(orders){
         <span class="order-status ${o.status}">${orderStatusLabel(o.status)}</span>
       </div>
       ${o.items.map(it => `<div class="order-line"><span>${it.name}${it.size?' · '+it.size:''} × ${it.qty}</span><span>${fmt(it.price*it.qty)} ₽</span></div>`).join('')}
+      ${o.promo ? `<div class="order-line"><span>Промокод ${o.promo.code}</span><span>−${fmt(o.promo.discount)} ₽</span></div>` : ''}
       <div class="order-total"><span>Итого</span><span>${fmt(o.total)} ₽</span></div>
       ${['new','processing'].includes(o.status) ? `<button class="btn btn-ghost btn-sm" style="margin-top:12px;" data-cancel-order="${o.id}">Отменить заказ</button>` : ''}
     </div>
@@ -1533,7 +1591,7 @@ function trackPageview(){
 function trackGoal(goal){ ym(METRIKA_ID, 'reachGoal', goal); }
 function trackPurchase(order){
   window.dataLayer.push({ ecommerce: { currencyCode: 'RUB', purchase: {
-    actionField: { id: String(order.number), revenue: order.total },
+    actionField: { id: String(order.number), revenue: order.total, ...(order.promo ? { coupon: order.promo.code } : {}) },
     products: order.items.map(it => ({ id: it.id, name: it.name, price: it.price, quantity: it.qty, variant: it.size || undefined })),
   }}});
 }
@@ -1677,6 +1735,7 @@ function bindPageEvents(path, params){
               name: document.getElementById('qo-name').value,
               phone: document.getElementById('qo-phone').value,
               consent: document.getElementById('qo-consent').checked,
+              promoCode: document.getElementById('qo-promo').value || undefined,
             })
           });
           const data = await res.json();
@@ -1685,7 +1744,7 @@ function bindPageEvents(path, params){
           document.getElementById('qoForm').reset();
           trackGoal('quick_order');
           trackPurchase(data.order);
-          showToast(`Заказ №${data.order.number} принят — мы перезвоним для подтверждения`);
+          showToast(`Заказ №${data.order.number} принят${data.order.promo ? `, скидка по промокоду ${fmt(data.order.promo.discount)} ₽` : ''} — мы перезвоним для подтверждения`);
         }catch(err){ errEl.innerHTML = `<p style="color:var(--accent);font-size:.85rem;margin:8px 0 0;">${err.message}</p>`; }
       });
     }

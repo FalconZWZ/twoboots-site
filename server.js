@@ -40,6 +40,10 @@ const mailTransport = SMTP_HOST
     })
   : null;
 
+function orderPromoLine(order) {
+  return order.promo ? `Промокод ${order.promo.code}: −${order.promo.discount.toLocaleString('ru-RU')} ₽\n` : '';
+}
+
 function sendOrderConfirmationEmail(order, user) {
   if (!mailTransport) return;
   const itemsList = order.items.map(it => `${it.name}${it.size ? ' (' + it.size + ')' : ''} — ${it.qty} шт. × ${it.price.toLocaleString('ru-RU')} ₽`).join('\n');
@@ -48,9 +52,10 @@ function sendOrderConfirmationEmail(order, user) {
     from: MAIL_FROM,
     to: user.email,
     subject: `Заказ №${order.number} принят — Two Boots`,
-    text: `Спасибо за заказ №${order.number}!\n\nВ ближайшее время с вами свяжется менеджер.\n\nСостав заказа:\n${itemsList}\n\nИтого: ${order.total.toLocaleString('ru-RU')} ₽`,
+    text: `Спасибо за заказ №${order.number}!\n\nВ ближайшее время с вами свяжется менеджер.\n\nСостав заказа:\n${itemsList}\n\n${orderPromoLine(order)}Итого: ${order.total.toLocaleString('ru-RU')} ₽`,
     html: `<p>Спасибо за заказ <b>№${order.number}</b>!</p><p>В ближайшее время с вами свяжется менеджер.</p>
       <table style="border-collapse:collapse;">${itemsHtml}</table>
+      ${order.promo ? `<p>Промокод ${order.promo.code}: −${order.promo.discount.toLocaleString('ru-RU')} ₽</p>` : ''}
       <p><b>Итого: ${order.total.toLocaleString('ru-RU')} ₽</b></p>`,
   }).catch(err => console.error('Не удалось отправить письмо с подтверждением заказа:', err.message));
 }
@@ -66,7 +71,7 @@ const BOTORDER_SECRET = process.env.BOTORDER_SECRET || '';
 
 function orderNotifyText(order) {
   const itemsList = order.items.map(it => `${it.name}${it.size ? ' (' + it.size + ')' : ''} — ${it.qty} шт. × ${it.price.toLocaleString('ru-RU')} ₽`).join('\n');
-  return `Новый заказ №${order.number}${order.quick ? ' (в 1 клик)' : ''}\nИмя: ${order.name}\nТелефон: ${order.phone}\n\n${itemsList}\n\nИтого: ${order.total.toLocaleString('ru-RU')} ₽`;
+  return `Новый заказ №${order.number}${order.quick ? ' (в 1 клик)' : ''}\nИмя: ${order.name}\nТелефон: ${order.phone}\n\n${itemsList}\n\n${orderPromoLine(order)}Итого: ${order.total.toLocaleString('ru-RU')} ₽`;
 }
 
 // Notifies the store owner (not the customer) that a new order/lead came in —
@@ -94,6 +99,7 @@ function notifyOwnerNewOrder(order) {
         phone: order.phone,
         'Состав': order.items.map(it => `${it.name}${it.size ? ' (' + it.size + ')' : ''} — ${it.qty} шт. × ${it.price.toLocaleString('ru-RU')} ₽`).join('\n'),
         'Итого': `${order.total.toLocaleString('ru-RU')} ₽`,
+        ...(order.promo ? { 'Промокод': `${order.promo.code} (−${order.promo.discount.toLocaleString('ru-RU')} ₽)` } : {}),
       }),
     }).then(r => { if (!r.ok) return r.text().then(t => { throw new Error(t); }); })
       .catch(err => console.error('Не удалось отправить заказ в бот заявок:', err.message));
@@ -229,6 +235,7 @@ function roleFor(username) {
   }
   if (!store.users) { store.users = []; changed = true; }
   if (!store.orders) { store.orders = []; changed = true; }
+  if (!store.promos) { store.promos = []; changed = true; }
   if (!store.orderSeq) {
     store.orderSeq = store.orders.reduce((max, o) => Math.max(max, o.number || 0), 0);
     changed = true;
@@ -292,6 +299,8 @@ const loginLimiter = limiter(10, 15, 'Слишком много неудачны
 const registerLimiter = limiter(5, 60, 'Слишком много регистраций с вашего адреса. Попробуйте позже.');
 const orderLimiter = limiter(10, 15, 'Слишком много заявок подряд. Попробуйте через несколько минут или позвоните нам.');
 const contactLimiter = limiter(5, 15, 'Слишком много сообщений подряд. Попробуйте через несколько минут.');
+// Generous for real shoppers, but stops anyone from guessing codes by brute force.
+const promoLimiter = limiter(20, 15, 'Слишком много попыток ввода промокода. Попробуйте позже.');
 const resetLimiter = limiter(5, 60, 'Слишком много запросов на восстановление пароля. Попробуйте позже.');
 
 app.use('/uploads', express.static(UPLOADS_DIR));
@@ -621,6 +630,62 @@ app.put('/api/me', requireUser, (req, res) => {
   res.json({ user: safeUser(user) });
 });
 
+/* ===== Pricing & promo codes ===== */
+// Server-side prices for a cart: client prices are never trusted.
+function priceItems(store, items) {
+  const lines = [];
+  let subtotal = 0;
+  for (const item of Array.isArray(items) ? items : []) {
+    const product = store.products.find(p => p.id === item.id && !p.hidden);
+    if (!product) continue;
+    if (product.stock === 'out') return { error: `«${product.name}» сейчас нет в наличии — уберите его из корзины` };
+    const qty = Math.max(1, Math.min(99, Number(item.qty) || 1));
+    const price = unitPrice(product);
+    lines.push({ id: product.id, name: product.name, size: item.size || null, price, qty });
+    subtotal += price * qty;
+  }
+  return { lines, subtotal };
+}
+
+const PROMO_TYPES = ['percent', 'fixed'];
+const normPromoCode = c => String(c || '').trim().toUpperCase();
+
+// { promo, discount } for a usable code, { error } for a bad one, {} when no code was given.
+// The discount applies on top of per-product discounts (subtotal is already discounted).
+function applyPromo(store, rawCode, subtotal) {
+  const code = normPromoCode(rawCode);
+  if (!code) return {};
+  const promo = store.promos.find(p => p.code === code);
+  if (!promo || !promo.active) return { error: 'Такого промокода нет' };
+  // expiresAt is a date; the code works through the end of that day, Moscow time.
+  if (promo.expiresAt && Date.now() > new Date(`${promo.expiresAt}T23:59:59+03:00`).getTime()) {
+    return { error: 'Срок действия промокода истёк' };
+  }
+  if (promo.maxUses && (promo.uses || 0) >= promo.maxUses) return { error: 'Промокод больше не действует' };
+  if (promo.minTotal && subtotal < promo.minTotal) {
+    return { error: `Промокод действует для заказов от ${promo.minTotal.toLocaleString('ru-RU')} ₽` };
+  }
+  const discount = promo.type === 'percent'
+    ? Math.round(subtotal * promo.value / 100)
+    : Math.min(promo.value, subtotal);
+  return { promo, discount };
+}
+
+function promoSummary(promo) {
+  return { code: promo.code, type: promo.type, value: promo.value, minTotal: promo.minTotal || 0 };
+}
+
+app.post('/api/promo/check', promoLimiter, (req, res) => {
+  const { code, items } = req.body || {};
+  const store = readStore();
+  const { subtotal, error: itemsError } = priceItems(store, items);
+  if (itemsError) return res.status(400).json({ error: itemsError });
+  const { promo, discount, error } = applyPromo(store, code, subtotal);
+  if (error) return res.status(400).json({ error });
+  if (!promo) return res.status(400).json({ error: 'Введите промокод' });
+  res.json({ ...promoSummary(promo), discount, subtotal });
+});
+
 /* ===== Orders ===== */
 app.get('/api/orders', requireUser, (req, res) => {
   const store = readStore();
@@ -645,18 +710,12 @@ app.post('/api/orders', orderLimiter, requireUser, (req, res) => {
     user.consentAt = new Date().toISOString();
   }
 
-  const lines = [];
-  let total = 0;
-  for (const item of items) {
-    const product = store.products.find(p => p.id === item.id);
-    if (!product) continue;
-    if (product.stock === 'out') return res.status(400).json({ error: `«${product.name}» сейчас нет в наличии — уберите его из корзины` });
-    const qty = Math.max(1, Math.min(99, Number(item.qty) || 1));
-    const price = unitPrice(product);
-    lines.push({ id: product.id, name: product.name, size: item.size || null, price, qty });
-    total += price * qty;
-  }
+  const { lines, subtotal, error: itemsError } = priceItems(store, items);
+  if (itemsError) return res.status(400).json({ error: itemsError });
   if (lines.length === 0) return res.status(400).json({ error: 'Товары не найдены' });
+  const { promo, discount = 0, error: promoError } = applyPromo(store, req.body.promoCode, subtotal);
+  if (promoError) return res.status(400).json({ error: promoError });
+  if (promo) promo.uses = (promo.uses || 0) + 1;
 
   store.orderSeq = (store.orderSeq || 0) + 1;
   const order = {
@@ -664,7 +723,9 @@ app.post('/api/orders', orderLimiter, requireUser, (req, res) => {
     number: store.orderSeq,
     userId: user.id,
     items: lines,
-    total,
+    subtotal,
+    ...(promo ? { promo: { code: promo.code, discount } } : {}),
+    total: subtotal - discount,
     status: 'new',
     name: user.name, phone: user.phone, email: user.email, city: user.city, address: user.address,
     createdAt: new Date().toISOString(),
@@ -704,7 +765,10 @@ app.post('/api/quick-order', orderLimiter, (req, res) => {
 
   const qtyNum = Math.max(1, Math.min(99, Number(qty) || 1));
   const price = unitPrice(product);
-  const total = price * qtyNum;
+  const subtotal = price * qtyNum;
+  const { promo, discount = 0, error: promoError } = applyPromo(store, req.body.promoCode, subtotal);
+  if (promoError) return res.status(400).json({ error: promoError });
+  if (promo) promo.uses = (promo.uses || 0) + 1;
 
   store.orderSeq = (store.orderSeq || 0) + 1;
   const order = {
@@ -713,7 +777,9 @@ app.post('/api/quick-order', orderLimiter, (req, res) => {
     userId: null,
     quick: true,
     items: [{ id: product.id, name: product.name, size: null, price, qty: qtyNum }],
-    total,
+    subtotal,
+    ...(promo ? { promo: { code: promo.code, discount } } : {}),
+    total: subtotal - discount,
     status: 'new',
     name: name.trim(), phone: phone.trim(), email: null, city: '', address: '',
     consentAt: new Date().toISOString(),
@@ -789,6 +855,57 @@ app.delete('/api/admin/orders', requireSuperAdmin, (req, res) => {
 
 /* ===== Admin: backup ===== */
 // Super-admin only: the store holds password hashes of admins and customers.
+/* ===== Admin: promo codes ===== */
+app.get('/api/admin/promos', requireAdmin, (req, res) => {
+  res.json({ promos: readStore().promos });
+});
+
+app.post('/api/admin/promos', requireAdmin, (req, res) => {
+  const body = req.body || {};
+  const code = normPromoCode(body.code);
+  if (!/^[A-Z0-9_-]{3,30}$/.test(code)) {
+    return res.status(400).json({ error: 'Код — от 3 до 30 символов: латинские буквы, цифры, «-» или «_»' });
+  }
+  if (!PROMO_TYPES.includes(body.type)) return res.status(400).json({ error: 'Выберите тип скидки' });
+  const value = Math.round(Number(body.value));
+  if (!(value > 0) || (body.type === 'percent' && value > 90)) {
+    return res.status(400).json({ error: body.type === 'percent' ? 'Скидка — от 1 до 90%' : 'Укажите сумму скидки в рублях' });
+  }
+  const expiresAt = body.expiresAt ? String(body.expiresAt) : null;
+  if (expiresAt && !/^\d{4}-\d{2}-\d{2}$/.test(expiresAt)) return res.status(400).json({ error: 'Некорректная дата окончания' });
+  const store = readStore();
+  if (store.promos.some(p => p.code === code)) return res.status(400).json({ error: 'Такой промокод уже есть' });
+  store.promos.push({
+    code, type: body.type, value,
+    minTotal: Math.max(0, Math.round(Number(body.minTotal) || 0)),
+    expiresAt,
+    maxUses: Math.max(0, Math.round(Number(body.maxUses) || 0)),
+    uses: 0,
+    active: true,
+    createdAt: new Date().toISOString(),
+  });
+  writeStore(store);
+  res.json({ promos: store.promos });
+});
+
+app.patch('/api/admin/promos/:code', requireAdmin, (req, res) => {
+  const store = readStore();
+  const promo = store.promos.find(p => p.code === req.params.code);
+  if (!promo) return res.status(404).json({ error: 'Промокод не найден' });
+  if (typeof (req.body || {}).active === 'boolean') promo.active = req.body.active;
+  writeStore(store);
+  res.json({ promos: store.promos });
+});
+
+app.delete('/api/admin/promos/:code', requireAdmin, (req, res) => {
+  const store = readStore();
+  const idx = store.promos.findIndex(p => p.code === req.params.code);
+  if (idx === -1) return res.status(404).json({ error: 'Промокод не найден' });
+  store.promos.splice(idx, 1);
+  writeStore(store);
+  res.json({ promos: store.promos });
+});
+
 app.get('/api/admin/backup', requireSuperAdmin, (req, res) => {
   const date = new Date().toISOString().slice(0, 10);
   res.attachment(`two-boots-backup-${date}.zip`);
