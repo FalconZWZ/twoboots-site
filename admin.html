@@ -105,6 +105,12 @@
     </form>
   </div>
 
+  <div class="card" id="backupsCard" hidden>
+    <h2>Резервные копии</h2>
+    <p id="backupsNote" style="color:var(--ink-soft);font-size:.88rem;margin:0 0 10px;"></p>
+    <div id="backupsList"></div>
+  </div>
+
   <div class="card">
     <h2>Администраторы</h2>
     <div id="adminsList"></div>
@@ -244,6 +250,22 @@ async function loadAll(){
   await loadAdmins();
   await loadOrders();
   await loadPromos();
+  el('backupsCard').hidden = !IS_SUPER;
+  if(IS_SUPER) await loadBackups(); else el('backupsList').innerHTML = '';
+}
+
+async function loadBackups(){
+  const { backups, email } = await api('/api/admin/backups');
+  el('backupsCard').hidden = false;
+  el('backupsNote').textContent = 'Каждую ночь (после 03:00 по Москве) сохраняется копия базы — каталог, заказы, клиенты, промокоды, без фото; хранятся последние 14 дней. '
+    + (email ? `Копия также приходит письмом на ${email}.` : 'Отправка копий на почту не настроена (нужен SMTP).')
+    + ' Полная копия с фото — кнопка «Резервная копия» вверху.';
+  el('backupsList').innerHTML = backups.length
+    ? backups.map(b => {
+        const d = b.name.slice(6, 16).split('-').reverse().join('.');
+        return `<a href="/api/admin/backups/${b.name}" class="cat-pill" style="text-decoration:none;color:inherit;padding:6px 14px;">${d} · ${Math.max(1, Math.round(b.size / 1024))} КБ</a>`;
+      }).join('')
+    : '<span style="color:var(--ink-soft);font-size:.88rem;">Копий пока нет — первая появится в течение получаса (а если сейчас ночь до 03:00 — в 03:00).</span>';
 }
 
 /* ===== Promo codes ===== */

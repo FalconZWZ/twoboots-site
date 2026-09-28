@@ -19,6 +19,7 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data-runtime');
 const DATA_FILE = path.join(DATA_DIR, 'store.json');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
+const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
 const SEED_FILE = path.join(__dirname, 'data', 'seed.json');
 
 const ADMIN_USER = process.env.ADMIN_USER || 'admin';
@@ -185,6 +186,7 @@ function sendPasswordResetEmail(user, link) {
 
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+fs.mkdirSync(BACKUPS_DIR, { recursive: true });
 if (!fs.existsSync(DATA_FILE)) {
   fs.copyFileSync(SEED_FILE, DATA_FILE);
 }
@@ -929,6 +931,79 @@ app.get('/api/admin/backup', requireSuperAdmin, (req, res) => {
   archive.append(fs.readFileSync(DATA_FILE), { name: 'store.json' });
   archive.directory(UPLOADS_DIR, 'uploads');
   archive.finalize();
+});
+
+/* ===== Daily automatic backups ===== */
+// Every night (after 03:00 Moscow time) store.json is zipped into DATA_DIR/backups — the last
+// BACKUP_KEEP_DAYS are kept, so a mistake in the admin can be rolled back — and emailed to
+// BACKUP_EMAIL, so a copy survives even if the Railway volume is lost. Photos are not included
+// (they can be large for email); the manual «Резервная копия» button still has them.
+const BACKUP_KEEP_DAYS = 14;
+const BACKUP_EMAIL = process.env.BACKUP_EMAIL === 'off' ? '' : (process.env.BACKUP_EMAIL || OWNER_EMAIL);
+const BACKUP_NAME_RE = /^store-\d{4}-\d{2}-\d{2}\.zip$/;
+const moscowNow = () => new Date(Date.now() + 3 * 60 * 60 * 1000); // UTC+3, no DST
+
+function zipStoreJson() {
+  return new Promise((resolve, reject) => {
+    const archive = archiver('zip');
+    const chunks = [];
+    archive.on('data', c => chunks.push(c));
+    archive.on('end', () => resolve(Buffer.concat(chunks)));
+    archive.on('error', reject);
+    archive.append(fs.readFileSync(DATA_FILE), { name: 'store.json' });
+    archive.finalize();
+  });
+}
+
+function listBackups() {
+  return fs.readdirSync(BACKUPS_DIR).filter(f => BACKUP_NAME_RE.test(f)).sort().reverse();
+}
+
+let backupRunning = false;
+async function runDailyBackup() {
+  const now = moscowNow();
+  if (backupRunning || now.getUTCHours() < 3) return;
+  const day = now.toISOString().slice(0, 10);
+  const name = `store-${day}.zip`;
+  const file = path.join(BACKUPS_DIR, name);
+  if (fs.existsSync(file)) return;
+  backupRunning = true;
+  try {
+    const zip = await zipStoreJson();
+    fs.writeFileSync(file, zip);
+    listBackups().slice(BACKUP_KEEP_DAYS).forEach(old => fs.unlinkSync(path.join(BACKUPS_DIR, old)));
+    console.log(`Резервная копия сохранена: ${name}`);
+    if (mailTransport && BACKUP_EMAIL) {
+      const s = readStore();
+      await mailTransport.sendMail({
+        from: MAIL_FROM,
+        to: BACKUP_EMAIL,
+        subject: `Резервная копия Two Boots за ${day.split('-').reverse().join('.')}`,
+        text: `Автоматическая резервная копия базы сайта (без фото).\n\nТоваров: ${s.products.length}, заказов: ${s.orders.length}, клиентов: ${s.users.length}, промокодов: ${(s.promos || []).length}.\n\nВнутри store.json — каталог, заказы, клиенты (с хешами паролей), администраторы и промокоды. Храните письмо в надёжном месте. Чтобы восстановить, положите store.json в DATA_DIR на сервере и перезапустите сервис.`,
+        attachments: [{ filename: `two-boots-${name}`, content: zip }],
+      });
+    }
+  } catch (err) {
+    console.error('Не удалось сделать автоматическую резервную копию:', err.message);
+  } finally {
+    backupRunning = false;
+  }
+}
+setInterval(runDailyBackup, 30 * 60 * 1000);
+setTimeout(runDailyBackup, 60 * 1000);
+
+app.get('/api/admin/backups', requireSuperAdmin, (req, res) => {
+  res.json({
+    backups: listBackups().map(name => ({ name, size: fs.statSync(path.join(BACKUPS_DIR, name)).size })),
+    email: BACKUP_EMAIL && mailTransport ? BACKUP_EMAIL : null,
+  });
+});
+
+app.get('/api/admin/backups/:name', requireSuperAdmin, (req, res) => {
+  if (!BACKUP_NAME_RE.test(req.params.name)) return res.status(400).json({ error: 'Некорректное имя файла' });
+  const file = path.join(BACKUPS_DIR, req.params.name);
+  if (!fs.existsSync(file)) return res.status(404).json({ error: 'Копия не найдена' });
+  res.download(file, `two-boots-${req.params.name}`);
 });
 
 /* ===== Admin: categories ===== */
