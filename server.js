@@ -251,7 +251,8 @@ const orderLimiter = limiter(10, 15, 'Слишком много заявок п�
 const contactLimiter = limiter(5, 15, 'Слишком много сообщений подряд. Попробуйте через несколько минут.');
 
 app.use('/uploads', express.static(UPLOADS_DIR));
-app.use(express.static(__dirname));
+// index: false — "/" must reach the SPA fallback below, which fills in per-page SEO tags.
+app.use(express.static(__dirname, { index: false }));
 
 function requireAdmin(req, res, next) {
   if (req.session && req.session.isAdmin) return next();
@@ -276,6 +277,12 @@ app.get('/api/data', (req, res) => {
 });
 
 const SITE_ORIGIN = 'https://www.two-boots.ru';
+
+function unitPrice(product) {
+  return product.discountPercent
+    ? Math.round(product.price * (1 - product.discountPercent / 100))
+    : product.price;
+}
 
 app.get('/sitemap.xml', (req, res) => {
   const { categories, products } = readStore();
@@ -466,11 +473,9 @@ app.post('/api/orders', orderLimiter, requireUser, (req, res) => {
     const product = store.products.find(p => p.id === item.id);
     if (!product) continue;
     const qty = Math.max(1, Math.min(99, Number(item.qty) || 1));
-    const unitPrice = product.discountPercent
-      ? Math.round(product.price * (1 - product.discountPercent / 100))
-      : product.price;
-    lines.push({ id: product.id, name: product.name, size: item.size || null, price: unitPrice, qty });
-    total += unitPrice * qty;
+    const price = unitPrice(product);
+    lines.push({ id: product.id, name: product.name, size: item.size || null, price, qty });
+    total += price * qty;
   }
   if (lines.length === 0) return res.status(400).json({ error: 'Товары не найдены' });
 
@@ -516,10 +521,8 @@ app.post('/api/quick-order', orderLimiter, (req, res) => {
   if (!product) return res.status(404).json({ error: 'Товар не найден' });
 
   const qtyNum = Math.max(1, Math.min(99, Number(qty) || 1));
-  const unitPrice = product.discountPercent
-    ? Math.round(product.price * (1 - product.discountPercent / 100))
-    : product.price;
-  const total = unitPrice * qtyNum;
+  const price = unitPrice(product);
+  const total = price * qtyNum;
 
   store.orderSeq = (store.orderSeq || 0) + 1;
   const order = {
@@ -527,7 +530,7 @@ app.post('/api/quick-order', orderLimiter, (req, res) => {
     number: store.orderSeq,
     userId: null,
     quick: true,
-    items: [{ id: product.id, name: product.name, size: null, price: unitPrice, qty: qtyNum }],
+    items: [{ id: product.id, name: product.name, size: null, price, qty: qtyNum }],
     total,
     status: 'new',
     name: name.trim(), phone: phone.trim(), email: null, city: '', address: '',
@@ -756,9 +759,94 @@ app.delete('/api/admin/products/:id', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-/* ===== SPA fallback ===== */
+/* ===== SPA fallback with per-page SEO tags ===== */
+// Page content is rendered in the browser, but crawlers and link previews read the raw
+// HTML — so the title, description, canonical, og:* tags and Schema.org data are filled
+// in here. Titles mirror the setMeta() calls in index.html; keep the two in sync.
+const INDEX_HTML = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+const DEFAULT_DESCRIPTION = 'Two Boots — экипировка для фигурного катания: чехлы для лезвий, сумки и чемоданы, скакалки и аксессуары.';
+const CATALOG_DESCRIPTION = 'Чехлы для лезвий, сумки и чемоданы, скакалки и аксессуары для фигурного катания.';
+
+function escHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function pageSeo(pathname, query) {
+  const { categories, products } = readStore();
+  const url = SITE_ORIGIN + pathname;
+  if (pathname === '/') {
+    return { title: 'Two Boots — экипировка для фигурного катания', url, jsonLd: [{
+      '@context': 'https://schema.org', '@type': 'Organization', name: 'Two Boots', url: SITE_ORIGIN + '/',
+      telephone: '+7 926 349-75-86', email: 'hello@two-boots.ru',
+    }] };
+  }
+  if (pathname === '/catalog') {
+    const cat = typeof query.cat === 'string' && categories[query.cat] ? query.cat : null;
+    if (!cat) return { title: 'Каталог — Two Boots', description: CATALOG_DESCRIPTION, url };
+    return {
+      title: `${categories[cat]} — Two Boots`,
+      description: `${categories[cat]} для фигурного катания — каталог Two Boots.`,
+      url: `${url}?cat=${encodeURIComponent(cat)}`,
+    };
+  }
+  const productMatch = pathname.match(/^\/product\/([^/]+)$/);
+  if (productMatch) {
+    const p = products.find(x => x.id === productMatch[1] && !x.hidden);
+    if (!p) return { status: 404, title: 'Товар не найден — Two Boots', url };
+    const image = !p.img ? null
+      : /^https?:\/\//.test(p.img) ? p.img
+      : `${SITE_ORIGIN}/${p.img.replace(/^\//, '')}`;
+    const crumbs = [{ name: 'Каталог', item: `${SITE_ORIGIN}/catalog` }];
+    if (categories[p.cat]) crumbs.push({ name: categories[p.cat], item: `${SITE_ORIGIN}/catalog?cat=${encodeURIComponent(p.cat)}` });
+    crumbs.push({ name: p.name, item: url });
+    return {
+      title: `${p.name} — Two Boots`, description: p.desc, url, image,
+      jsonLd: [
+        {
+          '@context': 'https://schema.org', '@type': 'Product',
+          name: p.name, description: p.desc, sku: p.id,
+          ...(image ? { image: [image] } : {}),
+          brand: { '@type': 'Brand', name: 'Two Boots' },
+          offers: {
+            '@type': 'Offer', url, priceCurrency: 'RUB', price: unitPrice(p),
+            availability: 'https://schema.org/InStock', itemCondition: 'https://schema.org/NewCondition',
+          },
+        },
+        {
+          '@context': 'https://schema.org', '@type': 'BreadcrumbList',
+          itemListElement: crumbs.map((c, i) => ({ '@type': 'ListItem', position: i + 1, name: c.name, item: c.item })),
+        },
+      ],
+    };
+  }
+  const staticTitles = { '/about': 'О бренде — Two Boots', '/contact': 'Контакты — Two Boots', '/account': 'Личный кабинет — Two Boots' };
+  if (staticTitles[pathname]) return { title: staticTitles[pathname], url };
+  return { status: 404, title: 'Страница не найдена — Two Boots', url };
+}
+
+function renderIndex(seo) {
+  const title = escHtml(seo.title);
+  const desc = escHtml(seo.description || DEFAULT_DESCRIPTION);
+  const url = escHtml(seo.url);
+  // Function replacers: a "$&" or "$1" inside product text must not be treated as a pattern.
+  let html = INDEX_HTML
+    .replace(/<title>[^<]*<\/title>/, () => `<title>${title}</title>`)
+    .replace(/(<meta name="description" content=")[^"]*/, (_, pre) => pre + desc)
+    .replace(/(<link rel="canonical" href=")[^"]*/, (_, pre) => pre + url)
+    .replace(/(<meta property="og:title" content=")[^"]*/, (_, pre) => pre + title)
+    .replace(/(<meta property="og:description" content=")[^"]*/, (_, pre) => pre + desc)
+    .replace(/(<meta property="og:url" content=")[^"]*/, (_, pre) => pre + url);
+  let extra = '';
+  if (seo.image) extra += `<meta property="og:image" content="${escHtml(seo.image)}">\n`;
+  if (seo.status === 404) extra += '<meta name="robots" content="noindex">\n';
+  // "<" escaped so product text can never close the <script> tag early.
+  if (seo.jsonLd) extra += `<script type="application/ld+json">${JSON.stringify(seo.jsonLd).replace(/</g, '\\u003c')}</script>\n`;
+  return html.replace('</head>', () => extra + '</head>');
+}
+
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
+  const seo = pageSeo(req.path, req.query);
+  res.status(seo.status || 200).type('html').send(renderIndex(seo));
 });
 
 app.listen(port, () => {
