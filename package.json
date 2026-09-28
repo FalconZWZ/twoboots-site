@@ -9,6 +9,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "archiver": "^7.0.1",
     "express": "^4.19.2",
     "express-rate-limit": "^8.7.0",
     "express-session": "^1.18.0",

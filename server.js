@@ -7,6 +7,7 @@ const FileStore = require('session-file-store')(session);
 const multer = require('multer');
 const nodemailer = require('nodemailer');
 const { rateLimit } = require('express-rate-limit');
+const archiver = require('archiver');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -594,6 +595,20 @@ app.delete('/api/admin/orders', requireSuperAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
+/* ===== Admin: backup ===== */
+// Super-admin only: the store holds password hashes of admins and customers.
+app.get('/api/admin/backup', requireSuperAdmin, (req, res) => {
+  const date = new Date().toISOString().slice(0, 10);
+  res.attachment(`two-boots-backup-${date}.zip`);
+  const archive = archiver('zip');
+  archive.on('error', err => { console.error('Не удалось собрать резервную копию:', err.message); res.destroy(err); });
+  archive.pipe(res);
+  // Read synchronously so a concurrent writeStore can't leave a half-written store.json in the zip.
+  archive.append(fs.readFileSync(DATA_FILE), { name: 'store.json' });
+  archive.directory(UPLOADS_DIR, 'uploads');
+  archive.finalize();
+});
+
 /* ===== Admin: categories ===== */
 app.post('/api/admin/categories', requireAdmin, (req, res) => {
   const { id, label } = req.body || {};
@@ -749,6 +764,19 @@ app.get('*', (req, res) => {
 app.listen(port, () => {
   console.log(`Two Boots site running on port ${port}`);
   console.log(`Data dir: ${DATA_DIR}`);
+  if (!process.env.SESSION_SECRET) {
+    console.warn(
+      '⚠ SESSION_SECRET is not set — using the default from the public source code. ' +
+      'Set SESSION_SECRET to a long random string in Railway → Variables.'
+    );
+  }
+  const defaultPwdAdmins = readStore().admins.filter(a => verifyPassword('changeme123', a.passwordHash));
+  if (defaultPwdAdmins.length) {
+    console.warn(
+      `⚠ Admin(s) ${defaultPwdAdmins.map(a => a.username).join(', ')} still use the default password ` +
+      '"changeme123" — anyone can log in to /admin. Change it in the admin panel (Администраторы → Пароль).'
+    );
+  }
   if (!process.env.DATA_DIR) {
     console.warn(
       '⚠ DATA_DIR is not set — data is stored inside the container and will be LOST on the next ' +

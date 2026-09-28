@@ -56,6 +56,7 @@
   <div class="top-bar">
     <h1>Two Boots — Админка</h1>
     <div>
+      <a href="/api/admin/backup" id="backupBtn" class="btn-ghost" style="text-decoration:none;display:none;padding:9px 18px;border:1px solid var(--border);border-radius:999px;">Резервная копия</a>
       <a href="/" class="btn-ghost" style="text-decoration:none;display:inline-block;padding:9px 18px;border:1px solid var(--border);border-radius:999px;">На сайт</a>
       <button class="btn-ghost" id="logoutBtn">Выйти (<span id="meLabel"></span>)</button>
     </div>
@@ -167,6 +168,7 @@ async function checkSession(){
   if(loggedIn){
     ME = username;
     IS_SUPER = role === 'super';
+    el('backupBtn').style.display = IS_SUPER ? 'inline-block' : 'none';
     el('meLabel').textContent = username;
     el('loginScreen').hidden = true;
     el('adminScreen').hidden = false;
