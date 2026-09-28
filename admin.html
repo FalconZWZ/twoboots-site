@@ -63,7 +63,10 @@
   <div id="globalMsg"></div>
 
   <div class="card">
-    <h2>Заказы</h2>
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <h2>Заказы</h2>
+      <button class="btn-ghost" id="resetOrdersBtn" hidden>Сбросить заказы</button>
+    </div>
     <table>
       <thead><tr><th>№</th><th>Дата</th><th>Клиент</th><th>Товары</th><th>Сумма</th><th>Статус</th><th></th></tr></thead>
       <tbody id="ordersBody"></tbody>
@@ -207,7 +210,17 @@ const ORDER_STATUS_LABELS = { new:'Новый', processing:'В обработк�
 async function loadOrders(){
   const { orders } = await api('/api/admin/orders');
   renderOrders(orders);
+  el('resetOrdersBtn').hidden = !IS_SUPER;
 }
+
+el('resetOrdersBtn').addEventListener('click', async () => {
+  if(!confirm('Удалить ВСЕ заказы и обнулить нумерацию? Отменить будет нельзя.')) return;
+  try{
+    await api('/api/admin/orders', { method:'DELETE' });
+    showMsg(el('globalMsg'), 'Заказы сброшены', 'ok');
+    loadOrders();
+  }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+});
 
 function renderOrders(orders){
   el('ordersBody').innerHTML = orders.map(o => `
