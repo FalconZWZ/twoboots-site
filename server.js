@@ -229,6 +229,21 @@ app.get('/api/data', (req, res) => {
   res.json({ categories, products: products.filter(p => !p.hidden) });
 });
 
+const SITE_ORIGIN = 'https://www.two-boots.ru';
+
+app.get('/sitemap.xml', (req, res) => {
+  const { categories, products } = readStore();
+  const staticUrls = ['/', '/catalog', '/about', '/contact'];
+  const catalogUrls = Object.keys(categories).map(cat => `/catalog?cat=${cat}`);
+  const productUrls = products.filter(p => !p.hidden).map(p => `/product/${p.id}`);
+  const urls = [...staticUrls, ...catalogUrls, ...productUrls];
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${urls.map(u => `  <url><loc>${SITE_ORIGIN}${u}</loc></url>`).join('\n')}
+</urlset>`;
+  res.type('application/xml').send(xml);
+});
+
 /* ===== Auth ===== */
 app.post('/admin/login', (req, res) => {
   const { username, password } = req.body || {};

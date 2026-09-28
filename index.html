@@ -2,14 +2,17 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
+<base href="/">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="Two Boots — экипировка для фигурного катания: чехлы для лезвий, сумки и чемоданы, скакалки и аксессуары.">
 <meta name="theme-color" content="#F1F5F7" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0B0F13" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="canonical" href="https://www.two-boots.ru/">
 <meta property="og:title" content="Two Boots">
 <meta property="og:description" content="Экипировка для фигурного катания: чехлы, чемоданы, скакалки и аксессуары.">
 <meta property="og:type" content="website">
+<meta property="og:url" content="https://www.two-boots.ru/">
 <title>Two Boots</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400;600;700;800;900&family=Manrope:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap">
@@ -447,18 +450,18 @@
 <body>
 <header class="site-header">
   <div class="wrap">
-    <a href="#/" class="brand" aria-label="Two Boots — на главную">
+    <a href="/" class="brand" aria-label="Two Boots — на главную">
       <span class="brand-mark" id="brandMarkSlot"></span>
       <span class="brand-word"><span class="cap">T</span><span class="low">w</span><span class="cap o-accent">O</span> <span class="low">b</span><span class="cap o-accent">OO</span><span class="low">ts</span></span>
     </a>
     <nav class="nav-links" id="navLinks">
-      <a href="#/" data-route="/">Главная</a>
-      <a href="#/catalog" data-route="/catalog">Каталог</a>
-      <a href="#/about" data-route="/about">О бренде</a>
-      <a href="#/contact" data-route="/contact">Контакты</a>
+      <a href="/" data-route="/">Главная</a>
+      <a href="/catalog" data-route="/catalog">Каталог</a>
+      <a href="/about" data-route="/about">О бренде</a>
+      <a href="/contact" data-route="/contact">Контакты</a>
     </nav>
     <div class="header-actions">
-      <a class="icon-btn" href="#/account" aria-label="Личный кабинет">
+      <a class="icon-btn" href="/account" aria-label="Личный кабинет">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 20c1.5-4 5-6 7.5-6s6 2 7.5 6"/></svg>
       </a>
       <button class="icon-btn" id="cartBtn" aria-label="Корзина">
@@ -491,9 +494,9 @@
       <div>
         <h4>Бренд</h4>
         <ul class="footer-links">
-          <li><a href="#/about">О нас</a></li>
-          <li><a href="#/contact">Контакты</a></li>
-          <li><a href="#/contact">Доставка и возврат</a></li>
+          <li><a href="/about">О нас</a></li>
+          <li><a href="/contact">Контакты</a></li>
+          <li><a href="/contact">Доставка и возврат</a></li>
         </ul>
       </div>
       <div>
@@ -590,7 +593,7 @@ async function loadData(){
 function renderFooterCatalogLinks(){
   const el = document.getElementById('footerCatalogLinks');
   if(!el) return;
-  el.innerHTML = Object.keys(CATEGORIES).map(cat => `<li><a href="#/catalog?cat=${cat}">${CATEGORIES[cat]}</a></li>`).join('');
+  el.innerHTML = Object.keys(CATEGORIES).map(cat => `<li><a href="/catalog?cat=${cat}">${CATEGORIES[cat]}</a></li>`).join('');
 }
 
 let CURRENT_USER = null;
@@ -680,13 +683,13 @@ document.getElementById('cartFoot').addEventListener('click', async e => {
   if(!CURRENT_USER){
     showToast('Войдите в личный кабинет, чтобы оформить заказ');
     closeCart();
-    location.hash = '/account';
+    navigate('/account');
     return;
   }
   if(!CURRENT_USER.name || !CURRENT_USER.phone){
     showToast('Укажите имя и телефон в профиле, чтобы оформить заказ');
     closeCart();
-    location.hash = '/account?tab=profile';
+    navigate('/account?tab=profile');
     return;
   }
   try{
@@ -700,7 +703,7 @@ document.getElementById('cartFoot').addEventListener('click', async e => {
     updateCartUI();
     closeCart();
     showToast(`Заказ №${data.order.number} оформлен — в ближайшее время с вами свяжется менеджер`);
-    location.hash = '/account';
+    navigate('/account');
   }catch(err){ showToast(err.message); }
 });
 
@@ -727,7 +730,7 @@ function productCard(p){
   const hasDiscount = !!p.discountPercent;
   const newPrice = effectivePrice(p);
   return `<div class="product-card">
-    <a class="card-link" href="#/product/${p.id}">
+    <a class="card-link" href="/product/${p.id}">
       <div class="product-media">
         ${hasDiscount ? `<span class="discount-badge">−${p.discountPercent}%</span>` : ''}
         ${p.img ? `<img src="${p.img}" alt="${p.name}" style="width:100%;height:100%;object-fit:cover;">` : catIcon(p.cat)}
@@ -735,7 +738,7 @@ function productCard(p){
     </a>
     <div class="product-body">
       <span class="eyebrow">${CATEGORIES[p.cat]}</span>
-      <a class="card-link" href="#/product/${p.id}"><h3>${p.name}</h3></a>
+      <a class="card-link" href="/product/${p.id}"><h3>${p.name}</h3></a>
       <div class="product-foot">
         <span>${hasDiscount ? `<span class="price-old">${fmt(p.price)} ₽</span> ` : ''}<span class="price">${fmt(newPrice)} ₽</span></span>
         <button class="add-btn" data-add="${p.id}" aria-label="В корзину">
@@ -755,7 +758,7 @@ const CAT_HINTS = {
 function catTile(cat){
   const count = PRODUCTS.filter(p => p.cat === cat).length;
   const hint = CAT_HINTS[cat] || (count ? `${count} товар${count % 10 === 1 && count % 100 !== 11 ? '' : count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 10 || count % 100 >= 20) ? 'а' : 'ов'}` : '');
-  return `<a class="cat-tile" href="#/catalog?cat=${cat}">
+  return `<a class="cat-tile" href="/catalog?cat=${cat}">
     ${catIcon(cat)}
     <div><h3>${CATEGORIES[cat]}</h3><span>${hint}</span></div>
   </a>`;
@@ -773,8 +776,8 @@ function pageHome(){
         <h1>Всё, что едет<br>на каток <em>в одной сумке</em></h1>
         <p class="hero-lede">Two Boots делает чехлы, чемоданы, скакалки и мелкую экипировку для фигуристов и их тренеров — от первой шайбы до соревновательного сезона.</p>
         <div class="hero-ctas">
-          <a href="#/catalog" class="btn btn-primary">Смотреть каталог</a>
-          <a href="#/about" class="btn btn-ghost">О бренде</a>
+          <a href="/catalog" class="btn btn-primary">Смотреть каталог</a>
+          <a href="/about" class="btn btn-ghost">О бренде</a>
         </div>
         <div class="hero-stats">
           <div class="stat"><b>12+</b><span>моделей в каталоге</span></div>
@@ -809,7 +812,7 @@ function pageHome(){
     <div class="wrap">
       <div class="section-head">
         <div><h2>Хиты каталога</h2><p>То, что чаще всего берут в первую поездку на сборы.</p></div>
-        <a href="#/catalog" class="see-all">Весь каталог →</a>
+        <a href="/catalog" class="see-all">Весь каталог →</a>
       </div>
       <div class="product-grid">${featured.map(productCard).join('')}</div>
     </div>
@@ -838,7 +841,7 @@ function pageHome(){
     <div class="wrap">
       <div class="cta-band">
         <h2>Собираем сумку<br>к следующей тренировке?</h2>
-        <a href="#/catalog" class="btn btn-primary">Перейти в каталог</a>
+        <a href="/catalog" class="btn btn-primary">Перейти в каталог</a>
       </div>
     </div>
   </section>
@@ -867,15 +870,15 @@ function pageCatalog(params){
 function pageProduct(id){
   const p = productById(id);
   if(!p){
-    return `<section class="block"><div class="wrap"><h1>Товар не найден</h1><p style="margin-top:12px;"><a class="btn btn-ghost" href="#/catalog">← Вернуться в каталог</a></p></div></section>`;
+    return `<section class="block"><div class="wrap"><h1>Товар не найден</h1><p style="margin-top:12px;"><a class="btn btn-ghost" href="/catalog">← Вернуться в каталог</a></p></div></section>`;
   }
   const related = PRODUCTS.filter(r => r.cat === p.cat && r.id !== p.id).slice(0,3);
   return `
   <section class="block" style="padding-top:32px;">
     <div class="wrap">
       <div class="breadcrumb">
-        <a href="#/catalog">Каталог</a><span>/</span>
-        <a href="#/catalog?cat=${p.cat}">${CATEGORIES[p.cat]}</a><span>/</span>
+        <a href="/catalog">Каталог</a><span>/</span>
+        <a href="/catalog?cat=${p.cat}">${CATEGORIES[p.cat]}</a><span>/</span>
         <span>${p.name}</span>
       </div>
       <div class="pdp">
@@ -927,7 +930,7 @@ function pageProduct(id){
             <button class="btn btn-primary" id="pdpAdd">Добавить в корзину</button>
             <button class="btn btn-ghost" id="pdpBuyOneClick">Купить в 1 клик</button>
           </div>
-          <div style="margin-top:10px;"><a href="#/catalog?cat=${p.cat}" style="font-size:.88rem;text-decoration:underline;color:var(--ink-soft);">Похожие модели</a></div>
+          <div style="margin-top:10px;"><a href="/catalog?cat=${p.cat}" style="font-size:.88rem;text-decoration:underline;color:var(--ink-soft);">Похожие модели</a></div>
         </div>
       </div>
     </div>
@@ -1010,7 +1013,7 @@ function pageAbout(){
     <div class="wrap">
       <div class="cta-band">
         <h2>Загляните<br>в каталог</h2>
-        <a href="#/catalog" class="btn btn-primary">Смотреть товары</a>
+        <a href="/catalog" class="btn btn-primary">Смотреть товары</a>
       </div>
     </div>
   </section>
@@ -1133,7 +1136,7 @@ function renderOrders(orders){
   const wrap = document.getElementById('ordersList');
   if(!wrap) return;
   if(orders.length === 0){
-    wrap.innerHTML = `<p style="color:var(--ink-soft);">Заказов пока нет — самое время <a href="#/catalog" style="text-decoration:underline;">заглянуть в каталог</a>.</p>`;
+    wrap.innerHTML = `<p style="color:var(--ink-soft);">Заказов пока нет — самое время <a href="/catalog" style="text-decoration:underline;">заглянуть в каталог</a>.</p>`;
     return;
   }
   wrap.innerHTML = orders.map(o => `
@@ -1165,32 +1168,64 @@ async function loadOrders(){
 /* ============ Router ============ */
 const app = document.getElementById('app');
 
-function parseHash(){
-  const raw = location.hash.slice(1) || '/';
-  const [path, query] = raw.split('?');
-  return {path: path || '/', params: new URLSearchParams(query || '')};
+function parseLocation(){
+  return {path: location.pathname || '/', params: new URLSearchParams(location.search || '')};
+}
+
+function navigate(path){
+  history.pushState(null, '', path);
+  render();
+}
+
+document.addEventListener('click', e => {
+  if(e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  const a = e.target.closest('a');
+  if(!a || a.target === '_blank' || a.hasAttribute('download')) return;
+  const href = a.getAttribute('href');
+  if(!href || !href.startsWith('/')) return;
+  e.preventDefault();
+  navigate(href);
+});
+
+const DEFAULT_DESCRIPTION = document.querySelector('meta[name="description"]').content;
+const SITE_ORIGIN = 'https://www.two-boots.ru';
+function setMeta(title, description){
+  document.title = title;
+  document.querySelector('meta[name="description"]').content = description || DEFAULT_DESCRIPTION;
+  const url = SITE_ORIGIN + location.pathname + location.search;
+  document.querySelector('link[rel="canonical"]').href = url;
+  document.querySelector('meta[property="og:url"]').content = url;
+  document.querySelector('meta[property="og:title"]').content = title;
 }
 
 function render(){
-  const {path, params} = parseHash();
+  const {path, params} = parseLocation();
   let html = '';
   let routeKey = path;
 
   if(path === '/' ){
     html = pageHome();
+    setMeta('Two Boots — экипировка для фигурного катания');
   } else if(path === '/catalog'){
     html = pageCatalog(params);
+    setMeta('Каталог — Two Boots', 'Чехлы для лезвий, сумки и чемоданы, скакалки и аксессуары для фигурного катания.');
   } else if(path.startsWith('/product/')){
+    const p = productById(path.replace('/product/',''));
     html = pageProduct(path.replace('/product/',''));
     routeKey = '/catalog';
+    setMeta(p ? `${p.name} — Two Boots` : 'Товар не найден — Two Boots', p ? p.desc : undefined);
   } else if(path === '/about'){
     html = pageAbout();
+    setMeta('О бренде — Two Boots');
   } else if(path === '/contact'){
     html = pageContact();
+    setMeta('Контакты — Two Boots');
   } else if(path === '/account'){
     html = pageAccount();
+    setMeta('Личный кабинет — Two Boots');
   } else {
-    html = `<section class="block"><div class="wrap"><h1>Страница не найдена</h1><p style="margin-top:12px;"><a class="btn btn-ghost" href="#/">← На главную</a></p></div></section>`;
+    html = `<section class="block"><div class="wrap"><h1>Страница не найдена</h1><p style="margin-top:12px;"><a class="btn btn-ghost" href="/">← На главную</a></p></div></section>`;
+    setMeta('Страница не найдена — Two Boots');
   }
 
   app.innerHTML = html;
@@ -1220,7 +1255,7 @@ function bindPageEvents(path, params){
       pill.addEventListener('click', () => {
         const cat = pill.getAttribute('data-cat');
         const params = new URLSearchParams(cat === 'all' ? {} : {cat});
-        location.hash = '/catalog' + (params.toString() ? '?' + params.toString() : '');
+        navigate('/catalog' + (params.toString() ? '?' + params.toString() : ''));
       });
     });
   }
@@ -1231,7 +1266,7 @@ function bindPageEvents(path, params){
       sw.addEventListener('click', () => {
         const variantId = sw.getAttribute('data-variant');
         if(variantId && variantId !== pdpId){
-          location.hash = '/product/' + variantId;
+          navigate('/product/' + variantId);
           return;
         }
         document.querySelectorAll('.swatch').forEach(s => s.classList.remove('active'));
@@ -1374,7 +1409,7 @@ function bindPageEvents(path, params){
   }
 }
 
-window.addEventListener('hashchange', () => { if(PRODUCTS.length) render(); });
+window.addEventListener('popstate', () => { if(PRODUCTS.length) render(); });
 
 (async () => {
   app.innerHTML = `<section class="block"><div class="wrap"><p style="color:var(--ink-soft);">Загрузка каталога…</p></div></section>`;
