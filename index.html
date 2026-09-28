@@ -16,6 +16,19 @@
 <title>Two Boots</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400;600;700;800;900&family=Manrope:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap">
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript">
+    (function(m,e,t,r,i,k,a){
+        m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};
+        m[i].l=1*new Date();
+        for (var j = 0; j < document.scripts.length; j++) {if (document.scripts[j].src === r) { return; }}
+        k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)
+    })(window, document,'script','https://mc.yandex.ru/metrika/tag.js?id=113120776', 'ym');
+
+    ym(113120776, 'init', {ssr:true, webvisor:true, clickmap:true, ecommerce:"dataLayer", referrer: document.referrer, url: location.href, accurateTrackBounce:true, trackLinks:true});
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/113120776" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+<!-- /Yandex.Metrika counter -->
 <style>
   /* ===== Tokens ===== */
   :root{
@@ -702,6 +715,8 @@ document.getElementById('cartFoot').addEventListener('click', async e => {
     cart = [];
     updateCartUI();
     closeCart();
+    trackGoal('order');
+    trackPurchase(data.order);
     showToast(`Заказ №${data.order.number} оформлен — в ближайшее время с вами свяжется менеджер`);
     navigate('/account');
   }catch(err){ showToast(err.message); }
@@ -1212,6 +1227,26 @@ function setMeta(title, description){
   document.querySelector('meta[property="og:title"]').content = title;
 }
 
+/* ============ Yandex.Metrika ============ */
+const METRIKA_ID = 113120776;
+window.dataLayer = window.dataLayer || [];
+// The init call in <head> already counted the first page; SPA navigations don't reload
+// the page, so each later URL change is reported as a hit by hand. render() also runs
+// for same-URL re-renders (e.g. after login) — the URL check keeps those from counting.
+let lastTrackedUrl = location.href;
+function trackPageview(){
+  if(location.href === lastTrackedUrl) return;
+  ym(METRIKA_ID, 'hit', location.href, { title: document.title, referer: lastTrackedUrl });
+  lastTrackedUrl = location.href;
+}
+function trackGoal(goal){ ym(METRIKA_ID, 'reachGoal', goal); }
+function trackPurchase(order){
+  window.dataLayer.push({ ecommerce: { currencyCode: 'RUB', purchase: {
+    actionField: { id: String(order.number), revenue: order.total },
+    products: order.items.map(it => ({ id: it.id, name: it.name, price: it.price, quantity: it.qty, variant: it.size || undefined })),
+  }}});
+}
+
 function render(){
   const {path, params} = parseLocation();
   let html = '';
@@ -1252,6 +1287,7 @@ function render(){
   });
 
   bindPageEvents(path, params);
+  trackPageview();
 }
 
 function bindPageEvents(path, params){
@@ -1325,6 +1361,8 @@ function bindPageEvents(path, params){
           if(!res.ok) throw new Error(data.error || 'Не удалось оформить заказ');
           qoOverlay.classList.remove('open');
           document.getElementById('qoForm').reset();
+          trackGoal('quick_order');
+          trackPurchase(data.order);
           showToast(`Заказ №${data.order.number} принят — мы перезвоним для подтверждения`);
         }catch(err){ errEl.innerHTML = `<p style="color:var(--accent);font-size:.85rem;margin:8px 0 0;">${err.message}</p>`; }
       });
@@ -1348,6 +1386,7 @@ function bindPageEvents(path, params){
         });
         const data = await res.json();
         if(!res.ok) throw new Error(data.error || 'Не удалось отправить сообщение');
+        trackGoal('contact_form');
         showToast('Спасибо! Сообщение отправлено — ответим на указанный email');
         form.reset();
       }catch(err){ showToast(err.message); }
