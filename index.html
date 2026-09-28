@@ -192,6 +192,32 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   }
   .menu-toggle{display:none;}
 
+  /* ===== Text pages (delivery, privacy, consent) ===== */
+  .doc-page{max-width:760px;}
+  .doc-page h1{font-size:clamp(1.8rem,3.5vw,2.4rem);margin-bottom:18px;}
+  .doc-page h2{font-size:1.25rem;margin:34px 0 12px;}
+  .doc-page p,.doc-page li{color:var(--ink-soft);line-height:1.65;}
+  .doc-page p{margin-bottom:12px;}
+  .doc-page ul,.doc-page ol{padding-left:22px;margin-bottom:12px;}
+  .doc-page li{margin-bottom:6px;}
+  .doc-page li b,.doc-page p b{color:var(--ink);}
+  .doc-page a{text-decoration:underline;}
+  .doc-page .doc-meta{color:var(--ink-faint);font-size:.88rem;margin-top:32px;}
+
+  /* ===== Personal data consent + cookie notice ===== */
+  .consent-check{display:flex;gap:10px;align-items:flex-start;margin:4px 0 14px;font-size:.84rem;line-height:1.45;color:var(--ink-soft);cursor:pointer;}
+  .consent-check input{margin-top:2px;flex:none;width:16px;height:16px;accent-color:var(--accent);}
+  .consent-check a{text-decoration:underline;}
+  .cookie-bar{
+    position:fixed;left:16px;right:16px;bottom:16px;z-index:60;max-width:720px;margin:0 auto;
+    display:flex;align-items:center;gap:16px;padding:14px 18px;border-radius:16px;
+    background:var(--surface);border:1px solid var(--border);box-shadow:var(--shadow);
+  }
+  .cookie-bar[hidden]{display:none;}
+  .cookie-bar p{margin:0;font-size:.85rem;color:var(--ink-soft);line-height:1.45;}
+  .cookie-bar a{text-decoration:underline;}
+  @media (max-width:560px){ .cookie-bar{flex-direction:column;align-items:stretch;} }
+
   /* ===== Footer ===== */
   .site-footer{border-top:1px solid var(--border);background:var(--bg-alt);margin-top:96px;}
   .footer-grid{
@@ -519,7 +545,8 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
         <ul class="footer-links">
           <li><a href="/about">О нас</a></li>
           <li><a href="/contact">Контакты</a></li>
-          <li><a href="/contact">Доставка и возврат</a></li>
+          <li><a href="/delivery">Доставка и оплата</a></li>
+          <li><a href="/privacy">Конфиденциальность</a></li>
         </ul>
       </div>
       <div>
@@ -541,6 +568,11 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
     </div>
   </div>
 </footer>
+
+<div class="cookie-bar" id="cookieBar" hidden>
+  <p>Мы используем cookie и Яндекс.Метрику, чтобы сайт работал и становился удобнее. Продолжая пользоваться сайтом, вы соглашаетесь с этим. <a href="/privacy">Подробнее</a></p>
+  <button type="button" class="btn btn-primary btn-sm" id="cookieOk">Понятно</button>
+</div>
 
 <div class="overlay" id="overlay"></div>
 <aside class="cart-drawer" id="cartDrawer" aria-label="Корзина">
@@ -681,6 +713,7 @@ function updateCartUI(){
   }).join('');
   footEl.innerHTML = `
     <div class="row"><span>Итого</span><span class="price">${fmt(cartTotal())} ₽</span></div>
+    ${CURRENT_USER && !CURRENT_USER.consentAt ? consentField('cart-consent') : ''}
     <button class="btn btn-primary btn-block" id="checkoutBtn">Оформить заказ</button>
   `;
 }
@@ -690,6 +723,7 @@ document.getElementById('cartBtn').addEventListener('click', () => openCart());
 document.getElementById('cartClose').addEventListener('click', closeCart);
 document.getElementById('overlay').addEventListener('click', () => { closeCart(); closeMenu(); });
 function openCart(){
+  updateCartUI(); // the consent checkbox depends on who is logged in now
   document.getElementById('cartDrawer').classList.add('open');
   document.getElementById('overlay').classList.add('open');
 }
@@ -715,13 +749,20 @@ document.getElementById('cartFoot').addEventListener('click', async e => {
     navigate('/account?tab=profile');
     return;
   }
+  // Accounts created before the consent checkbox existed give it once, here.
+  const consentBox = document.getElementById('cart-consent');
+  if(consentBox && !consentBox.checked){
+    showToast('Отметьте согласие на обработку персональных данных');
+    return;
+  }
   try{
     const res = await fetch('/api/orders', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ items: cart.map(l => ({ id: l.id, qty: l.qty, size: l.size })) })
+      body: JSON.stringify({ items: cart.map(l => ({ id: l.id, qty: l.qty, size: l.size })), consent: !!consentBox })
     });
     const data = await res.json();
     if(!res.ok) throw new Error(data.error || 'Не удалось оформить заказ');
+    if(consentBox) CURRENT_USER.consentAt = new Date().toISOString();
     cart = [];
     updateCartUI();
     closeCart();
@@ -968,6 +1009,7 @@ function pageProduct(id){
         <form id="qoForm">
           <div class="field"><label for="qo-name">Ваше имя</label><input id="qo-name" required></div>
           <div class="field"><label for="qo-phone">Телефон</label><input id="qo-phone" type="tel" placeholder="+7 ..." required></div>
+          ${consentField('qo-consent')}
           <div id="qoErr"></div>
           <button type="submit" class="btn btn-primary btn-block">Заказать</button>
         </form>
@@ -1067,7 +1109,7 @@ function pageContact(){
             </details>
             <details class="faq-item">
               <summary>Можно ли вернуть товар?</summary>
-              <p>Да, в течение 14 дней, если товар не был в использовании и сохранена упаковка.</p>
+              <p>Да, в течение 7 дней после получения, если товар не был в использовании и сохранена упаковка. Подробнее — на странице <a href="/delivery" style="text-decoration:underline;">«Доставка и оплата»</a>.</p>
             </details>
             <details class="faq-item">
               <summary>Есть ли оптовые условия для клубов?</summary>
@@ -1079,12 +1121,131 @@ function pageContact(){
           <div class="field"><label for="cf-name">Имя</label><input id="cf-name" type="text" required placeholder="Как к вам обращаться"></div>
           <div class="field"><label for="cf-email">Email</label><input id="cf-email" type="email" required placeholder="you@example.com"></div>
           <div class="field"><label for="cf-msg">Сообщение</label><textarea id="cf-msg" required placeholder="Расскажите, что подобрать"></textarea></div>
+          ${consentField('cf-consent')}
           <button type="submit" class="btn btn-primary btn-block">Отправить сообщение</button>
         </form>
       </div>
     </div>
   </section>
   `;
+}
+
+/* ============ Legal pages ============ */
+// Who processes personal data (152-ФЗ "оператор"). Shown in the privacy policy and the consent text.
+const OPERATOR_NAME = '[ФИО владельца]';
+const DOCS_DATE = '28 сентября 2026 г.';
+
+// Required, never pre-checked. Links open in a new tab so the half-filled form survives.
+function consentField(id){
+  return `<label class="consent-check"><input type="checkbox" id="${id}" required>
+    <span>Я даю <a href="/consent" target="_blank">согласие на обработку персональных данных</a> и принимаю <a href="/privacy" target="_blank">политику конфиденциальности</a></span></label>`;
+}
+
+function pageDelivery(){
+  return `
+  <section class="block" style="padding-top:44px;">
+    <div class="wrap doc-page">
+      <h1>Доставка и оплата</h1>
+      <p>Заказ на сайте — это заявка. После оформления менеджер свяжется с вами, уточнит наличие, способ доставки и итоговую стоимость. Онлайн-оплата на сайте не принимается.</p>
+
+      <h2>Доставка</h2>
+      <ul>
+        <li><b>СДЭК</b> — до пункта выдачи или курьером до двери, по всей России. Стоимость и срок — по тарифам СДЭК, обычно 2–7 дней.</li>
+        <li><b>Почта России</b> — в любой населённый пункт. Стоимость — по тарифам Почты, срок обычно 5–14 дней.</li>
+        <li><b>Курьер по Москве</b> — 1–2 дня, стоимость согласуем при подтверждении заказа.</li>
+        <li><b>Самовывоз</b> — Москва, по предварительной договорённости, бесплатно. Адрес сообщит менеджер.</li>
+      </ul>
+
+      <h2>Оплата</h2>
+      <ul>
+        <li><b>Переводом на карту или по СБП</b> — после подтверждения заказа менеджером, реквизиты он пришлёт сам.</li>
+        <li><b>При получении</b> — наложенным платежом в СДЭК или на Почте (служба доставки может взять комиссию за перевод денег) либо курьеру.</li>
+        <li><b>Наличными при самовывозе.</b></li>
+      </ul>
+
+      <h2>Возврат и обмен</h2>
+      <ul>
+        <li><b>Товар не подошёл.</b> Его можно вернуть в течение 7 дней после получения, если он не был в использовании, сохранены товарный вид, упаковка и ярлыки. Деньги вернём в течение 10 дней после получения товара, за вычетом стоимости доставки до вас. Обратную пересылку оплачивает покупатель.</li>
+        <li><b>Товар с браком.</b> Заменим или вернём деньги, доставку в обе стороны в этом случае оплачиваем мы.</li>
+        <li><b>Как оформить.</b> Напишите на <a href="mailto:hello@two-boots.ru">hello@two-boots.ru</a> или позвоните по телефону <a href="tel:+79263497586">+7 (926) 349-75-86</a> и назовите номер заказа.</li>
+      </ul>
+    </div>
+  </section>`;
+}
+
+function pagePrivacy(){
+  return `
+  <section class="block" style="padding-top:44px;">
+    <div class="wrap doc-page">
+      <h1>Политика конфиденциальности</h1>
+      <p>Политика описывает, как обрабатываются персональные данные пользователей сайта <a href="/">www.two-boots.ru</a> (далее — сайт), в соответствии с Федеральным законом № 152-ФЗ «О персональных данных».</p>
+
+      <h2>1. Оператор</h2>
+      <p>Оператор персональных данных — ${OPERATOR_NAME}. Связаться: <a href="mailto:hello@two-boots.ru">hello@two-boots.ru</a>, <a href="tel:+79263497586">+7 (926) 349-75-86</a>.</p>
+
+      <h2>2. Какие данные обрабатываются</h2>
+      <ul>
+        <li>имя или ФИО, номер телефона, email;</li>
+        <li>город и адрес доставки — если вы указали их в профиле;</li>
+        <li>состав и история заказов, текст сообщений через форму обратной связи;</li>
+        <li>технические данные: cookie, IP-адрес, сведения о браузере и устройстве, действия на сайте (через сервис Яндекс.Метрика).</li>
+      </ul>
+
+      <h2>3. Зачем</h2>
+      <ul>
+        <li>регистрация и работа личного кабинета, восстановление пароля;</li>
+        <li>приём и выполнение заказов, связь по заказу, доставка;</li>
+        <li>ответы на обращения;</li>
+        <li>письма о статусе заказа;</li>
+        <li>анализ посещаемости и улучшение сайта.</li>
+      </ul>
+
+      <h2>4. Основания и действия с данными</h2>
+      <p>Данные обрабатываются на основании вашего согласия, а данные заказа — также для исполнения договора с вами. С данными совершаются сбор, запись, систематизация, накопление, хранение, уточнение, использование, передача (предоставление), блокирование, удаление и уничтожение — с использованием средств автоматизации.</p>
+
+      <h2>5. Кому передаются данные</h2>
+      <ul>
+        <li>службам доставки (СДЭК, Почта России, курьерские службы) — имя, телефон и адрес, только для доставки заказа;</li>
+        <li>ООО «Яндекс» — технические данные о посещениях через Яндекс.Метрику;</li>
+        <li>провайдерам хостинга и почты, которые обеспечивают работу сайта.</li>
+      </ul>
+      <p>Данные не продаются и не передаются другим лицам, кроме случаев, предусмотренных законом.</p>
+
+      <h2>6. Сроки хранения</h2>
+      <p>Данные хранятся до достижения целей обработки, удаления учётной записи или отзыва согласия — если более долгий срок не требуется по закону.</p>
+
+      <h2>7. Защита</h2>
+      <p>Соединение с сайтом защищено HTTPS, пароли хранятся только в зашифрованном виде (хеш), доступ к данным есть только у администраторов сайта.</p>
+
+      <h2>8. Ваши права</h2>
+      <p>Вы можете узнать, какие ваши данные обрабатываются, потребовать их уточнения, блокирования или удаления, а также отозвать согласие — письмом на <a href="mailto:hello@two-boots.ru">hello@two-boots.ru</a>. Ответим в течение 10 рабочих дней.</p>
+
+      <h2>9. Cookie</h2>
+      <p>Сайт использует cookie, чтобы работали вход в личный кабинет и корзина, а также Яндекс.Метрику для статистики посещений. Cookie можно отключить в настройках браузера, но тогда личный кабинет работать не будет.</p>
+
+      <h2>10. Изменения</h2>
+      <p>Актуальная версия политики всегда опубликована на этой странице. Текст согласия на обработку данных — <a href="/consent">здесь</a>.</p>
+      <p class="doc-meta">Редакция от ${DOCS_DATE}</p>
+    </div>
+  </section>`;
+}
+
+function pageConsent(){
+  return `
+  <section class="block" style="padding-top:44px;">
+    <div class="wrap doc-page">
+      <h1>Согласие на обработку персональных данных</h1>
+      <p>Отмечая галочку «Я даю согласие на обработку персональных данных» при регистрации, оформлении заказа или отправке сообщения на сайте <a href="/">www.two-boots.ru</a>, я свободно, своей волей и в своём интересе даю согласие ${OPERATOR_NAME} (далее — Оператор) на обработку моих персональных данных на следующих условиях.</p>
+      <ol>
+        <li><b>Данные:</b> имя или ФИО, номер телефона, email, город и адрес доставки, сведения о заказах, текст обращений.</li>
+        <li><b>Цели:</b> регистрация и работа личного кабинета; приём, выполнение и доставка заказов; связь со мной по заказам и обращениям; письма о статусе заказа и восстановлении пароля.</li>
+        <li><b>Действия:</b> сбор, запись, систематизация, накопление, хранение, уточнение, использование, передача (предоставление) службам доставки для доставки заказа, блокирование, удаление, уничтожение — с использованием средств автоматизации.</li>
+        <li><b>Срок:</b> согласие действует до достижения целей обработки или до его отзыва. Отозвать согласие можно письмом на <a href="mailto:hello@two-boots.ru">hello@two-boots.ru</a>.</li>
+        <li>С <a href="/privacy">политикой конфиденциальности</a> я ознакомлен(а).</li>
+      </ol>
+      <p class="doc-meta">Редакция от ${DOCS_DATE}</p>
+    </div>
+  </section>`;
 }
 
 function escAttr(s){ return String(s || '').replace(/"/g,'&quot;'); }
@@ -1125,6 +1286,7 @@ function pageAccount(){
               <div class="field"><label for="rg-phone">Телефон</label><input id="rg-phone" type="tel" placeholder="+7 ..." required></div>
               <div class="field"><label for="rg-city">Город</label><input id="rg-city"></div>
               <div class="field"><label for="rg-address">Адрес</label><input id="rg-address"></div>
+              ${consentField('rg-consent')}
               <div id="registerErr"></div>
               <button type="submit" class="btn btn-primary btn-block">Зарегистрироваться</button>
             </form>
@@ -1312,6 +1474,15 @@ function render(){
   } else if(path === '/account'){
     html = pageAccount();
     setMeta('Личный кабинет — Two Boots');
+  } else if(path === '/delivery'){
+    html = pageDelivery();
+    setMeta('Доставка и оплата — Two Boots', 'Доставка СДЭК, Почтой России, курьером по Москве и самовывоз. Оплата переводом, по СБП или при получении. Условия возврата.');
+  } else if(path === '/privacy'){
+    html = pagePrivacy();
+    setMeta('Политика конфиденциальности — Two Boots');
+  } else if(path === '/consent'){
+    html = pageConsent();
+    setMeta('Согласие на обработку персональных данных — Two Boots');
   } else if(path === '/reset-password'){
     html = pageResetPassword();
     setMeta('Новый пароль — Two Boots');
@@ -1398,6 +1569,7 @@ function bindPageEvents(path, params){
               qty: parseInt(qtyVal.textContent),
               name: document.getElementById('qo-name').value,
               phone: document.getElementById('qo-phone').value,
+              consent: document.getElementById('qo-consent').checked,
             })
           });
           const data = await res.json();
@@ -1425,6 +1597,7 @@ function bindPageEvents(path, params){
             name: document.getElementById('cf-name').value,
             email: document.getElementById('cf-email').value,
             message: document.getElementById('cf-msg').value,
+            consent: document.getElementById('cf-consent').checked,
           })
         });
         const data = await res.json();
@@ -1490,6 +1663,7 @@ function bindPageEvents(path, params){
               phone: document.getElementById('rg-phone').value,
               city: document.getElementById('rg-city').value,
               address: document.getElementById('rg-address').value,
+              consent: document.getElementById('rg-consent').checked,
             })
           });
           const data = await res.json();
@@ -1566,6 +1740,19 @@ function bindPageEvents(path, params){
 }
 
 window.addEventListener('popstate', () => { if(PRODUCTS.length) render(); });
+
+/* cookie notice — the choice is remembered per browser; storage can be blocked, so guard it */
+(() => {
+  const bar = document.getElementById('cookieBar');
+  let seen = false;
+  try{ seen = localStorage.getItem('cookieNoticeOk') === '1'; }catch(e){}
+  if(seen) return;
+  bar.hidden = false;
+  document.getElementById('cookieOk').addEventListener('click', () => {
+    bar.hidden = true;
+    try{ localStorage.setItem('cookieNoticeOk', '1'); }catch(e){}
+  });
+})();
 
 (async () => {
   app.innerHTML = `<section class="block"><div class="wrap"><p style="color:var(--ink-soft);">Загрузка каталога…</p></div></section>`;

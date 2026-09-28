@@ -317,7 +317,7 @@ function requireUser(req, res, next) {
   res.status(401).json({ error: 'Войдите в личный кабинет' });
 }
 function safeUser(u) {
-  return { id: u.id, email: u.email, name: u.name, phone: u.phone, city: u.city, address: u.address };
+  return { id: u.id, email: u.email, name: u.name, phone: u.phone, city: u.city, address: u.address, consentAt: u.consentAt || null };
 }
 
 /* ===== Public data API ===== */
@@ -336,7 +336,7 @@ function unitPrice(product) {
 
 app.get('/sitemap.xml', (req, res) => {
   const { categories, products } = readStore();
-  const staticUrls = ['/', '/catalog', '/about', '/contact'];
+  const staticUrls = ['/', '/catalog', '/about', '/contact', '/delivery', '/privacy'];
   const catalogUrls = Object.keys(categories).map(cat => `/catalog?cat=${cat}`);
   const productUrls = products.filter(p => !p.hidden).map(p => `/product/${p.id}`);
   const urls = [...staticUrls, ...catalogUrls, ...productUrls];
@@ -433,6 +433,8 @@ app.get('/api/admin/data', requireAdmin, (req, res) => {
 
 /* ===== Customer accounts ===== */
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// 152-ФЗ: every form that collects personal data needs an explicit, unticked-by-default consent.
+const CONSENT_ERROR = 'Нужно согласие на обработку персональных данных';
 
 app.post('/api/register', registerLimiter, (req, res) => {
   const { email, password, name, phone, city, address } = req.body || {};
@@ -440,6 +442,7 @@ app.post('/api/register', registerLimiter, (req, res) => {
   if (!password || password.length < 6) return res.status(400).json({ error: 'Пароль должен быть не короче 6 символов' });
   if (!name || !name.trim()) return res.status(400).json({ error: 'Укажите ФИО' });
   if (!phone || !phone.trim()) return res.status(400).json({ error: 'Укажите номер телефона' });
+  if (req.body.consent !== true) return res.status(400).json({ error: CONSENT_ERROR });
   const store = readStore();
   const normalizedEmail = email.trim().toLowerCase();
   if (store.users.some(u => u.email.toLowerCase() === normalizedEmail)) {
@@ -450,6 +453,7 @@ app.post('/api/register', registerLimiter, (req, res) => {
     email: email.trim(),
     passwordHash: hashPassword(password),
     name, phone: phone || '', city: city || '', address: address || '',
+    consentAt: new Date().toISOString(),
     createdAt: new Date().toISOString(),
   };
   store.users.push(user);
@@ -567,6 +571,11 @@ app.post('/api/orders', orderLimiter, requireUser, (req, res) => {
   if (!user.name || !user.name.trim() || !user.phone || !user.phone.trim() || !user.email) {
     return res.status(400).json({ error: 'Заполните имя, телефон и email в профиле, чтобы оформить заказ' });
   }
+  // Accounts registered before the consent checkbox existed give it with their next order.
+  if (!user.consentAt) {
+    if (req.body.consent !== true) return res.status(400).json({ error: CONSENT_ERROR });
+    user.consentAt = new Date().toISOString();
+  }
 
   const lines = [];
   let total = 0;
@@ -618,6 +627,7 @@ app.post('/api/quick-order', orderLimiter, (req, res) => {
   const { productId, qty, name, phone } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Укажите имя' });
   if (!phone || !phone.trim()) return res.status(400).json({ error: 'Укажите номер телефона' });
+  if (req.body.consent !== true) return res.status(400).json({ error: CONSENT_ERROR });
   const store = readStore();
   const product = store.products.find(p => p.id === productId && !p.hidden);
   if (!product) return res.status(404).json({ error: 'Товар не найден' });
@@ -636,6 +646,7 @@ app.post('/api/quick-order', orderLimiter, (req, res) => {
     total,
     status: 'new',
     name: name.trim(), phone: phone.trim(), email: null, city: '', address: '',
+    consentAt: new Date().toISOString(),
     createdAt: new Date().toISOString(),
   };
   store.orders.push(order);
@@ -652,6 +663,7 @@ app.post('/api/contact', contactLimiter, (req, res) => {
   if (!name) return res.status(400).json({ error: 'Укажите имя' });
   if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Укажите корректный email' });
   if (!message) return res.status(400).json({ error: 'Напишите сообщение' });
+  if ((req.body || {}).consent !== true) return res.status(400).json({ error: CONSENT_ERROR });
   notifyOwnerContact({ name, email, message });
   res.json({ ok: true });
 });
@@ -926,8 +938,15 @@ function pageSeo(pathname, query) {
       ],
     };
   }
-  const staticTitles = { '/about': 'О бренде — Two Boots', '/contact': 'Контакты — Two Boots', '/account': 'Личный кабинет — Two Boots' };
+  const staticTitles = {
+    '/about': 'О бренде — Two Boots', '/contact': 'Контакты — Two Boots', '/account': 'Личный кабинет — Two Boots',
+    '/privacy': 'Политика конфиденциальности — Two Boots', '/consent': 'Согласие на обработку персональных данных — Two Boots',
+  };
   if (staticTitles[pathname]) return { title: staticTitles[pathname], url };
+  if (pathname === '/delivery') {
+    return { title: 'Доставка и оплата — Two Boots', url,
+      description: 'Доставка СДЭК, Почтой России, курьером по Москве и самовывоз. Оплата переводом, по СБП или при получении. Условия возврата.' };
+  }
   if (pathname === '/reset-password') return { title: 'Новый пароль — Two Boots', url, noindex: true };
   return { status: 404, title: 'Страница не найдена — Two Boots', url };
 }
