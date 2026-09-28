@@ -17,6 +17,15 @@
 <title>Two Boots</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400;600;700;800;900&family=Manrope:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap">
+<script>
+// Password-reset links carry a one-time token in the #fragment. Take it out of the
+// address bar before the Metrika counter below records the page URL.
+var RESET_TOKEN = '';
+if (location.pathname === '/reset-password' && location.hash.length > 1) {
+  RESET_TOKEN = location.hash.slice(1);
+  history.replaceState(null, '', '/reset-password');
+}
+</script>
 <!-- Yandex.Metrika counter -->
 <script type="text/javascript">
     (function(m,e,t,r,i,k,a){
@@ -1099,6 +1108,13 @@ function pageAccount(){
               <div id="loginErr"></div>
               <button type="submit" class="btn btn-primary btn-block">Войти</button>
             </form>
+            <p style="margin-top:12px;"><button type="button" id="forgotToggle" style="background:none;border:0;padding:0;color:var(--ink-soft);text-decoration:underline;cursor:pointer;font:inherit;font-size:.9rem;">Забыли пароль?</button></p>
+            <form id="forgotForm" hidden style="margin-top:12px;">
+              <p style="color:var(--ink-soft);font-size:.9rem;margin-bottom:12px;">Укажите email, с которым регистрировались, — пришлём ссылку для смены пароля.</p>
+              <div class="field"><label for="fg-email">Email</label><input id="fg-email" type="email" required></div>
+              <div id="forgotMsg"></div>
+              <button type="submit" class="btn btn-ghost btn-block">Отправить ссылку</button>
+            </form>
           </div>
           <div>
             <h3 style="margin-bottom:16px;font-size:1.2rem;">Регистрация</h3>
@@ -1143,6 +1159,25 @@ function pageAccount(){
             <button type="submit" class="btn btn-primary">Сохранить</button>
           </form>
         </div>
+      </div>
+    </div>
+  </section>`;
+}
+
+function pageResetPassword(){
+  return `
+  <section class="block" style="padding-top:44px;">
+    <div class="wrap">
+      <div class="section-head"><h2>Новый пароль</h2></div>
+      <div class="contact-card" style="max-width:520px;">
+        ${RESET_TOKEN ? `
+        <form id="resetForm">
+          <div class="field"><label for="rp-pass">Новый пароль (мин. 6 символов)</label><input id="rp-pass" type="password" minlength="6" required autocomplete="new-password"></div>
+          <div class="field"><label for="rp-pass2">Повторите пароль</label><input id="rp-pass2" type="password" minlength="6" required autocomplete="new-password"></div>
+          <div id="resetErr"></div>
+          <button type="submit" class="btn btn-primary btn-block">Сохранить пароль</button>
+        </form>` : `
+        <p style="color:var(--ink-soft);">Ссылка недействительна. Запросите восстановление пароля ещё раз на странице <a href="/account" style="text-decoration:underline;">входа</a>.</p>`}
       </div>
     </div>
   </section>`;
@@ -1277,6 +1312,9 @@ function render(){
   } else if(path === '/account'){
     html = pageAccount();
     setMeta('Личный кабинет — Two Boots');
+  } else if(path === '/reset-password'){
+    html = pageResetPassword();
+    setMeta('Новый пароль — Two Boots');
   } else {
     html = `<section class="block"><div class="wrap"><h1>Страница не найдена</h1><p style="margin-top:12px;"><a class="btn btn-ghost" href="/">← На главную</a></p></div></section>`;
     setMeta('Страница не найдена — Two Boots');
@@ -1416,6 +1454,28 @@ function bindPageEvents(path, params){
           render();
         }catch(err){ errEl.innerHTML = `<p style="color:var(--accent);font-size:.85rem;margin:8px 0 0;">${err.message}</p>`; }
       });
+      const forgotForm = document.getElementById('forgotForm');
+      document.getElementById('forgotToggle').addEventListener('click', () => {
+        forgotForm.hidden = !forgotForm.hidden;
+        if(!forgotForm.hidden) document.getElementById('fg-email').value = document.getElementById('li-email').value;
+      });
+      forgotForm.addEventListener('submit', async e => {
+        e.preventDefault();
+        const msgEl = document.getElementById('forgotMsg');
+        const btn = forgotForm.querySelector('button[type="submit"]');
+        msgEl.innerHTML = '';
+        btn.disabled = true;
+        try{
+          const res = await fetch('/api/password/forgot', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ email: document.getElementById('fg-email').value })
+          });
+          const data = await res.json();
+          if(!res.ok) throw new Error(data.error || 'Не удалось отправить письмо');
+          msgEl.innerHTML = `<p style="color:#1c5e26;font-size:.85rem;margin:8px 0 12px;">Если такой email зарегистрирован, мы отправили на него ссылку для смены пароля. Проверьте также папку «Спам».</p>`;
+        }catch(err){ msgEl.innerHTML = `<p style="color:var(--accent);font-size:.85rem;margin:8px 0 12px;">${err.message}</p>`; }
+        finally{ btn.disabled = false; }
+      });
       document.getElementById('registerForm').addEventListener('submit', async e => {
         e.preventDefault();
         const errEl = document.getElementById('registerErr');
@@ -1479,6 +1539,29 @@ function bindPageEvents(path, params){
         }catch(err){ msgEl.innerHTML = `<p style="color:var(--accent);font-size:.85rem;margin:8px 0 0;">${err.message}</p>`; }
       });
     }
+  }
+
+  if(path === '/reset-password'){
+    const form = document.getElementById('resetForm');
+    if(form) form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const errEl = document.getElementById('resetErr');
+      errEl.innerHTML = '';
+      const password = document.getElementById('rp-pass').value;
+      try{
+        if(password !== document.getElementById('rp-pass2').value) throw new Error('Пароли не совпадают');
+        const res = await fetch('/api/password/reset', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ token: RESET_TOKEN, password })
+        });
+        const data = await res.json();
+        if(!res.ok) throw new Error(data.error || 'Не удалось сменить пароль');
+        RESET_TOKEN = '';
+        CURRENT_USER = data.user;
+        showToast('Пароль изменён — вы вошли в личный кабинет');
+        navigate('/account');
+      }catch(err){ errEl.innerHTML = `<p style="color:var(--accent);font-size:.85rem;margin:8px 0 0;">${err.message}</p>`; }
+    });
   }
 }
 

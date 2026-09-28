@@ -134,6 +134,49 @@ function notifyOwnerContact({ name, email, message }) {
   sendOwnerTelegram(text);
 }
 
+function notifyOwnerCancelled(order) {
+  const text = `Клиент отменил заказ №${order.number}\nИмя: ${order.name}\nТелефон: ${order.phone}\nИтого: ${order.total.toLocaleString('ru-RU')} ₽`;
+  if (mailTransport) {
+    mailTransport.sendMail({
+      from: MAIL_FROM,
+      to: OWNER_EMAIL,
+      subject: `Заказ №${order.number} отменён клиентом — Two Boots`,
+      text,
+    }).catch(err => console.error('Не удалось отправить уведомление об отмене заказа:', err.message));
+  }
+  sendOwnerTelegram(text);
+}
+
+const STATUS_EMAIL_TEXT = {
+  processing: 'принят в работу. Менеджер свяжется с вами, чтобы уточнить детали доставки.',
+  shipped: 'отправлен.',
+  completed: 'выполнен. Спасибо, что выбрали Two Boots!',
+  cancelled: 'отменён. Если это ошибка или остались вопросы — просто ответьте на это письмо или позвоните: +7 926 349-75-86.',
+};
+
+function sendOrderStatusEmail(order, email) {
+  if (!mailTransport || !email || !STATUS_EMAIL_TEXT[order.status]) return;
+  mailTransport.sendMail({
+    from: MAIL_FROM,
+    to: email,
+    replyTo: OWNER_EMAIL,
+    subject: `Заказ №${order.number}: статус изменён — Two Boots`,
+    text: `Здравствуйте${order.name ? ', ' + order.name : ''}!\n\nВаш заказ №${order.number} ${STATUS_EMAIL_TEXT[order.status]}\n\nИстория заказов — в личном кабинете: https://www.two-boots.ru/account`,
+  }).catch(err => console.error('Не удалось отправить письмо о смене статуса заказа:', err.message));
+}
+
+function sendPasswordResetEmail(user, link) {
+  return mailTransport.sendMail({
+    from: MAIL_FROM,
+    to: user.email,
+    subject: 'Восстановление пароля — Two Boots',
+    text: `Здравствуйте!\n\nЧтобы задать новый пароль для личного кабинета Two Boots, перейдите по ссылке (действует 1 час):\n${link}\n\nЕсли вы не запрашивали восстановление пароля, просто проигнорируйте это письмо.`,
+    html: `<p>Здравствуйте!</p><p>Чтобы задать новый пароль для личного кабинета Two Boots, перейдите по ссылке (действует 1 час):</p>
+      <p><a href="${link}">Задать новый пароль</a></p>
+      <p style="color:#777;">Если вы не запрашивали восстановление пароля, просто проигнорируйте это письмо.</p>`,
+  });
+}
+
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 if (!fs.existsSync(DATA_FILE)) {
@@ -249,6 +292,7 @@ const loginLimiter = limiter(10, 15, 'Слишком много неудачны
 const registerLimiter = limiter(5, 60, 'Слишком много регистраций с вашего адреса. Попробуйте позже.');
 const orderLimiter = limiter(10, 15, 'Слишком много заявок подряд. Попробуйте через несколько минут или позвоните нам.');
 const contactLimiter = limiter(5, 15, 'Слишком много сообщений подряд. Попробуйте через несколько минут.');
+const resetLimiter = limiter(5, 60, 'Слишком много запросов на восстановление пароля. Попробуйте позже.');
 
 app.use('/uploads', express.static(UPLOADS_DIR));
 // index: false — "/" must reach the SPA fallback below, which fills in per-page SEO tags.
@@ -420,6 +464,57 @@ app.post('/api/login', loginLimiter, (req, res) => {
   res.json({ user: safeUser(user) });
 });
 
+/* ===== Password recovery ===== */
+// Only a SHA-256 of the token is stored, so a leaked store.json/backup can't be used to
+// reset passwords. The token goes in the link's #fragment: fragments never reach server
+// logs or the Referer header, and the page strips it from the address bar right away.
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+function hashToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+app.post('/api/password/forgot', resetLimiter, async (req, res) => {
+  if (!mailTransport) {
+    return res.status(503).json({ error: 'Восстановление пароля временно недоступно — позвоните нам: +7 926 349-75-86' });
+  }
+  const email = String((req.body || {}).email || '').trim().toLowerCase();
+  if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Укажите корректный email' });
+  const store = readStore();
+  const user = store.users.find(u => u.email.toLowerCase() === email);
+  // Same answer whether or not the account exists — the form must not reveal who is registered.
+  if (user) {
+    const token = crypto.randomBytes(32).toString('hex');
+    user.resetTokenHash = hashToken(token);
+    user.resetExpires = Date.now() + RESET_TOKEN_TTL_MS;
+    writeStore(store);
+    try {
+      await sendPasswordResetEmail(user, `${SITE_ORIGIN}/reset-password#${token}`);
+    } catch (err) {
+      console.error('Не удалось отправить письмо для восстановления пароля:', err.message);
+      return res.status(500).json({ error: 'Не удалось отправить письмо. Попробуйте позже.' });
+    }
+  }
+  res.json({ ok: true });
+});
+
+app.post('/api/password/reset', resetLimiter, (req, res) => {
+  const { token, password } = req.body || {};
+  if (!password || String(password).length < 6) return res.status(400).json({ error: 'Пароль должен быть не короче 6 символов' });
+  if (!token || typeof token !== 'string') return res.status(400).json({ error: 'Ссылка недействительна' });
+  const store = readStore();
+  const tokenHash = hashToken(token);
+  const user = store.users.find(u => u.resetTokenHash === tokenHash);
+  if (!user || !user.resetExpires || user.resetExpires < Date.now()) {
+    return res.status(400).json({ error: 'Ссылка устарела или уже использована — запросите восстановление ещё раз' });
+  }
+  user.passwordHash = hashPassword(String(password));
+  delete user.resetTokenHash;
+  delete user.resetExpires;
+  writeStore(store);
+  req.session.userId = user.id;
+  res.json({ user: safeUser(user) });
+});
+
 app.post('/api/logout', (req, res) => {
   delete req.session.userId;
   res.json({ ok: true });
@@ -508,6 +603,7 @@ app.patch('/api/orders/:id/cancel', requireUser, (req, res) => {
   }
   order.status = 'cancelled';
   writeStore(store);
+  notifyOwnerCancelled(order);
   res.json({ order });
 });
 
@@ -574,8 +670,13 @@ app.patch('/api/admin/orders/:id', requireAdmin, (req, res) => {
   const store = readStore();
   const order = store.orders.find(o => o.id === req.params.id);
   if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+  const changed = order.status !== status;
   order.status = status;
   writeStore(store);
+  if (changed) {
+    const user = order.userId && store.users.find(u => u.id === order.userId);
+    sendOrderStatusEmail(order, (user && user.email) || order.email);
+  }
   res.json({ order });
 });
 
@@ -821,6 +922,7 @@ function pageSeo(pathname, query) {
   }
   const staticTitles = { '/about': 'О бренде — Two Boots', '/contact': 'Контакты — Two Boots', '/account': 'Личный кабинет — Two Boots' };
   if (staticTitles[pathname]) return { title: staticTitles[pathname], url };
+  if (pathname === '/reset-password') return { title: 'Новый пароль — Two Boots', url, noindex: true };
   return { status: 404, title: 'Страница не найдена — Two Boots', url };
 }
 
@@ -838,7 +940,7 @@ function renderIndex(seo) {
     .replace(/(<meta property="og:url" content=")[^"]*/, (_, pre) => pre + url);
   let extra = '';
   if (seo.image) extra += `<meta property="og:image" content="${escHtml(seo.image)}">\n`;
-  if (seo.status === 404) extra += '<meta name="robots" content="noindex">\n';
+  if (seo.status === 404 || seo.noindex) extra += '<meta name="robots" content="noindex">\n';
   // "<" escaped so product text can never close the <script> tag early.
   if (seo.jsonLd) extra += `<script type="application/ld+json">${JSON.stringify(seo.jsonLd).replace(/</g, '\\u003c')}</script>\n`;
   return html.replace('</head>', () => extra + '</head>');

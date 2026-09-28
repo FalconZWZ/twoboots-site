@@ -2,5 +2,6 @@ User-agent: *
 Disallow: /admin
 Disallow: /api/
 Disallow: /account
+Disallow: /reset-password
 
 Sitemap: https://www.two-boots.ru/sitemap.xml
