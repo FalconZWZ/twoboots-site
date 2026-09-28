@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <base href="/">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- title, description, canonical и og:* подставляются для каждой страницы в server.js (renderIndex) — не меняйте формат этих тегов -->
 <meta name="description" content="Two Boots — экипировка для фигурного катания: чехлы для лезвий, сумки и чемоданы, скакалки и аксессуары.">
 <meta name="theme-color" content="#F1F5F7" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0B0F13" media="(prefers-color-scheme: dark)">
@@ -1216,7 +1217,9 @@ document.addEventListener('click', e => {
   navigate(href);
 });
 
-const DEFAULT_DESCRIPTION = document.querySelector('meta[name="description"]').content;
+// Hardcoded, not read from the <meta> tag: the server fills that tag per page, so on a
+// product page it holds the product's description. Keep in sync with server.js.
+const DEFAULT_DESCRIPTION = 'Two Boots — экипировка для фигурного катания: чехлы для лезвий, сумки и чемоданы, скакалки и аксессуары.';
 const SITE_ORIGIN = 'https://www.two-boots.ru';
 function setMeta(title, description){
   document.title = title;
@@ -1257,7 +1260,9 @@ function render(){
     setMeta('Two Boots — экипировка для фигурного катания');
   } else if(path === '/catalog'){
     html = pageCatalog(params);
-    setMeta('Каталог — Two Boots', 'Чехлы для лезвий, сумки и чемоданы, скакалки и аксессуары для фигурного катания.');
+    const cat = CATEGORIES[params.get('cat')];
+    if(cat) setMeta(`${cat} — Two Boots`, `${cat} для фигурного катания — каталог Two Boots.`);
+    else setMeta('Каталог — Two Boots', 'Чехлы для лезвий, сумки и чемоданы, скакалки и аксессуары для фигурного катания.');
   } else if(path.startsWith('/product/')){
     const p = productById(path.replace('/product/',''));
     html = pageProduct(path.replace('/product/',''));
