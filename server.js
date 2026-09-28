@@ -328,6 +328,10 @@ app.get('/api/data', (req, res) => {
 
 const SITE_ORIGIN = 'https://www.two-boots.ru';
 
+// Availability: no field = in stock, 'order' = made/brought to order, 'out' = can't be ordered.
+const STOCK_VALUES = ['order', 'out'];
+function normStock(v) { return STOCK_VALUES.includes(v) ? v : undefined; }
+
 function unitPrice(product) {
   return product.discountPercent
     ? Math.round(product.price * (1 - product.discountPercent / 100))
@@ -344,6 +348,70 @@ app.get('/sitemap.xml', (req, res) => {
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${urls.map(u => `  <url><loc>${SITE_ORIGIN}${u}</loc></url>`).join('\n')}
 </urlset>`;
+  res.type('application/xml').send(xml);
+});
+
+function absoluteImageUrl(img) {
+  if (!img) return null;
+  return /^https?:\/\//.test(img) ? img : `${SITE_ORIGIN}/${img.replace(/^\//, '')}`;
+}
+function escXml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+// YML wants numeric category ids and short alphanumeric offer ids; our ids are slugs,
+// so both are derived from a hash of the slug — stable across restarts and reordering.
+function ymlCategoryId(slug) {
+  return parseInt(crypto.createHash('sha1').update('cat:' + slug).digest('hex').slice(0, 8), 16);
+}
+function ymlOfferId(id) {
+  return crypto.createHash('sha1').update(id).digest('hex').slice(0, 12);
+}
+
+// Product feed for Yandex (Вебмастер → «Товары», Яндекс Бизнес). Hidden and out-of-stock
+// products are left out; "под заказ" goes in with available="false", as YML defines it.
+app.get('/yml.xml', (req, res) => {
+  const { categories, products } = readStore();
+  const offers = products.filter(p => !p.hidden && p.stock !== 'out' && p.price > 0 && categories[p.cat]);
+  const offerXml = p => {
+    const image = absoluteImageUrl(p.img);
+    const params = [
+      ...(p.color ? [['Цвет', p.color]] : []),
+      ...(p.size ? [['Размер', p.size]] : []),
+      ...(p.specs || []).filter(([k, v]) => k && v),
+    ];
+    return `      <offer id="${ymlOfferId(p.id)}" available="${p.stock === 'order' ? 'false' : 'true'}">
+        <name>${escXml(p.name)}</name>
+        <vendor>Two Boots</vendor>
+        <url>${SITE_ORIGIN}/product/${encodeURIComponent(p.id)}</url>
+        <price>${unitPrice(p)}</price>${p.discountPercent ? `
+        <oldprice>${p.price}</oldprice>` : ''}
+        <currencyId>RUR</currencyId>
+        <categoryId>${ymlCategoryId(p.cat)}</categoryId>${image ? `
+        <picture>${escXml(image)}</picture>` : ''}
+        <delivery>true</delivery>
+        <pickup>true</pickup>
+        <description>${escXml(p.desc || '')}</description>
+        <sales_notes>Оплата переводом, по СБП или при получении</sales_notes>${params.map(([k, v]) => `
+        <param name="${escXml(k)}">${escXml(v)}</param>`).join('')}
+      </offer>`;
+  };
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<yml_catalog date="${new Date().toISOString().replace(/\.\d+Z$/, '+00:00')}">
+  <shop>
+    <name>Two Boots</name>
+    <company>Two Boots</company>
+    <url>${SITE_ORIGIN}/</url>
+    <currencies>
+      <currency id="RUR" rate="1"/>
+    </currencies>
+    <categories>
+${Object.entries(categories).map(([slug, label]) => `      <category id="${ymlCategoryId(slug)}">${escXml(label)}</category>`).join('\n')}
+    </categories>
+    <offers>
+${offers.map(offerXml).join('\n')}
+    </offers>
+  </shop>
+</yml_catalog>`;
   res.type('application/xml').send(xml);
 });
 
@@ -582,6 +650,7 @@ app.post('/api/orders', orderLimiter, requireUser, (req, res) => {
   for (const item of items) {
     const product = store.products.find(p => p.id === item.id);
     if (!product) continue;
+    if (product.stock === 'out') return res.status(400).json({ error: `«${product.name}» сейчас нет в наличии — уберите его из корзины` });
     const qty = Math.max(1, Math.min(99, Number(item.qty) || 1));
     const price = unitPrice(product);
     lines.push({ id: product.id, name: product.name, size: item.size || null, price, qty });
@@ -631,6 +700,7 @@ app.post('/api/quick-order', orderLimiter, (req, res) => {
   const store = readStore();
   const product = store.products.find(p => p.id === productId && !p.hidden);
   if (!product) return res.status(404).json({ error: 'Товар не найден' });
+  if (product.stock === 'out') return res.status(400).json({ error: 'Этого товара сейчас нет в наличии' });
 
   const qtyNum = Math.max(1, Math.min(99, Number(qty) || 1));
   const price = unitPrice(product);
@@ -778,6 +848,7 @@ function parseProductBody(body) {
     size: body.size || undefined,
     specs,
     discountPercent: discountPercent || undefined,
+    stock: normStock(body.stock),
     hidden: body.hidden === 'true' || body.hidden === true || undefined,
   };
 }
@@ -830,10 +901,14 @@ app.patch('/api/admin/products/:id', requireAdmin, (req, res) => {
   const store = readStore();
   const idx = store.products.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Товар не найден' });
-  const { hidden, discountPercent } = req.body || {};
+  const { hidden, discountPercent, stock } = req.body || {};
   if (hidden !== undefined) {
     if (hidden) store.products[idx].hidden = true;
     else delete store.products[idx].hidden;
+  }
+  if (stock !== undefined) {
+    if (normStock(stock)) store.products[idx].stock = normStock(stock);
+    else delete store.products[idx].stock;
   }
   if (discountPercent !== undefined) {
     const pct = Math.min(95, Math.max(0, Number(discountPercent) || 0));
@@ -845,7 +920,7 @@ app.patch('/api/admin/products/:id', requireAdmin, (req, res) => {
 });
 
 app.post('/api/admin/products/bulk', requireAdmin, (req, res) => {
-  const { ids, hidden, discountPercent } = req.body || {};
+  const { ids, hidden, discountPercent, stock } = req.body || {};
   if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: 'Не выбраны товары' });
   const store = readStore();
   let count = 0;
@@ -860,6 +935,10 @@ app.post('/api/admin/products/bulk', requireAdmin, (req, res) => {
       const pct = Math.min(95, Math.max(0, Number(discountPercent) || 0));
       if (pct > 0) p.discountPercent = pct;
       else delete p.discountPercent;
+    }
+    if (stock !== undefined) {
+      if (normStock(stock)) p.stock = normStock(stock);
+      else delete p.stock;
     }
   });
   writeStore(store);
@@ -912,9 +991,7 @@ function pageSeo(pathname, query) {
   if (productMatch) {
     const p = products.find(x => x.id === productMatch[1] && !x.hidden);
     if (!p) return { status: 404, title: 'Товар не найден — Two Boots', url };
-    const image = !p.img ? null
-      : /^https?:\/\//.test(p.img) ? p.img
-      : `${SITE_ORIGIN}/${p.img.replace(/^\//, '')}`;
+    const image = absoluteImageUrl(p.img);
     const crumbs = [{ name: 'Каталог', item: `${SITE_ORIGIN}/catalog` }];
     if (categories[p.cat]) crumbs.push({ name: categories[p.cat], item: `${SITE_ORIGIN}/catalog?cat=${encodeURIComponent(p.cat)}` });
     crumbs.push({ name: p.name, item: url });
@@ -928,7 +1005,7 @@ function pageSeo(pathname, query) {
           brand: { '@type': 'Brand', name: 'Two Boots' },
           offers: {
             '@type': 'Offer', url, priceCurrency: 'RUB', price: unitPrice(p),
-            availability: 'https://schema.org/InStock', itemCondition: 'https://schema.org/NewCondition',
+            availability: `https://schema.org/${({ order: 'BackOrder', out: 'OutOfStock' })[p.stock] || 'InStock'}`, itemCondition: 'https://schema.org/NewCondition',
           },
         },
         {
