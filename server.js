@@ -6,9 +6,13 @@ const session = require('express-session');
 const FileStore = require('session-file-store')(session);
 const multer = require('multer');
 const nodemailer = require('nodemailer');
+const { rateLimit } = require('express-rate-limit');
 
 const app = express();
 const port = process.env.PORT || 3000;
+// Railway puts one proxy hop in front of the app; without this every visitor
+// would share the proxy's IP and the rate limits below would block everyone at once.
+app.set('trust proxy', 1);
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data-runtime');
 const DATA_FILE = path.join(DATA_DIR, 'store.json');
@@ -92,19 +96,41 @@ function notifyOwnerNewOrder(order) {
       }),
     }).then(r => { if (!r.ok) return r.text().then(t => { throw new Error(t); }); })
       .catch(err => console.error('Не удалось отправить заказ в бот заявок:', err.message));
-  } else if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-    fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text }),
-    }).then(r => { if (!r.ok) return r.text().then(t => { throw new Error(t); }); })
-      .catch(err => console.error('Не удалось отправить уведомление в Telegram:', err.message));
+  } else {
+    sendOwnerTelegram(text);
   }
 
   if (WHATSAPP_CALLMEBOT_APIKEY) {
     const url = `https://api.callmebot.com/whatsapp.php?phone=${OWNER_PHONE}&text=${encodeURIComponent(text)}&apikey=${WHATSAPP_CALLMEBOT_APIKEY}`;
     fetch(url).catch(err => console.error('Не удалось отправить уведомление в WhatsApp:', err.message));
   }
+}
+
+function sendOwnerTelegram(text) {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+  fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text }),
+  }).then(r => { if (!r.ok) return r.text().then(t => { throw new Error(t); }); })
+    .catch(err => console.error('Не удалось отправить уведомление в Telegram:', err.message));
+}
+
+// Contact-form messages go to email (reply-to = visitor, so the owner can answer
+// straight from the mail client) and to the plain Telegram bot. Not to the
+// order-desk bot: its payload is order-shaped, with a "take into work" button.
+function notifyOwnerContact({ name, email, message }) {
+  const text = `Сообщение с сайта\nИмя: ${name}\nEmail: ${email}\n\n${message}`;
+  if (mailTransport) {
+    mailTransport.sendMail({
+      from: MAIL_FROM,
+      to: OWNER_EMAIL,
+      replyTo: email,
+      subject: `Сообщение с сайта от ${name} — Two Boots`,
+      text,
+    }).catch(err => console.error('Не удалось отправить сообщение с формы обратной связи:', err.message));
+  }
+  sendOwnerTelegram(text);
 }
 
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -204,6 +230,25 @@ app.use(session({
   cookie: { maxAge: 7 * 24 * 60 * 60 * 1000 },
 }));
 
+function limiter(limit, windowMinutes, error, extra = {}) {
+  return rateLimit({
+    windowMs: windowMinutes * 60 * 1000,
+    limit,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (req, res) => {
+      console.warn(`Rate limit: ${req.ip} ${req.method} ${req.originalUrl}`);
+      res.status(429).json({ error });
+    },
+    ...extra,
+  });
+}
+// Only failed attempts count, so a user who logs in successfully never burns the budget.
+const loginLimiter = limiter(10, 15, 'Слишком много неудачных попыток входа. Попробуйте через 15 минут.', { skipSuccessfulRequests: true });
+const registerLimiter = limiter(5, 60, 'Слишком много регистраций с вашего адреса. Попробуйте позже.');
+const orderLimiter = limiter(10, 15, 'Слишком много заявок подряд. Попробуйте через несколько минут или позвоните нам.');
+const contactLimiter = limiter(5, 15, 'Слишком много сообщений подряд. Попробуйте через несколько минут.');
+
 app.use('/uploads', express.static(UPLOADS_DIR));
 app.use(express.static(__dirname));
 
@@ -245,7 +290,7 @@ ${urls.map(u => `  <url><loc>${SITE_ORIGIN}${u}</loc></url>`).join('\n')}
 });
 
 /* ===== Auth ===== */
-app.post('/admin/login', (req, res) => {
+app.post('/admin/login', loginLimiter, (req, res) => {
   const { username, password } = req.body || {};
   const store = readStore();
   const admin = (store.admins || []).find(a => a.username === username);
@@ -331,7 +376,7 @@ app.get('/api/admin/data', requireAdmin, (req, res) => {
 /* ===== Customer accounts ===== */
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-app.post('/api/register', (req, res) => {
+app.post('/api/register', registerLimiter, (req, res) => {
   const { email, password, name, phone, city, address } = req.body || {};
   if (!email || !EMAIL_RE.test(email)) return res.status(400).json({ error: 'Укажите корректный email' });
   if (!password || password.length < 6) return res.status(400).json({ error: 'Пароль должен быть не короче 6 символов' });
@@ -355,7 +400,7 @@ app.post('/api/register', (req, res) => {
   res.json({ user: safeUser(user) });
 });
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', loginLimiter, (req, res) => {
   const { email, password } = req.body || {};
   const store = readStore();
   const normalizedEmail = String(email || '').trim().toLowerCase();
@@ -404,7 +449,7 @@ app.get('/api/orders', requireUser, (req, res) => {
   res.json({ orders });
 });
 
-app.post('/api/orders', requireUser, (req, res) => {
+app.post('/api/orders', orderLimiter, requireUser, (req, res) => {
   const { items } = req.body || {};
   if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'Корзина пуста' });
   const store = readStore();
@@ -461,7 +506,7 @@ app.patch('/api/orders/:id/cancel', requireUser, (req, res) => {
 });
 
 /* ===== Quick order (buy in one click, no account needed) ===== */
-app.post('/api/quick-order', (req, res) => {
+app.post('/api/quick-order', orderLimiter, (req, res) => {
   const { productId, qty, name, phone } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Укажите имя' });
   if (!phone || !phone.trim()) return res.status(400).json({ error: 'Укажите номер телефона' });
@@ -491,6 +536,18 @@ app.post('/api/quick-order', (req, res) => {
   writeStore(store);
   notifyOwnerNewOrder(order);
   res.json({ order });
+});
+
+/* ===== Contact form ===== */
+app.post('/api/contact', contactLimiter, (req, res) => {
+  const name = String((req.body || {}).name || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 100);
+  const email = String((req.body || {}).email || '').trim().slice(0, 200);
+  const message = String((req.body || {}).message || '').trim().slice(0, 5000);
+  if (!name) return res.status(400).json({ error: 'Укажите имя' });
+  if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Укажите корректный email' });
+  if (!message) return res.status(400).json({ error: 'Напишите сообщение' });
+  notifyOwnerContact({ name, email, message });
+  res.json({ ok: true });
 });
 
 /* ===== Admin: orders ===== */

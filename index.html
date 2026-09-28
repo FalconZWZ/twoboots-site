@@ -502,8 +502,8 @@
       <div>
         <h4>Мы на связи</h4>
         <ul class="footer-links">
-          <li><span>hello@twoboots.ru</span></li>
-          <li><span>+7 (926) 349-75-86</span></li>
+          <li><a href="mailto:hello@two-boots.ru">hello@two-boots.ru</a></li>
+          <li><a href="tel:+79263497586">+7 (926) 349-75-86</a></li>
         </ul>
         <div class="social-row" style="margin-top:14px;">
           <a href="#" aria-label="Telegram">TG</a>
@@ -1027,8 +1027,8 @@ function pageContact(){
       <div class="section-head"><h2>Контакты</h2><p>Ответим по экипировке, размерам и опту в течение рабочего дня.</p></div>
       <div class="contact-grid">
         <div>
-          <div class="contact-card"><h4>Почта</h4><div>hello@twoboots.ru</div></div>
-          <div class="contact-card"><h4>Телефон</h4><div>+7 (926) 349-75-86</div></div>
+          <div class="contact-card"><h4>Почта</h4><div><a href="mailto:hello@two-boots.ru">hello@two-boots.ru</a></div></div>
+          <div class="contact-card"><h4>Телефон</h4><div><a href="tel:+79263497586">+7 (926) 349-75-86</a></div></div>
           <div class="contact-card"><h4>Шоурум</h4><div>Москва, по предварительной записи</div></div>
           <div style="margin-top:32px;">
             <h2 style="font-size:1.4rem;margin-bottom:16px;">Частые вопросы</h2>
@@ -1333,10 +1333,25 @@ function bindPageEvents(path, params){
 
   if(path === '/contact'){
     const form = document.getElementById('contactForm');
-    form.addEventListener('submit', e => {
+    form.addEventListener('submit', async e => {
       e.preventDefault();
-      showToast('Спасибо! Сообщение отправлено (демо-режим)');
-      form.reset();
+      const btn = form.querySelector('button[type="submit"]');
+      btn.disabled = true;
+      try{
+        const res = await fetch('/api/contact', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({
+            name: document.getElementById('cf-name').value,
+            email: document.getElementById('cf-email').value,
+            message: document.getElementById('cf-msg').value,
+          })
+        });
+        const data = await res.json();
+        if(!res.ok) throw new Error(data.error || 'Не удалось отправить сообщение');
+        showToast('Спасибо! Сообщение отправлено — ответим на указанный email');
+        form.reset();
+      }catch(err){ showToast(err.message); }
+      finally{ btn.disabled = false; }
     });
   }
 
