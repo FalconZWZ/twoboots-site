@@ -39,6 +39,8 @@
   .msg.ok{background:#dff3e0;color:#1c5e26;}
   #loginScreen{max-width:360px;margin:80px auto;}
   [hidden]{display:none!important;}
+  select[data-order-status]{min-width:132px;}
+  [data-order-comment]{white-space:nowrap;}
   .cat-pill{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:999px;padding:4px 6px 4px 14px;margin:0 8px 8px 0;font-size:.85rem;}
 </style>
 </head>
@@ -65,13 +67,21 @@
 
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;">
-      <h2>Заказы</h2>
+      <h2>Заказы <span id="newOrdersBadge" style="font-size:.8rem;font-weight:700;color:#fff;background:var(--accent);border-radius:999px;padding:2px 10px;vertical-align:middle;" hidden></span></h2>
       <button class="btn-ghost" id="resetOrdersBtn" hidden>Сбросить заказы</button>
     </div>
+    <div class="row" style="align-items:flex-end;margin-bottom:6px;">
+      <div class="field" style="flex:none;width:170px;"><label>Статус</label><select id="orderStatusFilter"><option value="">Все</option></select></div>
+      <div class="field"><label>Поиск</label><input id="orderSearch" type="search" placeholder="№ заказа, имя, телефон или email"></div>
+      <div class="field" style="flex:none;align-self:flex-end;"><button type="button" class="btn-ghost btn-sm" id="exportOrdersBtn">Выгрузить в Excel (CSV)</button></div>
+    </div>
+    <div id="ordersCount" style="font-size:.82rem;color:var(--ink-soft);margin-bottom:6px;"></div>
+    <div style="overflow-x:auto;">
     <table>
-      <thead><tr><th>№</th><th>Дата</th><th>Клиент</th><th>Товары</th><th>Сумма</th><th>Статус</th><th></th></tr></thead>
+      <thead><tr><th>№</th><th>Дата</th><th>Клиент</th><th>Товары</th><th>Сумма</th><th>Статус</th><th>Комментарий</th><th></th></tr></thead>
       <tbody id="ordersBody"></tbody>
     </table>
+    </div>
   </div>
 
   <div class="card">
@@ -310,9 +320,46 @@ const ORDER_STATUS_LABELS = { new:'Новый', processing:'В обработк�
 
 async function loadOrders(){
   const { orders } = await api('/api/admin/orders');
-  renderOrders(orders);
+  ALL_ORDERS = orders;
+  refreshOrders();
   el('resetOrdersBtn').hidden = !IS_SUPER;
 }
+
+el('orderStatusFilter').innerHTML += Object.entries(ORDER_STATUS_LABELS).map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+el('orderStatusFilter').addEventListener('change', refreshOrders);
+el('orderSearch').addEventListener('input', refreshOrders);
+
+// CSV for Excel: UTF-8 BOM and ";" so Russian Excel opens it with columns and Cyrillic intact.
+// Cells starting with = + - @ get a leading apostrophe so Excel never runs them as formulas.
+function csvCell(v){
+  let s = String(v == null ? '' : v);
+  if(/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+  return '"' + s.replace(/"/g, '""') + '"';
+}
+el('exportOrdersBtn').addEventListener('click', () => {
+  const list = filteredOrders();
+  if(!list.length){ showMsg(el('globalMsg'), 'Нет заказов для выгрузки', 'error'); return; }
+  const header = ['Номер','Дата','Статус','Тип','Имя','Телефон','Email','Город','Адрес','Товары','Сумма товаров','Промокод','Скидка','Итого','Комментарий'];
+  const rows = list.map(o => [
+    o.number,
+    new Date(o.createdAt).toLocaleString('ru-RU'),
+    ORDER_STATUS_LABELS[o.status] || o.status,
+    o.quick ? 'В 1 клик' : 'Корзина',
+    o.name, o.phone, o.email, o.city, o.address,
+    o.items.map(it => `${it.name}${it.size ? ' (' + it.size + ')' : ''} × ${it.qty}`).join('; '),
+    o.subtotal != null ? o.subtotal : o.total,
+    o.promo ? o.promo.code : '',
+    o.promo ? o.promo.discount : '',
+    o.total,
+    o.comment,
+  ]);
+  const csv = '\uFEFF' + [header, ...rows].map(r => r.map(csvCell).join(';')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = `zakazy-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
 
 el('resetOrdersBtn').addEventListener('click', async () => {
   if(!confirm('Удалить ВСЕ заказы и обнулить нумерацию? Отменить будет нельзя.')) return;
@@ -323,22 +370,77 @@ el('resetOrdersBtn').addEventListener('click', async () => {
   }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
 });
 
+let ALL_ORDERS = [];
+const escHtml = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const digitsOnly = s => String(s || '').replace(/\D/g, '');
+
+// Status filter + free-text search. "№12" matches only the order number; plain digits match
+// the number or (3+ digits) the phone, whatever its formatting; text matches name/email/phone.
+function filteredOrders(){
+  const status = el('orderStatusFilter').value;
+  const raw = el('orderSearch').value.trim().toLowerCase();
+  const byNumber = raw.startsWith('№');
+  const q = raw.replace(/^№\s*/, '');
+  const qDigits = digitsOnly(q);
+  const numeric = byNumber || /^[\d\s()+-]+$/.test(q);
+  return ALL_ORDERS.filter(o => {
+    if(status && o.status !== status) return false;
+    if(!q) return true;
+    if(numeric){
+      if(String(o.number) === qDigits) return true;
+      if(byNumber || qDigits.length < 3) return false;
+      // "+7 903…" and "8 903…" are the same number: compare without the country prefix.
+      const phone = digitsOnly(o.phone).replace(/^[78](?=\d{10}$)/, '');
+      return phone.includes(qDigits) || (/^[78]/.test(qDigits) && phone.includes(qDigits.slice(1)));
+    }
+    return [o.name, o.email, o.phone].some(v => String(v || '').toLowerCase().includes(q));
+  });
+}
+
+function refreshOrders(){
+  const list = filteredOrders();
+  renderOrders(list);
+  const newCount = ALL_ORDERS.filter(o => o.status === 'new').length;
+  el('newOrdersBadge').hidden = !newCount;
+  el('newOrdersBadge').textContent = 'Новых: ' + newCount;
+  el('ordersCount').textContent = list.length === ALL_ORDERS.length
+    ? `Всего заказов: ${ALL_ORDERS.length}`
+    : `Показано ${list.length} из ${ALL_ORDERS.length}`;
+}
+
 function renderOrders(orders){
   el('ordersBody').innerHTML = orders.map(o => `
     <tr>
       <td style="white-space:nowrap;font-weight:700;">№${o.number || o.id.slice(0,8)}</td>
       <td style="white-space:nowrap;">${new Date(o.createdAt).toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
-      <td>${o.quick ? '<span style="display:inline-block;font-size:.72rem;font-weight:700;color:#1c5e26;background:#dff3e0;padding:2px 8px;border-radius:999px;margin-bottom:4px;">В 1 клик</span><br>' : ''}${o.name || ''}<br><small style="color:var(--ink-soft);">${o.email || ''}${o.phone ? ' · ' + o.phone : ''}</small>${o.city || o.address ? `<br><small style="color:var(--ink-soft);">${[o.city, o.address].filter(Boolean).join(', ')}</small>` : ''}</td>
-      <td>${o.items.map(it => `${it.name}${it.size ? ' · ' + it.size : ''} × ${it.qty}`).join('<br>')}</td>
+      <td>${o.quick ? '<span style="display:inline-block;font-size:.72rem;font-weight:700;color:#1c5e26;background:#dff3e0;padding:2px 8px;border-radius:999px;margin-bottom:4px;">В 1 клик</span><br>' : ''}${escHtml(o.name)}<br><small style="color:var(--ink-soft);">${escHtml(o.email)}${o.phone ? ' · ' + escHtml(o.phone) : ''}</small>${o.city || o.address ? `<br><small style="color:var(--ink-soft);">${escHtml([o.city, o.address].filter(Boolean).join(', '))}</small>` : ''}</td>
+      <td>${o.items.map(it => `${escHtml(it.name)}${it.size ? ' · ' + escHtml(it.size) : ''} × ${it.qty}`).join('<br>')}</td>
       <td style="white-space:nowrap;">${o.total.toLocaleString('ru-RU')} ₽${o.promo ? `<br><small style="color:var(--ink-soft);">${o.promo.code}: −${o.promo.discount.toLocaleString('ru-RU')} ₽</small>` : ''}</td>
       <td>
         <select data-order-status="${o.id}">
           ${Object.entries(ORDER_STATUS_LABELS).map(([val,label]) => `<option value="${val}" ${val===o.status?'selected':''}>${label}</option>`).join('')}
         </select>
       </td>
-      <td>${IS_SUPER ? `<button class="btn-ghost" data-delete-order="${o.id}">Удалить</button>` : ''}</td>
+      <td style="max-width:220px;">${o.comment ? `<div style="white-space:pre-wrap;font-size:.82rem;">${escHtml(o.comment)}</div>` : ''}<button type="button" class="btn-ghost btn-sm" data-order-comment="${o.id}" style="margin-top:4px;">${o.comment ? 'Изменить' : 'Добавить'}</button></td>
+      <td>${IS_SUPER ? `<button class="btn-ghost btn-sm" data-delete-order="${o.id}">Удалить</button>` : ''}</td>
     </tr>
-  `).join('') || '<tr><td colspan="7" style="color:var(--ink-soft)">Заказов пока нет.</td></tr>';
+  `).join('') || `<tr><td colspan="8" style="color:var(--ink-soft)">${ALL_ORDERS.length ? 'Ничего не найдено.' : 'Заказов пока нет.'}</td></tr>`;
+
+  el('ordersBody').querySelectorAll('[data-order-comment]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-order-comment');
+      const order = ALL_ORDERS.find(o => o.id === id);
+      const text = prompt('Комментарий к заказу (видно только администраторам):', order.comment || '');
+      if(text === null) return;
+      try{
+        await api('/api/admin/orders/' + id, {
+          method:'PATCH', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ comment: text })
+        });
+        loadOrders();
+      }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+    });
+  });
 
   el('ordersBody').querySelectorAll('[data-order-status]').forEach(sel => {
     sel.addEventListener('change', async () => {
@@ -348,6 +450,7 @@ function renderOrders(orders){
           body: JSON.stringify({ status: sel.value })
         });
         showMsg(el('globalMsg'), 'Статус заказа обновлён', 'ok');
+        loadOrders();
       }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
     });
   });

@@ -687,11 +687,18 @@ app.post('/api/promo/check', promoLimiter, (req, res) => {
 });
 
 /* ===== Orders ===== */
+// What a customer may see of their own order: everything except the manager's internal note.
+function customerOrder(order) {
+  const { comment, ...rest } = order;
+  return rest;
+}
+
 app.get('/api/orders', requireUser, (req, res) => {
   const store = readStore();
   const orders = store.orders
     .filter(o => o.userId === req.session.userId)
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .map(customerOrder);
   res.json({ orders });
 });
 
@@ -749,7 +756,7 @@ app.patch('/api/orders/:id/cancel', requireUser, (req, res) => {
   order.status = 'cancelled';
   writeStore(store);
   notifyOwnerCancelled(order);
-  res.json({ order });
+  res.json({ order: customerOrder(order) });
 });
 
 /* ===== Quick order (buy in one click, no account needed) ===== */
@@ -819,13 +826,19 @@ app.get('/api/admin/orders', requireAdmin, (req, res) => {
 });
 
 app.patch('/api/admin/orders/:id', requireAdmin, (req, res) => {
-  const { status } = req.body || {};
-  if (!ORDER_STATUSES.includes(status)) return res.status(400).json({ error: 'Некорректный статус' });
+  const { status, comment } = req.body || {};
+  if (status !== undefined && !ORDER_STATUSES.includes(status)) return res.status(400).json({ error: 'Некорректный статус' });
   const store = readStore();
   const order = store.orders.find(o => o.id === req.params.id);
   if (!order) return res.status(404).json({ error: 'Заказ не найден' });
-  const changed = order.status !== status;
-  order.status = status;
+  const changed = status !== undefined && order.status !== status;
+  if (status !== undefined) order.status = status;
+  // Internal manager note — never sent to the customer (see customerOrder()).
+  if (comment !== undefined) {
+    const text = String(comment).trim().slice(0, 1000);
+    if (text) order.comment = text;
+    else delete order.comment;
+  }
   writeStore(store);
   if (changed) {
     const user = order.userId && store.users.find(u => u.id === order.userId);
