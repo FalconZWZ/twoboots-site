@@ -498,6 +498,16 @@ app.delete('/api/admin/orders/:id', requireSuperAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
+// Deletes every order and resets the order-number counter to 0 — for
+// clearing out test orders before going live, so the next real order starts at №1.
+app.delete('/api/admin/orders', requireSuperAdmin, (req, res) => {
+  const store = readStore();
+  store.orders = [];
+  store.orderSeq = 0;
+  writeStore(store);
+  res.json({ ok: true });
+});
+
 /* ===== Admin: categories ===== */
 app.post('/api/admin/categories', requireAdmin, (req, res) => {
   const { id, label } = req.body || {};
