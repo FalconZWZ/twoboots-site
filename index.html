@@ -1150,8 +1150,22 @@ function renderOrders(orders){
       </div>
       ${o.items.map(it => `<div class="order-line"><span>${it.name}${it.size?' · '+it.size:''} × ${it.qty}</span><span>${fmt(it.price*it.qty)} ₽</span></div>`).join('')}
       <div class="order-total"><span>Итого</span><span>${fmt(o.total)} ₽</span></div>
+      ${['new','processing'].includes(o.status) ? `<button class="btn btn-ghost btn-sm" style="margin-top:12px;" data-cancel-order="${o.id}">Отменить заказ</button>` : ''}
     </div>
   `).join('');
+
+  wrap.querySelectorAll('[data-cancel-order]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if(!confirm('Отменить этот заказ?')) return;
+      try{
+        const res = await fetch(`/api/orders/${btn.getAttribute('data-cancel-order')}/cancel`, { method:'PATCH' });
+        const data = await res.json();
+        if(!res.ok) throw new Error(data.error || 'Не удалось отменить заказ');
+        showToast('Заказ отменён');
+        loadOrders();
+      }catch(e){ showToast(e.message); }
+    });
+  });
 }
 
 async function loadOrders(){
