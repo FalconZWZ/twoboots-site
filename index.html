@@ -549,6 +549,15 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   .cart-foot .row{display:flex;justify-content:space-between;margin-bottom:16px;font-weight:700;}
   .cart-foot .row.sub{font-weight:500;color:var(--ink-soft);margin-bottom:8px;font-size:.92rem;}
   .cart-foot .row.promo{font-weight:600;color:#1c7a3a;margin-bottom:8px;font-size:.92rem;}
+  .cart-upsell{padding:14px 22px 4px;border-top:1px dashed var(--border);}
+  .cart-upsell h6{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-faint);margin:0 0 10px;font-weight:700;}
+  .upsell-row{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+  .upsell-row .thumb{width:44px;height:44px;border-radius:10px;overflow:hidden;background:var(--bg-alt);flex:none;display:flex;align-items:center;justify-content:center;}
+  .upsell-row .thumb img{width:100%;height:100%;object-fit:cover;}
+  .upsell-row .thumb svg{width:70%;stroke:var(--ink);}
+  .upsell-row .info{flex:1;min-width:0;font-size:.85rem;}
+  .upsell-row .info a{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .upsell-row .info span{color:var(--ink-soft);}
   .cart-foot.checkout{max-height:78vh;overflow-y:auto;}
   .co-title{font-weight:700;font-size:.95rem;margin:0 0 10px;}
   .co-methods{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;}
@@ -842,6 +851,29 @@ function reviewsWord(n){
   return m10 === 1 && m100 !== 11 ? 'отзыв' : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? 'отзыва' : 'отзывов';
 }
 
+/* "С этим покупают": the admin's picks first, then popular in-stock products from complementary
+   categories, taken in turns so the list is varied; never what's already in view or in the cart */
+const COMPLEMENT = { blades: ['access', 'ropes', 'bags'], bags: ['blades', 'access', 'ropes'], ropes: ['access', 'blades', 'bags'], access: ['blades', 'ropes', 'bags'] };
+// maxPrice (cart): suggest small add-ons — cheapest first, nothing pricier than maxPrice
+function crossSellFor(base, limit, maxPrice = 0){
+  const cheapFirst = maxPrice > 0;
+  const exclude = new Set(base.map(p => p.id));
+  const picked = base.flatMap(p => p.related || []).map(productById).filter(Boolean);
+  const cats = [...new Set(base.flatMap(p => COMPLEMENT[p.cat] || Object.keys(CATEGORIES).filter(c => c !== p.cat)))];
+  const byPopularity = (a, b) => ((b.rating && b.rating.count) || 0) - ((a.rating && a.rating.count) || 0);
+  const byPrice = (a, b) => effectivePrice(a) - effectivePrice(b);
+  const queues = cats.map(c => PRODUCTS.filter(p => p.cat === c).sort(cheapFirst ? byPrice : byPopularity));
+  const auto = [];
+  for(let i = 0; queues.some(q => i < q.length); i++) queues.forEach(q => { if(q[i]) auto.push(q[i]); });
+  const seen = new Set();
+  return [...picked, ...auto].filter(p => {
+    if(exclude.has(p.id) || seen.has(p.id) || !isOrderable(p)) return false;
+    if(cheapFirst && effectivePrice(p) > maxPrice) return false;
+    seen.add(p.id);
+    return true;
+  }).slice(0, limit);
+}
+
 function addToCart(id, qty=1, size=null){
   const p = productById(id);
   if(!isOrderable(p)){ showToast(`«${p.name}» сейчас нет в наличии`); return; }
@@ -906,6 +938,7 @@ function updateCartUI(){
     footEl.innerHTML = '';
     return;
   }
+  const upsell = CHECKOUT ? [] : crossSellFor(cart.map(l => productById(l.id)).filter(Boolean), 3, Math.max(3000, cartTotal()));
   itemsEl.innerHTML = cart.map(l => {
     const p = productById(l.id);
     const key = lineKey(l.id, l.size);
@@ -917,6 +950,12 @@ function updateCartUI(){
       </div>
     </div>`;
   }).join('');
+  if(upsell.length) itemsEl.innerHTML += `<div class="cart-upsell"><h6>Добавьте к заказу</h6>${upsell.map(p => `
+    <div class="upsell-row">
+      <div class="thumb">${productImage(p) ? `<img src="${productImage(p)}" alt="" loading="lazy">` : catIcon(p.cat)}</div>
+      <div class="info"><a href="/product/${p.id}">${p.name}</a><span>${fmt(effectivePrice(p))} ₽</span></div>
+      <button class="add-btn" data-upsell="${p.id}" aria-label="Добавить ${escAttr(p.name)}"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+    </div>`).join('')}</div>`;
   const subtotal = cartTotal();
   const discount = promoDiscount(subtotal);
   footEl.classList.toggle('checkout', !!CHECKOUT);
@@ -977,6 +1016,9 @@ function closeCart(){
 document.getElementById('cartItems').addEventListener('click', e => {
   const id = e.target.getAttribute('data-remove');
   if(id) removeFromCart(id);
+  const up = e.target.closest('[data-upsell]');
+  if(up){ trackGoal('cross_sell_add'); addToCart(up.getAttribute('data-upsell'), 1); }
+  if(e.target.closest('.upsell-row a')) closeCart();
 });
 document.getElementById('cartFoot').addEventListener('submit', async e => {
   if(e.target.id !== 'promoForm') return;
@@ -1492,6 +1534,16 @@ function pageProduct(id){
       </div>
     </div>
   </section>
+  ${(() => {
+    const extra = crossSellFor([p], 4);
+    return extra.length ? `
+  <section class="block">
+    <div class="wrap">
+      <div class="section-head"><div><h2>С этим покупают</h2><p>То, что обычно берут вместе с этим товаром.</p></div></div>
+      <div class="product-grid" id="crossSellGrid">${extra.map(productCard).join('')}</div>
+    </div>
+  </section>` : '';
+  })()}
   <section class="block" id="reviews">
     <div class="wrap">
       <div class="section-head"><h2>Отзывы</h2></div>
@@ -2085,6 +2137,7 @@ function bindPageEvents(path, params){
       });
     }
     bindReviews(pdpId);
+    document.querySelectorAll('#crossSellGrid [data-add]').forEach(b => b.addEventListener('click', () => trackGoal('cross_sell_add')));
     const restockForm = document.getElementById('restockForm');
     if(restockForm) restockForm.addEventListener('submit', async e => {
       e.preventDefault();
