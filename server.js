@@ -1126,6 +1126,63 @@ app.delete('/api/admin/orders', requireSuperAdmin, (req, res) => {
 
 /* ===== Admin: backup ===== */
 // Super-admin only: the store holds password hashes of admins and customers.
+/* ===== Admin: sales statistics ===== */
+// Figures for the admin dashboard over the last N days (Moscow calendar days), compared with the
+// N days before. Cancelled orders are counted separately and never add to revenue.
+const moscowDay = iso => new Date(new Date(iso).getTime() + 3 * 3600 * 1000).toISOString().slice(0, 10);
+
+app.get('/api/admin/stats', requireAdmin, (req, res) => {
+  const days = [7, 30, 90, 365].includes(Number(req.query.days)) ? Number(req.query.days) : 30;
+  const { orders, users } = readStore();
+  const today = moscowDay(new Date().toISOString());
+  const dayList = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(today + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() - i);
+    dayList.push(d.toISOString().slice(0, 10));
+  }
+  const from = dayList[0];
+  const prevFromDate = new Date(from + 'T00:00:00Z');
+  prevFromDate.setUTCDate(prevFromDate.getUTCDate() - days);
+  const prevFrom = prevFromDate.toISOString().slice(0, 10);
+
+  const inPeriod = orders.filter(o => moscowDay(o.createdAt) >= from);
+  const inPrev = orders.filter(o => { const d = moscowDay(o.createdAt); return d >= prevFrom && d < from; });
+  const live = list => list.filter(o => o.status !== 'cancelled');
+  const summary = list => {
+    const ok = live(list);
+    const revenue = ok.reduce((s, o) => s + o.total, 0);
+    return { orders: ok.length, revenue, avgCheck: ok.length ? Math.round(revenue / ok.length) : 0, cancelled: list.length - ok.length };
+  };
+
+  const byDay = Object.fromEntries(dayList.map(d => [d, { date: d, orders: 0, revenue: 0 }]));
+  live(inPeriod).forEach(o => { const b = byDay[moscowDay(o.createdAt)]; if (b) { b.orders++; b.revenue += o.total; } });
+
+  const products = {};
+  live(inPeriod).forEach(o => o.items.forEach(it => {
+    const p = products[it.id] || (products[it.id] = { id: it.id, name: it.name, qty: 0, revenue: 0 });
+    p.qty += it.qty; p.revenue += it.price * it.qty;
+  }));
+  const promos = {};
+  live(inPeriod).filter(o => o.promo).forEach(o => {
+    const p = promos[o.promo.code] || (promos[o.promo.code] = { code: o.promo.code, orders: 0, discount: 0, revenue: 0 });
+    p.orders++; p.discount += o.promo.discount; p.revenue += o.total;
+  });
+  const count = (list, key) => list.reduce((acc, o) => { const k = key(o); if (k) acc[k] = (acc[k] || 0) + 1; return acc; }, {});
+
+  res.json({
+    days, from, to: today,
+    current: summary(inPeriod),
+    previous: summary(inPrev),
+    byDay: dayList.map(d => byDay[d]),
+    topProducts: Object.values(products).sort((a, b) => b.revenue - a.revenue).slice(0, 10),
+    promos: Object.values(promos).sort((a, b) => b.orders - a.orders),
+    delivery: count(live(inPeriod), o => o.quick ? 'quick' : o.delivery),
+    statuses: count(inPeriod, o => o.status),
+    newCustomers: users.filter(u => u.createdAt && moscowDay(u.createdAt) >= from).length,
+  });
+});
+
 /* ===== Admin: articles ===== */
 function parseArticleBody(body) {
   return {

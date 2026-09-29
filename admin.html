@@ -39,6 +39,32 @@
   .msg.ok{background:#dff3e0;color:#1c5e26;}
   #loginScreen{max-width:360px;margin:80px auto;}
   [hidden]{display:none!important;}
+  /* ===== Statistics ===== */
+  .stats-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px;}
+  .stats-head h2{margin:0;}
+  .seg{display:inline-flex;border:1px solid var(--border);border-radius:999px;padding:3px;gap:2px;}
+  .seg button{border:0;background:none;padding:6px 14px;font-size:.84rem;color:var(--ink-soft);}
+  .seg button.on{background:var(--ink);color:#fff;}
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px;}
+  .kpi{border:1px solid var(--border);border-radius:10px;padding:12px 14px;}
+  .kpi .k-label{font-size:.78rem;color:var(--ink-soft);font-weight:600;}
+  .kpi .k-value{font-size:1.45rem;font-weight:800;margin:4px 0 2px;font-variant-numeric:tabular-nums;}
+  .kpi .k-delta{font-size:.78rem;color:var(--ink-soft);}
+  .kpi .k-delta.up b{color:#1c7a3a;} .kpi .k-delta.down b{color:#c0392b;}
+  .chart{position:relative;margin:4px 0 8px;}
+  .chart-plot{position:relative;height:180px;display:flex;align-items:flex-end;gap:2px;border-bottom:1px solid var(--border);padding-left:52px;}
+  .chart-grid{position:absolute;left:52px;right:0;border-top:1px dashed #e6ecef;pointer-events:none;}
+  .chart-ylabel{position:absolute;left:0;width:46px;text-align:right;font-size:.72rem;color:var(--ink-soft);transform:translateY(-50%);font-variant-numeric:tabular-nums;}
+  .chart-bar{flex:1;min-width:2px;height:100%;display:flex;align-items:flex-end;cursor:default;}
+  .chart-bar i{display:block;width:100%;background:var(--accent);border-radius:4px 4px 0 0;min-height:0;}
+  .chart-bar:hover i,.chart-bar:focus i{background:var(--accent-hover);}
+  .chart-bar:focus{outline:none;}
+  .chart-x{display:flex;justify-content:space-between;padding-left:52px;font-size:.72rem;color:var(--ink-soft);margin-top:4px;}
+  .chart-tip{position:absolute;pointer-events:none;background:var(--ink);color:#fff;font-size:.78rem;padding:6px 10px;border-radius:8px;white-space:nowrap;transform:translate(-50%,-100%);z-index:5;}
+  .stats-cols{display:grid;grid-template-columns:1.4fr 1fr;gap:18px;margin-top:14px;}
+  .stats-cols h3{font-size:.9rem;margin:0 0 8px;}
+  .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
+  @media (max-width:760px){ .kpis{grid-template-columns:1fr 1fr;} .stats-cols{grid-template-columns:1fr;} .kpi .k-value{font-size:1.1rem;} }
   select[data-order-status]{min-width:132px;}
   [data-order-comment]{white-space:nowrap;}
   .cat-pill{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:999px;padding:4px 6px 4px 14px;margin:0 8px 8px 0;font-size:.85rem;}
@@ -74,6 +100,29 @@
     </div>
   </div>
   <div id="globalMsg"></div>
+
+  <div class="card" id="statsCard">
+    <div class="stats-head">
+      <h2>Статистика</h2>
+      <div class="seg" id="statsPeriod" role="group" aria-label="Период">
+        <button type="button" data-days="7">7 дней</button><button type="button" data-days="30" class="on">30 дней</button><button type="button" data-days="90">90 дней</button><button type="button" data-days="365">Год</button>
+      </div>
+    </div>
+    <div class="kpis" id="statsKpis"></div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;">
+      <h3 style="font-size:.9rem;margin:0;" id="statsChartTitle">Выручка по дням</h3>
+      <button type="button" class="btn-ghost btn-sm" id="statsTableToggle">Показать таблицей</button>
+    </div>
+    <div class="chart" id="statsChart"></div>
+    <div id="statsTable" hidden style="max-height:260px;overflow:auto;"></div>
+    <div class="stats-cols">
+      <div><h3>Популярные товары</h3><div id="statsTop"></div></div>
+      <div>
+        <h3>Способы получения</h3><div id="statsDelivery" style="margin-bottom:14px;"></div>
+        <h3>Промокоды</h3><div id="statsPromos"></div>
+      </div>
+    </div>
+  </div>
 
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -333,6 +382,7 @@ async function loadAll(){
   renderProducts();
   await loadAdmins();
   await loadOrders();
+  await loadStats();
   await loadPromos();
   await loadAdminReviews();
   await loadAdminArticles();
@@ -353,6 +403,111 @@ async function loadBackups(){
       }).join('')
     : '<span style="color:var(--ink-soft);font-size:.88rem;">Копий пока нет — первая появится в течение получаса (а если сейчас ночь до 03:00 — в 03:00).</span>';
 }
+
+/* ===== Statistics ===== */
+let STATS_DAYS = 30;
+const rub = n => Math.round(n).toLocaleString('ru-RU') + ' ₽';
+const shortRub = n => n >= 1e6 ? (n / 1e6).toFixed(1).replace('.', ',') + ' млн' : n >= 1e3 ? Math.round(n / 1e3) + ' тыс' : String(Math.round(n));
+const MONTHS = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+const dayLabel = d => { const [, m, day] = d.split('-'); return `${Number(day)} ${MONTHS[Number(m) - 1]}`; };
+
+// 7/30 days → a bar per day, 90 → per week, a year → per month (a bar per day would be a hairline)
+function bucketize(byDay, days){
+  if(days <= 31) return byDay.map(d => ({ label: dayLabel(d.date), orders: d.orders, revenue: d.revenue }));
+  const size = days <= 90 ? 7 : null;
+  const out = [];
+  byDay.forEach((d, i) => {
+    const key = size ? Math.floor(i / size) : d.date.slice(0, 7);
+    let b = out.find(x => x.key === key);
+    if(!b){ b = { key, first: d.date, last: d.date, orders: 0, revenue: 0 }; out.push(b); }
+    b.last = d.date; b.orders += d.orders; b.revenue += d.revenue;
+  });
+  return out.map(b => ({
+    label: size ? `${dayLabel(b.first)} – ${dayLabel(b.last)}` : `${MONTHS[Number(b.first.slice(5, 7)) - 1]} ${b.first.slice(0, 4)}`,
+    orders: b.orders, revenue: b.revenue,
+  }));
+}
+
+function deltaHtml(cur, prev){
+  if(!prev) return '<span class="k-delta">— прошлый период без данных</span>';
+  const pct = Math.round((cur - prev) / prev * 100);
+  const cls = pct > 0 ? 'up' : pct < 0 ? 'down' : '';
+  return `<span class="k-delta ${cls}"><b>${pct > 0 ? '▲ +' : pct < 0 ? '▼ ' : ''}${pct}%</b> к прошлым ${STATS_DAYS === 365 ? '12 мес.' : STATS_DAYS + ' дн.'}</span>`;
+}
+
+function renderChart(buckets){
+  const max = Math.max(...buckets.map(b => b.revenue), 0);
+  const chart = el('statsChart');
+  if(!max){ chart.innerHTML = '<p style="color:var(--ink-soft);font-size:.88rem;padding:30px 0;text-align:center;">За этот период заказов нет.</p>'; return; }
+  // axis top: the smallest "nice" number (1, 1.5, 2, 2.5, 3, 4, 5, 6, 8 ×10ⁿ) above the max
+  const pow = Math.pow(10, Math.floor(Math.log10(max)));
+  const top = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].map(m => m * pow).find(v => v >= max);
+  const ticks = [top, top / 2];
+  chart.innerHTML = `
+    <div class="chart-plot" id="chartPlot">
+      ${ticks.map(t => `<div class="chart-grid" style="bottom:${t / top * 100}%"></div><div class="chart-ylabel" style="bottom:${t / top * 100}%;transform:translateY(50%);">${shortRub(t)}</div>`).join('')}
+      ${buckets.map((b, i) => `<div class="chart-bar" tabindex="0" data-i="${i}" aria-label="${b.label}: ${rub(b.revenue)}, заказов ${b.orders}"><i style="height:${b.revenue / top * 100}%"></i></div>`).join('')}
+    </div>
+    <div class="chart-x"><span>${buckets[0].label}</span>${buckets.length > 2 ? `<span>${buckets[Math.floor(buckets.length / 2)].label}</span>` : ''}<span>${buckets[buckets.length - 1].label}</span></div>`;
+  const plot = el('chartPlot');
+  const tip = document.createElement('div');
+  tip.className = 'chart-tip'; tip.hidden = true; chart.appendChild(tip);
+  const show = bar => {
+    const b = buckets[Number(bar.getAttribute('data-i'))];
+    tip.innerHTML = `<b>${b.label}</b><br>${rub(b.revenue)} · заказов: ${b.orders}`;
+    const r = bar.getBoundingClientRect(), c = chart.getBoundingClientRect();
+    const barTop = r.bottom - bar.firstElementChild.getBoundingClientRect().height;
+    tip.style.left = Math.min(Math.max(r.left - c.left + r.width / 2, 70), c.width - 70) + 'px';
+    tip.style.top = (barTop - c.top - 6) + 'px';
+    tip.hidden = false;
+  };
+  plot.querySelectorAll('.chart-bar').forEach(bar => {
+    bar.addEventListener('mouseenter', () => show(bar));
+    bar.addEventListener('focus', () => show(bar));
+    bar.addEventListener('mouseleave', () => { tip.hidden = true; });
+    bar.addEventListener('blur', () => { tip.hidden = true; });
+  });
+}
+
+const DELIVERY_STAT_LABELS = { cdek: 'СДЭК', post: 'Почта России', courier: 'Курьер по Москве', pickup: 'Самовывоз', quick: 'Заказ в 1 клик' };
+async function loadStats(){
+  const st = await api('/api/admin/stats?days=' + STATS_DAYS);
+  const c = st.current, p = st.previous;
+  el('statsKpis').innerHTML = [
+    ['Заказы', c.orders, c.orders, p.orders, c.cancelled ? `<span class="k-delta" style="display:block;">отменено: ${c.cancelled}</span>` : ''],
+    ['Выручка', rub(c.revenue), c.revenue, p.revenue, ''],
+    ['Средний чек', c.orders ? rub(c.avgCheck) : '—', c.avgCheck, p.avgCheck, ''],
+    ['Новые клиенты', st.newCustomers, null, null, '<span class="k-delta">зарегистрировались</span>'],
+  ].map(([label, value, cur, prev, extra]) => `<div class="kpi"><div class="k-label">${label}</div><div class="k-value">${value}</div>${cur === null ? '' : deltaHtml(cur, prev)}${extra}</div>`).join('');
+
+  const buckets = bucketize(st.byDay, STATS_DAYS);
+  el('statsChartTitle').textContent = STATS_DAYS <= 31 ? 'Выручка по дням' : STATS_DAYS <= 90 ? 'Выручка по неделям' : 'Выручка по месяцам';
+  renderChart(buckets);
+  el('statsTable').innerHTML = `<table><thead><tr><th>Период</th><th class="num">Заказы</th><th class="num">Выручка</th></tr></thead><tbody>${
+    buckets.slice().reverse().map(b => `<tr><td>${b.label}</td><td class="num">${b.orders}</td><td class="num">${rub(b.revenue)}</td></tr>`).join('')}</tbody></table>`;
+
+  el('statsTop').innerHTML = st.topProducts.length ? `<table><thead><tr><th>Товар</th><th class="num">Шт.</th><th class="num">Выручка</th></tr></thead><tbody>${
+    st.topProducts.map(t => `<tr><td>${escHtml(t.name)}</td><td class="num">${t.qty}</td><td class="num">${rub(t.revenue)}</td></tr>`).join('')}</tbody></table>`
+    : '<p style="color:var(--ink-soft);font-size:.85rem;">Нет продаж за период.</p>';
+  const deliv = Object.entries(st.delivery).sort((a, b) => b[1] - a[1]);
+  const delivTotal = deliv.reduce((s, [, n]) => s + n, 0);
+  el('statsDelivery').innerHTML = deliv.length ? deliv.map(([k, n]) => `<div style="display:flex;justify-content:space-between;font-size:.85rem;padding:3px 0;border-bottom:1px solid var(--border);"><span>${DELIVERY_STAT_LABELS[k] || k}</span><span class="num">${n} · ${Math.round(n / delivTotal * 100)}%</span></div>`).join('')
+    : '<p style="color:var(--ink-soft);font-size:.85rem;">—</p>';
+  el('statsPromos').innerHTML = st.promos.length ? `<table><thead><tr><th>Код</th><th class="num">Заказы</th><th class="num">Скидка</th></tr></thead><tbody>${
+    st.promos.map(pr => `<tr><td style="font-family:monospace;">${escHtml(pr.code)}</td><td class="num">${pr.orders}</td><td class="num">${rub(pr.discount)}</td></tr>`).join('')}</tbody></table>`
+    : '<p style="color:var(--ink-soft);font-size:.85rem;">Промокоды за период не использовались.</p>';
+}
+el('statsPeriod').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+  STATS_DAYS = Number(b.getAttribute('data-days'));
+  el('statsPeriod').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+  loadStats().catch(e => showMsg(el('globalMsg'), e.message, 'error'));
+}));
+el('statsTableToggle').addEventListener('click', () => {
+  const show = el('statsTable').hidden;
+  el('statsTable').hidden = !show;
+  el('statsChart').hidden = show;
+  el('statsTableToggle').textContent = show ? 'Показать графиком' : 'Показать таблицей';
+});
 
 /* ===== Articles ===== */
 let ARTICLES_ADMIN = [];
