@@ -1,0 +1,40 @@
+name: Diagnose live site
+
+# Manual check of what the live site really serves (Actions → Diagnose live site → Run workflow).
+# Read-only: the sign-up probe deliberately omits consent, so no account is ever created.
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Version and health
+        run: |
+          set +e
+          for u in https://www.two-boots.ru/api/version https://www.two-boots.ru/health; do
+            echo "== $u"; curl -sS --max-time 20 -w '\nHTTP %{http_code}\n' "$u"
+          done
+
+      - name: What each address serves
+        run: |
+          set +e
+          for u in https://www.two-boots.ru/account https://two-boots.ru/account http://two-boots.ru/account https://two-boots.ru/; do
+            echo "=================== $u"
+            curl -sS -L --max-time 20 -o page.html -D headers.txt -w 'final: %{url_effective}  HTTP %{http_code}\n' "$u"
+            grep -iE '^(HTTP|location|cache-control|server|x-powered-by|last-modified|etag)' headers.txt
+            echo "build meta:   $(grep -o '<meta name="build" content="[^"]*">' page.html || echo MISSING)"
+            echo "header-phone: $(grep -c 'class="header-phone"' page.html)"
+            echo "chatFab:      $(grep -c 'id="chatFab"' page.html)"
+            echo "consentField: $(grep -c 'function consentField' page.html)"
+            echo "rg-consent:   $(grep -c "consentField('rg-consent')" page.html)"
+            echo "size:         $(wc -c < page.html) bytes"
+          done
+
+      - name: Sign-up probe (no consent, so nothing is created)
+        run: |
+          set +e
+          curl -sS --max-time 20 -D - -H 'Content-Type: application/json' \
+            -d '{"name":"Diag","email":"diag@example.invalid","password":"diag12345","phone":"1"}' \
+            -w '\nHTTP %{http_code}\n' https://www.two-boots.ru/api/register
