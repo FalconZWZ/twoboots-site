@@ -85,6 +85,11 @@
   </div>
 
   <div class="card">
+    <h2>Отзывы <span id="pendingReviewsBadge" style="font-size:.8rem;font-weight:700;color:#fff;background:var(--accent);border-radius:999px;padding:2px 10px;vertical-align:middle;" hidden></span></h2>
+    <div id="reviewsAdminList"></div>
+  </div>
+
+  <div class="card">
     <h2>Промокоды</h2>
     <table>
       <thead><tr><th>Код</th><th>Скидка</th><th>Условия</th><th>Использован</th><th>Статус</th><th></th></tr></thead>
@@ -257,6 +262,7 @@ async function loadAll(){
   await loadAdmins();
   await loadOrders();
   await loadPromos();
+  await loadAdminReviews();
   el('backupsCard').hidden = !IS_SUPER;
   if(IS_SUPER) await loadBackups(); else el('backupsList').innerHTML = '';
 }
@@ -273,6 +279,49 @@ async function loadBackups(){
         return `<a href="/api/admin/backups/${b.name}" class="cat-pill" style="text-decoration:none;color:inherit;padding:6px 14px;">${d} · ${Math.max(1, Math.round(b.size / 1024))} КБ</a>`;
       }).join('')
     : '<span style="color:var(--ink-soft);font-size:.88rem;">Копий пока нет — первая появится в течение получаса (а если сейчас ночь до 03:00 — в 03:00).</span>';
+}
+
+/* ===== Reviews moderation ===== */
+const REVIEW_STATUS = { pending: ['На модерации', '#b26a00'], approved: ['Опубликован', '#1c5e26'], hidden: ['Скрыт', 'var(--ink-soft)'] };
+async function loadAdminReviews(){
+  const { reviews } = await api('/api/admin/reviews');
+  const pending = reviews.filter(r => r.status === 'pending').length;
+  el('pendingReviewsBadge').hidden = !pending;
+  el('pendingReviewsBadge').textContent = 'На модерации: ' + pending;
+  el('reviewsAdminList').innerHTML = reviews.map(r => {
+    const [label, color] = REVIEW_STATUS[r.status] || [r.status, 'inherit'];
+    return `<div style="border-bottom:1px solid var(--border);padding:12px 0;">
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:.88rem;">
+        <b>${escHtml(r.productName)}</b>
+        <span style="color:#f2a900;">${'★'.repeat(r.rating)}<span style="color:var(--border);">${'★'.repeat(5 - r.rating)}</span></span>
+        <span>${escHtml(r.name)}${r.verified ? ' <small style="color:#1c5e26;">(покупатель)</small>' : ''}</span>
+        <small style="color:var(--ink-soft);">${new Date(r.createdAt).toLocaleString('ru-RU')}</small>
+        <small style="font-weight:700;color:${color};">${label}</small>
+      </div>
+      <div style="white-space:pre-wrap;margin:6px 0 8px;font-size:.9rem;">${escHtml(r.text)}</div>
+      <div style="display:flex;gap:6px;">
+        ${r.status !== 'approved' ? `<button type="button" class="btn-primary btn-sm" data-review-status="approved" data-review="${r.id}">Опубликовать</button>` : ''}
+        ${r.status !== 'hidden' ? `<button type="button" class="btn-ghost btn-sm" data-review-status="hidden" data-review="${r.id}">Скрыть</button>` : ''}
+        <button type="button" class="btn-danger btn-sm" data-review-del="${r.id}">Удалить</button>
+      </div>
+    </div>`;
+  }).join('') || '<p style="color:var(--ink-soft);font-size:.88rem;">Отзывов пока нет.</p>';
+  el('reviewsAdminList').querySelectorAll('[data-review-status]').forEach(btn => btn.addEventListener('click', async () => {
+    try{
+      await api('/api/admin/reviews/' + btn.getAttribute('data-review'), {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ status: btn.getAttribute('data-review-status') })
+      });
+      loadAdminReviews();
+    }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+  }));
+  el('reviewsAdminList').querySelectorAll('[data-review-del]').forEach(btn => btn.addEventListener('click', async () => {
+    if(!confirm('Удалить отзыв насовсем?')) return;
+    try{
+      await api('/api/admin/reviews/' + btn.getAttribute('data-review-del'), { method:'DELETE' });
+      loadAdminReviews();
+    }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+  }));
 }
 
 /* ===== Promo codes ===== */
