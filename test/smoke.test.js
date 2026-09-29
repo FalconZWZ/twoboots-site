@@ -93,6 +93,14 @@ test('pages render with per-page SEO and real 404s', async () => {
   }
 });
 
+test('pages are revalidated and carry the build id the version endpoint reports', async () => {
+  const req = client();
+  const page = await req('/catalog');
+  assert.equal(page.headers.get('cache-control'), 'no-cache');
+  const build = page.data.match(/<meta name="build" content="([0-9a-f]+)">/)[1];
+  assert.equal((await req('/api/version')).data.build, build);
+});
+
 test('public files are served, private files are not', async () => {
   const req = client();
   for (const url of ['/robots.txt', '/sitemap.xml', '/yml.xml', '/favicon.svg', '/images/two-boots-s-black.jpg']) {

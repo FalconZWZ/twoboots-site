@@ -688,7 +688,7 @@ app.get('/admin/session', (req, res) => {
   });
 });
 app.get('/admin', (req, res) => {
-  res.sendFile(path.join(__dirname, 'admin.html'));
+  res.set('Cache-Control', 'no-cache').sendFile(path.join(__dirname, 'admin.html'));
 });
 
 /* ===== Admin: manage admin accounts ===== */
@@ -1712,6 +1712,11 @@ app.delete('/api/admin/products/:id', requireAdmin, (req, res) => {
 // HTML — so the title, description, canonical, og:* tags and Schema.org data are filled
 // in here. Titles mirror the setMeta() calls in index.html; keep the two in sync.
 const INDEX_HTML = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+// Fingerprint of the storefront page this server ships. The page carries it in <meta name="build">
+// and polls /api/version: a tab left open across a deploy notices it's stale and reloads, instead
+// of sending the new server requests in an old format (e.g. a sign-up without the consent flag).
+const BUILD_ID = crypto.createHash('sha1').update(INDEX_HTML).digest('hex').slice(0, 12);
+app.get('/api/version', (req, res) => res.set('Cache-Control', 'no-store').json({ build: BUILD_ID }));
 const DEFAULT_DESCRIPTION = 'Two Boots — экипировка для фигурного катания: чехлы для лезвий, сумки и чемоданы, скакалки и аксессуары.';
 const CATALOG_DESCRIPTION = 'Чехлы для лезвий, сумки и чемоданы, скакалки и аксессуары для фигурного катания.';
 
@@ -1843,6 +1848,7 @@ function renderIndex(seo) {
   if (seo.status === 404 || seo.noindex) extra += '<meta name="robots" content="noindex">\n';
   // "<" escaped so product text can never close the <script> tag early.
   if (seo.jsonLd) extra += `<script type="application/ld+json">${JSON.stringify(seo.jsonLd).replace(/</g, '\\u003c')}</script>\n`;
+  extra += `<meta name="build" content="${BUILD_ID}">\n`;
   html = html.replace('</head>', () => extra + '</head>');
   if (seo.bodyHtml) html = html.replace('<main id="app"></main>', () => `<main id="app">${seo.bodyHtml}</main>`);
   return html;
@@ -1850,7 +1856,8 @@ function renderIndex(seo) {
 
 app.get('*', (req, res) => {
   const seo = pageSeo(req.path, req.query);
-  res.status(seo.status || 200).type('html').send(renderIndex(seo));
+  // no-cache: the browser may keep a copy but must check with the server before using it
+  res.status(seo.status || 200).set('Cache-Control', 'no-cache').type('html').send(renderIndex(seo));
 });
 
 app.listen(port, () => {
