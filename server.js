@@ -388,6 +388,19 @@ function requireUser(req, res, next) {
   if (req.session && req.session.userId) return next();
   res.status(401).json({ error: 'Войдите в личный кабинет' });
 }
+// Signs the customer in and answers only once the session is on disk, so the very next request
+// (loading orders, a page reload) already sees them as logged in — no second password prompt.
+function signIn(req, res, user) {
+  req.session.userId = user.id;
+  req.session.save(err => {
+    if (err) {
+      console.error('Не удалось сохранить сессию:', err.message);
+      return res.status(500).json({ error: 'Не получилось войти — попробуйте ещё раз' });
+    }
+    res.json({ user: safeUser(user) });
+  });
+}
+
 function safeUser(u) {
   return { id: u.id, email: u.email, name: u.name, phone: u.phone, city: u.city, address: u.address, consentAt: u.consentAt || null };
 }
@@ -768,8 +781,7 @@ app.post('/api/register', registerLimiter, (req, res) => {
   };
   store.users.push(user);
   writeStore(store);
-  req.session.userId = user.id;
-  res.json({ user: safeUser(user) });
+  signIn(req, res, user);
 });
 
 app.post('/api/login', loginLimiter, (req, res) => {
@@ -780,8 +792,7 @@ app.post('/api/login', loginLimiter, (req, res) => {
   if (!user || !verifyPassword(password || '', user.passwordHash)) {
     return res.status(401).json({ error: 'Неверный email или пароль' });
   }
-  req.session.userId = user.id;
-  res.json({ user: safeUser(user) });
+  signIn(req, res, user);
 });
 
 /* ===== Password recovery ===== */
@@ -831,8 +842,7 @@ app.post('/api/password/reset', resetLimiter, (req, res) => {
   delete user.resetTokenHash;
   delete user.resetExpires;
   writeStore(store);
-  req.session.userId = user.id;
-  res.json({ user: safeUser(user) });
+  signIn(req, res, user);
 });
 
 app.post('/api/logout', (req, res) => {

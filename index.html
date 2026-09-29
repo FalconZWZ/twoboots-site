@@ -982,6 +982,24 @@ function updateCartUI(){
 const DELIVERY_METHODS = { cdek: 'СДЭК', post: 'Почта России', courier: 'Курьер по Москве', pickup: 'Самовывоз' };
 const ADDRESS_HINT = { cdek: 'Адрес или пункт выдачи СДЭК', post: 'Адрес с индексом', courier: 'Улица, дом, квартира' };
 let CHECKOUT = null; // null = cart view, else {delivery, city, address, comment}
+let RESUME_CHECKOUT = false; // came to /account from "Оформить заказ" while logged out
+
+// After registering or logging in: greet, and if the customer was on their way to checkout,
+// take them straight back to it instead of leaving them on the account page.
+function afterSignIn(user, message){
+  CURRENT_USER = user;
+  if(RESUME_CHECKOUT && cart.length){
+    RESUME_CHECKOUT = false;
+    navigate('/catalog');
+    openCart();
+    document.getElementById('checkoutBtn').click();
+    showToast(message + ' Осталось подтвердить заказ.');
+    return;
+  }
+  RESUME_CHECKOUT = false;
+  render();
+  showToast(message);
+}
 
 function checkoutFormHtml(subtotal, discount){
   const c = CHECKOUT;
@@ -1045,7 +1063,8 @@ document.getElementById('cartFoot').addEventListener('click', e => {
   if(e.target.id === 'checkoutBack'){ CHECKOUT = null; updateCartUI(); return; }
   if(e.target.id !== 'checkoutBtn') return;
   if(!CURRENT_USER){
-    showToast('Войдите в личный кабинет, чтобы оформить заказ');
+    showToast('Войдите или зарегистрируйтесь — и сразу вернёмся к оформлению заказа');
+    RESUME_CHECKOUT = true;
     closeCart();
     navigate('/account');
     return;
@@ -2248,8 +2267,7 @@ function bindPageEvents(path, params){
           });
           const data = await readJson(res);
           if(!res.ok) throw new Error(data.error || 'Не получилось — попробуйте ещё раз');
-          CURRENT_USER = data.user;
-          render();
+          afterSignIn(data.user, 'Вы вошли в личный кабинет.');
         }catch(err){ errEl.innerHTML = `<p style="color:var(--accent);font-size:.85rem;margin:8px 0 0;">${err.message}</p>`; }
       });
       const forgotForm = document.getElementById('forgotForm');
@@ -2293,8 +2311,7 @@ function bindPageEvents(path, params){
           });
           const data = await readJson(res);
           if(!res.ok) throw new Error(data.error || 'Не получилось — попробуйте ещё раз');
-          CURRENT_USER = data.user;
-          render();
+          afterSignIn(data.user, 'Готово! Вы зарегистрированы и уже вошли в личный кабинет.');
         }catch(err){ errEl.innerHTML = `<p style="color:var(--accent);font-size:.85rem;margin:8px 0 0;">${err.message}</p>`; }
       });
     } else {
