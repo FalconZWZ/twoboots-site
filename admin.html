@@ -227,6 +227,10 @@
       </div>
       <div class="field"><label>Описание</label><textarea id="pDesc"></textarea></div>
       <div class="field">
+        <label>«С этим покупают» — до 8 товаров (необязательно: если не выбрать, подберутся автоматически из подходящих категорий)</label>
+        <div id="pRelated" style="max-height:180px;overflow:auto;border:1px solid var(--border);border-radius:10px;padding:8px 12px;columns:2;column-gap:24px;font-size:.85rem;"></div>
+      </div>
+      <div class="field">
         <label>Характеристики</label>
         <div id="specsList"></div>
         <button type="button" class="btn-ghost btn-sm" id="addSpecBtn">+ характеристика</button>
@@ -848,6 +852,12 @@ function renderProducts(){
     });
   });
   el('selectAllChk').checked = false;
+  if(!el('pId').value) renderRelatedPicker();
+}
+
+function renderRelatedPicker(selected = [], selfId = ''){
+  el('pRelated').innerHTML = STATE.products.filter(p => p.id !== selfId).map(p => `<label style="display:flex;gap:6px;align-items:center;break-inside:avoid;margin:2px 0;font-weight:500;color:var(--ink);">
+    <input type="checkbox" value="${p.id}" ${selected.includes(p.id) ? 'checked' : ''} style="width:auto;"> ${escHtml(p.name)}</label>`).join('');
 }
 
 function selectedProductIds(){
@@ -913,6 +923,7 @@ function resetForm(){
   el('currentImgWrap').hidden = true;
   EDIT_EXTRAS = [];
   renderExtraImgs();
+  renderRelatedPicker();
   el('formTitle').textContent = 'Добавить товар';
   el('cancelEditBtn').hidden = true;
 }
@@ -937,6 +948,7 @@ function startEdit(id){
   if(p.img){ el('currentImg').src = p.img; el('currentImgWrap').hidden = false; } else { el('currentImgWrap').hidden = true; }
   EDIT_EXTRAS = [...(p.images || [])];
   renderExtraImgs();
+  renderRelatedPicker(p.related || [], p.id);
   el('formTitle').textContent = 'Изменить товар';
   el('cancelEditBtn').hidden = false;
   window.scrollTo({top: document.body.scrollHeight, behavior:'smooth'});
@@ -969,6 +981,9 @@ el('productForm').addEventListener('submit', async (e) => {
   }
   newExtras.forEach(f => fd.append('images', f));
   fd.append('keepImages', JSON.stringify(EDIT_EXTRAS));
+  const related = Array.from(el('pRelated').querySelectorAll('input:checked')).map(c => c.value);
+  if(related.length > 8){ showMsg(el('globalMsg'), 'В «С этим покупают» — не больше 8 товаров', 'error'); return; }
+  fd.append('related', JSON.stringify(related));
 
   const id = el('pId').value;
   try{

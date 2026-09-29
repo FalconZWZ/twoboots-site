@@ -241,6 +241,19 @@ test('articles: drafts hidden, published ones rendered and escaped', async () =>
   assert.match((await visitor('/sitemap.xml')).data, /\/blog\//);
 });
 
+test('admin can pick "С этим покупают" products; unknown ids are dropped', async () => {
+  const admin = await adminClient();
+  const form = new FormData();
+  form.append('cat', 'bags'); form.append('name', 'Чемодан Алюминиевый Two Boots M (черный)'); form.append('price', '23500');
+  form.append('color', 'черный'); form.append('size', 'M'); form.append('specs', '[]');
+  form.append('related', JSON.stringify(['grip-lace', 'no-such-product', 'two-boots-black-m', 'grip-lace']));
+  const r = await admin('/api/admin/products/two-boots-black-m', { method: 'PUT', form });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.data.related, ['grip-lace']);
+  const product = (await client()('/api/data')).data.products.find(p => p.id === 'two-boots-black-m');
+  assert.deepEqual(product.related, ['grip-lace']);
+});
+
 test('customers never see the manager comment', async () => {
   const buyer = client();
   await buyer('/api/login', { method: 'POST', body: { email: 'buyer@test.ru', password: 'secret1' } });

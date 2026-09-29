@@ -1392,6 +1392,14 @@ function parseSizes(raw) {
   return [...new Set(list)].slice(0, 20);
 }
 
+// "С этим покупают": ids picked in the admin (JSON array); unknown ids are dropped on save.
+function parseRelated(raw) {
+  let ids = [];
+  try { ids = JSON.parse(raw || '[]'); } catch (e) { ids = []; }
+  ids = Array.isArray(ids) ? [...new Set(ids.filter(x => typeof x === 'string'))].slice(0, 8) : [];
+  return ids.length ? ids : undefined;
+}
+
 function parseProductBody(body) {
   let specs = [];
   if (body.specs) {
@@ -1409,6 +1417,7 @@ function parseProductBody(body) {
     discountPercent: discountPercent || undefined,
     stock: normStock(body.stock),
     sizes: parseSizes(body.sizes).length ? parseSizes(body.sizes) : undefined,
+    related: parseRelated(body.related),
     hidden: body.hidden === 'true' || body.hidden === true || undefined,
   };
 }
@@ -1507,6 +1516,8 @@ app.post('/api/admin/products', requireAdmin, productUpload, async (req, res) =>
 
   let id = slugify(data.name);
   if (store.products.some(p => p.id === id)) id = id + '-' + Date.now().toString(36);
+  if (data.related) data.related = data.related.filter(r => store.products.some(p => p.id === r));
+  if (data.related && !data.related.length) delete data.related;
 
   const product = { id, ...data };
   if (!product.color) delete product.color;
@@ -1528,6 +1539,8 @@ app.put('/api/admin/products/:id', requireAdmin, productUpload, async (req, res)
   if (!data.cat || !store.categories[data.cat]) { uploads.discard(); return res.status(400).json({ error: 'Укажите существующую категорию' }); }
 
   const existing = store.products[idx];
+  if (data.related) data.related = data.related.filter(r => r !== existing.id && store.products.some(p => p.id === r));
+  if (data.related && !data.related.length) data.related = undefined;
   const updated = { ...existing, ...data };
   if (!data.color) delete updated.color;
   if (!data.size) delete updated.size;
