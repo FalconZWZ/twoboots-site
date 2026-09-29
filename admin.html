@@ -185,8 +185,10 @@
         <div id="specsList"></div>
         <button type="button" class="btn-ghost btn-sm" id="addSpecBtn">+ характеристика</button>
       </div>
-      <div class="field"><label>Фото</label><input id="pImage" type="file" accept="image/*"></div>
+      <div class="field"><label>Главное фото</label><input id="pImage" type="file" accept="image/*"></div>
       <div class="field" id="currentImgWrap" hidden><img id="currentImg" class="thumb" style="width:80px;height:80px;"></div>
+      <div class="field"><label>Дополнительные фото для галереи (до 10, можно выбрать несколько сразу)</label><input id="pImages" type="file" accept="image/*" multiple></div>
+      <div class="field" id="extraImgsWrap" hidden><div id="extraImgs" style="display:flex;gap:8px;flex-wrap:wrap;"></div></div>
       <button class="btn-primary" type="submit">Сохранить</button>
       <button class="btn-ghost" type="button" id="cancelEditBtn" hidden>Отменить редактирование</button>
     </form>
@@ -598,7 +600,7 @@ function renderProducts(){
   el('productsBody').innerHTML = STATE.products.map(p => `
     <tr>
       <td><input type="checkbox" class="prod-chk" value="${p.id}"></td>
-      <td>${p.img ? `<img class="thumb" src="${p.img}">` : ''}</td>
+      <td>${p.img ? `<img class="thumb" src="${p.img}">` : ''}${p.images && p.images.length ? `<small style="color:var(--ink-soft);white-space:nowrap;">+${p.images.length} фото</small>` : ''}</td>
       <td>${p.name}${p.size ? ' · ' + p.size : ''}${p.sizes && p.sizes.length ? `<br><small style="color:var(--ink-soft);">Размеры: ${p.sizes.join(', ')}</small>` : ''}</td>
       <td>${STATE.categories[p.cat] || p.cat}</td>
       <td>${p.discountPercent ? `<span class="price-old-admin" style="color:var(--ink-soft);text-decoration:line-through;">${p.price.toLocaleString('ru-RU')} ₽</span> ${Math.round(p.price*(1-p.discountPercent/100)).toLocaleString('ru-RU')} ₽` : p.price.toLocaleString('ru-RU') + ' ₽'}</td>
@@ -683,11 +685,27 @@ function specRow(k, v){
 }
 el('addSpecBtn').addEventListener('click', () => el('specsList').appendChild(specRow('','')));
 
+// Gallery photos of the product being edited that are still kept; "×" drops one (on save).
+let EDIT_EXTRAS = [];
+function renderExtraImgs(){
+  el('extraImgsWrap').hidden = !EDIT_EXTRAS.length;
+  el('extraImgs').innerHTML = EDIT_EXTRAS.map((u, i) => `<div style="position:relative;">
+      <img src="${u}" class="thumb" style="width:80px;height:80px;">
+      <button type="button" data-drop-extra="${i}" title="Убрать фото" style="position:absolute;top:-6px;right:-6px;width:22px;height:22px;padding:0;border-radius:50%;background:#fff;border:1px solid var(--border);font-size:.8rem;line-height:1;">×</button>
+    </div>`).join('');
+  el('extraImgs').querySelectorAll('[data-drop-extra]').forEach(btn => btn.addEventListener('click', () => {
+    EDIT_EXTRAS.splice(Number(btn.getAttribute('data-drop-extra')), 1);
+    renderExtraImgs();
+  }));
+}
+
 function resetForm(){
   el('productForm').reset();
   el('pId').value = '';
   el('specsList').innerHTML = '';
   el('currentImgWrap').hidden = true;
+  EDIT_EXTRAS = [];
+  renderExtraImgs();
   el('formTitle').textContent = 'Добавить товар';
   el('cancelEditBtn').hidden = true;
 }
@@ -710,6 +728,8 @@ function startEdit(id){
   el('specsList').innerHTML = '';
   (p.specs || []).forEach(([k,v]) => el('specsList').appendChild(specRow(k,v)));
   if(p.img){ el('currentImg').src = p.img; el('currentImgWrap').hidden = false; } else { el('currentImgWrap').hidden = true; }
+  EDIT_EXTRAS = [...(p.images || [])];
+  renderExtraImgs();
   el('formTitle').textContent = 'Изменить товар';
   el('cancelEditBtn').hidden = false;
   window.scrollTo({top: document.body.scrollHeight, behavior:'smooth'});
@@ -735,6 +755,13 @@ el('productForm').addEventListener('submit', async (e) => {
   fd.append('hidden', el('pHidden').checked ? 'true' : 'false');
   fd.append('stock', el('pStock').value);
   if(el('pImage').files[0]) fd.append('image', el('pImage').files[0]);
+  const newExtras = Array.from(el('pImages').files);
+  if(EDIT_EXTRAS.length + newExtras.length > 10){
+    showMsg(el('globalMsg'), `В галерее может быть до 10 фото, сейчас выходит ${EDIT_EXTRAS.length + newExtras.length} — уберите лишние`, 'error');
+    return;
+  }
+  newExtras.forEach(f => fd.append('images', f));
+  fd.append('keepImages', JSON.stringify(EDIT_EXTRAS));
 
   const id = el('pId').value;
   try{
