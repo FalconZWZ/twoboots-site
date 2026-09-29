@@ -1,0 +1,64 @@
+name: Uptime
+
+# Every 15 minutes GitHub checks that the live site answers. After three failed attempts in a
+# row it opens an issue labelled "uptime" (GitHub emails the repo owner about new issues);
+# once the site answers again the issue gets a comment and is closed. "Run workflow" on the
+# Actions tab runs a check by hand.
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+concurrency: uptime
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check the site
+        id: check
+        run: |
+          urls="https://www.two-boots.ru/health https://www.two-boots.ru/ https://two-boots.ru/"
+          for attempt in 1 2 3; do
+            fail=""
+            for url in $urls; do
+              code=$(curl -sL -o /dev/null -w '%{http_code}' --max-time 20 "$url" || true)
+              [ "$code" = "200" ] || fail="$fail $url → ${code:-нет ответа};"
+            done
+            [ -z "$fail" ] && break
+            [ "$attempt" -lt 3 ] && sleep 45
+          done
+          echo "Result: ${fail:-ok}"
+          echo "fail=$fail" >> "$GITHUB_OUTPUT"
+
+      - name: Open or close the alert issue
+        uses: actions/github-script@v7
+        env:
+          FAIL: ${{ steps.check.outputs.fail }}
+        with:
+          script: |
+            const fail = (process.env.FAIL || '').trim();
+            const now = new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' });
+            try {
+              await github.rest.issues.getLabel({ ...context.repo, name: 'uptime' });
+            } catch (e) {
+              await github.rest.issues.createLabel({ ...context.repo, name: 'uptime', color: 'd73a4a', description: 'Сайт недоступен (мониторинг)' });
+            }
+            const { data: open } = await github.rest.issues.listForRepo({ ...context.repo, state: 'open', labels: 'uptime', per_page: 5 });
+            const issue = open[0];
+            if (fail && !issue) {
+              await github.rest.issues.create({
+                ...context.repo,
+                title: '🔴 Сайт two-boots.ru недоступен',
+                labels: ['uptime'],
+                body: `Проверка в ${now} (МСК) не прошла три раза подряд:\n\n${fail.split(';').filter(Boolean).map(s => '- ' + s.trim()).join('\n')}\n\nЧто проверить: Railway → Deployments и логи сервиса; для two-boots.ru без www — сайт-перенаправление в ISPmanager на reg.ru и его SSL-сертификат.\n\nКогда сайт снова заработает, это сообщение закроется автоматически.`,
+              });
+            } else if (!fail && issue) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: issue.number, body: `✅ Сайт снова отвечает — ${now} (МСК).` });
+              await github.rest.issues.update({ ...context.repo, issue_number: issue.number, state: 'closed' });
+            }
+            if (fail) core.setFailed('Сайт недоступен:' + fail);
