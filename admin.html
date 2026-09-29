@@ -204,6 +204,15 @@
     <h2>Резервные копии</h2>
     <p id="backupsNote" style="color:var(--ink-soft);font-size:.88rem;margin:0 0 10px;"></p>
     <div id="backupsList"></div>
+    <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
+      <h3 style="font-size:.95rem;margin:0 0 6px;">Восстановить из резервной копии</h3>
+      <p style="color:var(--ink-soft);font-size:.85rem;margin:0 0 10px;">Для переезда на другой сервер или отката ошибки: загрузите zip, скачанный кнопкой «Резервная копия» (с фото) или из списка выше. Каталог, заказы, клиенты, администраторы, промокоды, отзывы и статьи заменятся данными из копии; текущая база сохранится на сервере на всякий случай.</p>
+      <div class="row" style="align-items:flex-end;">
+        <div class="field"><input id="restoreFile" type="file" accept=".zip,application/zip"></div>
+        <div class="field" style="flex:none;"><button type="button" class="btn-danger" id="restoreBtn">Восстановить</button></div>
+      </div>
+      <div id="restoreMsg"></div>
+    </div>
   </div>
 
   <div class="card">
@@ -389,6 +398,21 @@ async function loadAll(){
   el('backupsCard').hidden = !IS_SUPER;
   if(IS_SUPER) await loadBackups(); else el('backupsList').innerHTML = '';
 }
+
+el('restoreBtn').addEventListener('click', async () => {
+  const file = el('restoreFile').files[0];
+  if(!file){ showMsg(el('restoreMsg'), 'Выберите файл копии (.zip)', 'error'); return; }
+  if(!confirm('Заменить все данные сайта данными из копии «' + file.name + '»?')) return;
+  const fd = new FormData();
+  fd.append('backup', file);
+  el('restoreBtn').disabled = true;
+  showMsg(el('restoreMsg'), 'Загружаю и восстанавливаю… (большой архив с фото может идти минуту)', 'ok');
+  try{
+    const r = await api('/api/admin/restore', { method:'POST', body: fd });
+    showMsg(el('restoreMsg'), `Готово: товаров ${r.products}, заказов ${r.orders}, клиентов ${r.users}, фото ${r.photos}. Страница обновится…`, 'ok');
+    setTimeout(() => location.reload(), 2500);
+  }catch(e){ showMsg(el('restoreMsg'), e.message, 'error'); el('restoreBtn').disabled = false; }
+});
 
 async function loadBackups(){
   const { backups, email } = await api('/api/admin/backups');

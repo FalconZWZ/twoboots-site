@@ -1,4 +1,5 @@
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
@@ -8,6 +9,7 @@ const multer = require('multer');
 const nodemailer = require('nodemailer');
 const { rateLimit } = require('express-rate-limit');
 const archiver = require('archiver');
+const AdmZip = require('adm-zip');
 // Optional: if the native image library fails to load, uploads are simply kept as they are.
 let sharp = null;
 try { sharp = require('sharp'); } catch (err) {
@@ -254,11 +256,10 @@ function roleFor(username) {
   return SUPER_ADMIN_USERNAMES.includes(String(username).toLowerCase()) ? 'super' : 'admin';
 }
 
-// Migrate/seed the admin list from env vars if the store has none yet
-// (fresh install, or an older store.json created before multi-admin support),
-// and backfill a role on any admin that predates the super-admin split.
-{
-  const store = readStore();
+// Brings a store up to the current shape: seeds the admin list from env vars if there is none
+// (fresh install, or a store.json from before multi-admin support), backfills admin roles and
+// adds collections introduced later. Used at startup and after restoring a backup.
+function normalizeStore(store) {
   let changed = false;
   if (!store.admins || store.admins.length === 0) {
     store.admins = [{ username: ADMIN_USER, passwordHash: hashPassword(ADMIN_PASSWORD), role: 'super' }];
@@ -288,7 +289,11 @@ function roleFor(username) {
     store.orderSeq = store.orders.reduce((max, o) => Math.max(max, o.number || 0), 0);
     changed = true;
   }
-  if (changed) writeStore(store);
+  return changed;
+}
+{
+  const store = readStore();
+  if (normalizeStore(store)) writeStore(store);
 }
 function slugify(text) {
   const translit = {
@@ -1414,6 +1419,36 @@ app.get('/api/admin/backups', requireSuperAdmin, (req, res) => {
     backups: listBackups().map(name => ({ name, size: fs.statSync(path.join(BACKUPS_DIR, name)).size })),
     email: BACKUP_EMAIL && mailTransport ? BACKUP_EMAIL : null,
   });
+});
+
+/* ===== Restore from a backup (moving servers, undoing a mistake) ===== */
+// Accepts the zip from «Резервная копия» (store.json + uploads/) or a nightly store-*.zip.
+// Only store.json and flat uploads/<file> entries are used — nothing can be written outside
+// DATA_DIR. The current store is kept as store.before-restore-<time>.json.
+const restoreUpload = multer({ dest: os.tmpdir(), limits: { fileSize: 500 * 1024 * 1024 } });
+app.post('/api/admin/restore', requireSuperAdmin, restoreUpload.single('backup'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Выберите файл резервной копии (.zip)' });
+  try {
+    let zip;
+    try { zip = new AdmZip(req.file.path); } catch (e) { return res.status(400).json({ error: 'Это не zip-архив резервной копии' }); }
+    const entries = zip.getEntries();
+    const storeEntry = entries.find(e => e.entryName === 'store.json');
+    if (!storeEntry) return res.status(400).json({ error: 'В архиве нет store.json — это не резервная копия сайта' });
+    let restored;
+    try { restored = JSON.parse(storeEntry.getData().toString('utf8')); } catch (e) { return res.status(400).json({ error: 'store.json в архиве повреждён' }); }
+    if (!restored || !Array.isArray(restored.products) || typeof restored.categories !== 'object' || !Array.isArray(restored.admins) || !restored.admins.length) {
+      return res.status(400).json({ error: 'store.json в архиве не похож на базу сайта' });
+    }
+    const photos = entries.filter(e => !e.isDirectory && /^uploads\/[A-Za-z0-9._-]+$/.test(e.entryName) && !e.entryName.includes('..'));
+    fs.copyFileSync(DATA_FILE, path.join(DATA_DIR, `store.before-restore-${Date.now()}.json`));
+    photos.forEach(e => fs.writeFileSync(path.join(UPLOADS_DIR, path.basename(e.entryName)), e.getData()));
+    normalizeStore(restored);
+    writeStore(restored);
+    console.log(`Восстановлено из копии: товаров ${restored.products.length}, заказов ${restored.orders.length}, фото ${photos.length}`);
+    res.json({ ok: true, products: restored.products.length, orders: restored.orders.length, users: restored.users.length, photos: photos.length });
+  } finally {
+    fs.rm(req.file.path, { force: true }, () => {});
+  }
 });
 
 app.get('/api/admin/backups/:name', requireSuperAdmin, (req, res) => {
