@@ -491,6 +491,18 @@ function unitPrice(product) {
     : product.price;
 }
 
+// For uptime monitoring: 200 only if the data store (Railway volume) is readable and sane.
+app.get('/health', (req, res) => {
+  try {
+    const { products } = readStore();
+    fs.accessSync(DATA_DIR, fs.constants.W_OK);
+    res.set('Cache-Control', 'no-store').json({ ok: true, products: products.length, uptime: Math.round(process.uptime()) });
+  } catch (err) {
+    console.error('Health check failed:', err.message);
+    res.status(500).json({ ok: false });
+  }
+});
+
 app.get('/sitemap.xml', (req, res) => {
   const { categories, products } = readStore();
   const staticUrls = ['/', '/catalog', '/about', '/contact', '/delivery', '/privacy'];

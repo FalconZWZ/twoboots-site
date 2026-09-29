@@ -93,6 +93,13 @@ test('public files are served, private files are not', async () => {
   assert.ok((yml.match(/<offer /g) || []).length > 10);
 });
 
+test('health check reports the store', async () => {
+  const { status, data } = await client()('/health');
+  assert.equal(status, 200);
+  assert.equal(data.ok, true);
+  assert.ok(data.products >= 19);
+});
+
 test('catalog API lists visible products', async () => {
   const { status, data } = await client()('/api/data');
   assert.equal(status, 200);
