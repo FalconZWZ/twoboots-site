@@ -28,7 +28,13 @@ const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
 const SEED_FILE = path.join(__dirname, 'data', 'seed.json');
 
 const ADMIN_USER = process.env.ADMIN_USER || 'admin';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'changeme123';
+const DEFAULT_ADMIN_PASSWORD = 'changeme123';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || DEFAULT_ADMIN_PASSWORD;
+function adminPasswordProblem(password) {
+  if (!password || String(password).length < 8) return 'Пароль администратора — не короче 8 символов';
+  if (password === DEFAULT_ADMIN_PASSWORD) return 'Этот пароль стоит по умолчанию — придумайте другой';
+  return null;
+}
 const SESSION_SECRET = process.env.SESSION_SECRET || 'two-boots-dev-secret-change-me';
 
 const SMTP_HOST = process.env.SMTP_HOST || '';
@@ -215,8 +221,18 @@ if (!fs.existsSync(DATA_FILE)) {
 function readStore() {
   return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
 }
+// Atomic save: write a temp file, flush it to disk, then rename over store.json. A crash or a
+// redeploy mid-write leaves either the old or the new file — never a truncated one.
 function writeStore(store) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(store, null, 2));
+  const tmp = DATA_FILE + '.tmp';
+  const fd = fs.openSync(tmp, 'w');
+  try {
+    fs.writeSync(fd, JSON.stringify(store, null, 2));
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, DATA_FILE);
 }
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
@@ -349,11 +365,19 @@ PUBLIC_ROOT_FILES.forEach(file => {
   app.get('/' + file, (req, res) => res.sendFile(path.join(__dirname, file)));
 });
 
-function requireAdmin(req, res, next) {
+// An admin who signed in with the factory password may do nothing but change it.
+const MUST_CHANGE = { error: 'Сначала смените пароль по умолчанию', mustChangePassword: true };
+function requireAdminSession(req, res, next) {
   if (req.session && req.session.isAdmin) return next();
   res.status(401).json({ error: 'unauthorized' });
 }
+function requireAdmin(req, res, next) {
+  if (!(req.session && req.session.isAdmin)) return res.status(401).json({ error: 'unauthorized' });
+  if (req.session.mustChangePassword) return res.status(403).json(MUST_CHANGE);
+  next();
+}
 function requireSuperAdmin(req, res, next) {
+  if (req.session && req.session.isAdmin && req.session.mustChangePassword) return res.status(403).json(MUST_CHANGE);
   if (req.session && req.session.isAdmin && req.session.role === 'super') return next();
   res.status(403).json({ error: 'Только главный администратор может это делать' });
 }
@@ -631,7 +655,8 @@ app.post('/admin/login', loginLimiter, (req, res) => {
     req.session.isAdmin = true;
     req.session.username = username;
     req.session.role = admin.role;
-    return res.json({ ok: true });
+    req.session.mustChangePassword = password === DEFAULT_ADMIN_PASSWORD;
+    return res.json({ ok: true, mustChangePassword: req.session.mustChangePassword });
   }
   res.status(401).json({ error: 'Неверный логин или пароль' });
 });
@@ -643,6 +668,7 @@ app.get('/admin/session', (req, res) => {
     loggedIn: !!(req.session && req.session.isAdmin),
     username: req.session && req.session.username,
     role: req.session && req.session.role,
+    mustChangePassword: !!(req.session && req.session.mustChangePassword),
   });
 });
 app.get('/admin', (req, res) => {
@@ -661,25 +687,29 @@ app.get('/api/admin/admins', requireAdmin, (req, res) => {
 app.post('/api/admin/admins', requireSuperAdmin, (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: 'Логин и пароль обязательны' });
-  if (password.length < 6) return res.status(400).json({ error: 'Пароль должен быть не короче 6 символов' });
+  const weak = adminPasswordProblem(password);
+  if (weak) return res.status(400).json({ error: weak });
   const store = readStore();
   if (store.admins.some(a => a.username === username)) return res.status(400).json({ error: 'Такой логин уже существует' });
   store.admins.push({ username, passwordHash: hashPassword(password), role: roleFor(username) });
   writeStore(store);
   res.json({ admins: store.admins.map(a => ({ username: a.username, role: a.role })) });
 });
-app.put('/api/admin/admins/:username/password', requireAdmin, (req, res) => {
+app.put('/api/admin/admins/:username/password', requireAdminSession, (req, res) => {
   const store = readStore();
   const { username } = req.params;
   const { password } = req.body || {};
   if (req.session.username !== username && req.session.role !== 'super') {
     return res.status(403).json({ error: 'Можно менять только свой пароль' });
   }
-  if (!password || password.length < 6) return res.status(400).json({ error: 'Пароль должен быть не короче 6 символов' });
+  if (req.session.mustChangePassword && req.session.username !== username) return res.status(403).json(MUST_CHANGE);
+  const weak = adminPasswordProblem(password);
+  if (weak) return res.status(400).json({ error: weak });
   const admin = store.admins.find(a => a.username === username);
   if (!admin) return res.status(404).json({ error: 'Администратор не найден' });
   admin.passwordHash = hashPassword(password);
   writeStore(store);
+  if (req.session.username === username) req.session.mustChangePassword = false;
   res.json({ ok: true });
 });
 app.delete('/api/admin/admins/:username', requireSuperAdmin, (req, res) => {
@@ -1749,7 +1779,7 @@ app.listen(port, () => {
       'Set SESSION_SECRET to a long random string in Railway → Variables.'
     );
   }
-  const defaultPwdAdmins = readStore().admins.filter(a => verifyPassword('changeme123', a.passwordHash));
+  const defaultPwdAdmins = readStore().admins.filter(a => verifyPassword(DEFAULT_ADMIN_PASSWORD, a.passwordHash));
   if (defaultPwdAdmins.length) {
     console.warn(
       `⚠ Admin(s) ${defaultPwdAdmins.map(a => a.username).join(', ')} still use the default password ` +

@@ -54,6 +54,16 @@
   <button class="btn-primary" id="loginBtn">Войти</button>
 </div>
 
+<div id="changePwdScreen" class="card" hidden style="max-width:420px;margin:80px auto;">
+  <h1>Смените пароль</h1>
+  <p style="color:var(--ink-soft);font-size:.9rem;">Вы вошли с паролем по умолчанию — его знает любой, кто видел инструкцию к сайту. Придумайте новый (не короче 8 символов), чтобы продолжить.</p>
+  <div id="changePwdMsg"></div>
+  <div class="field"><label>Новый пароль</label><input id="newPwd1" type="password" minlength="8" autocomplete="new-password"></div>
+  <div class="field"><label>Повторите пароль</label><input id="newPwd2" type="password" minlength="8" autocomplete="new-password"></div>
+  <button class="btn-primary" id="changePwdBtn">Сохранить и продолжить</button>
+  <button class="btn-ghost" id="changePwdLogout">Выйти</button>
+</div>
+
 <div id="adminScreen" class="wrap" hidden>
   <div class="top-bar">
     <h1>Two Boots — Админка</h1>
@@ -152,7 +162,7 @@
     <div id="adminsList"></div>
     <form id="adminForm" class="row" style="margin-top:12px;">
       <div class="field"><label>Логин</label><input id="adminUsername" required></div>
-      <div class="field"><label>Пароль (мин. 6 символов)</label><input id="adminPassword" type="password" minlength="6" required></div>
+      <div class="field"><label>Пароль (мин. 8 символов)</label><input id="adminPassword" type="password" minlength="8" required></div>
       <div class="field" style="flex:none;align-self:flex-end;"><button class="btn-primary" type="submit">Добавить</button></div>
     </form>
   </div>
@@ -251,7 +261,16 @@ let ME = null;
 let IS_SUPER = false;
 
 async function checkSession(){
-  const { loggedIn, username, role } = await api('/admin/session');
+  const { loggedIn, username, role, mustChangePassword } = await api('/admin/session');
+  el('changePwdScreen').hidden = true;
+  if(loggedIn && mustChangePassword){
+    ME = username;
+    el('loginScreen').hidden = true;
+    el('adminScreen').hidden = true;
+    el('changePwdScreen').hidden = false;
+    el('newPwd1').focus();
+    return;
+  }
   if(loggedIn){
     ME = username;
     IS_SUPER = role === 'super';
@@ -277,6 +296,24 @@ el('loginBtn').addEventListener('click', async () => {
   }catch(e){
     showMsg(el('loginMsg'), e.message, 'error');
   }
+});
+
+el('changePwdBtn').addEventListener('click', async () => {
+  const p1 = el('newPwd1').value, p2 = el('newPwd2').value;
+  if(p1 !== p2){ showMsg(el('changePwdMsg'), 'Пароли не совпадают', 'error'); return; }
+  try{
+    await api('/api/admin/admins/' + encodeURIComponent(ME) + '/password', {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ password: p1 })
+    });
+    el('newPwd1').value = el('newPwd2').value = '';
+    showMsg(el('changePwdMsg'), '', '');
+    await checkSession();
+    showMsg(el('globalMsg'), 'Пароль изменён', 'ok');
+  }catch(e){ showMsg(el('changePwdMsg'), e.message, 'error'); }
+});
+el('changePwdLogout').addEventListener('click', async () => {
+  await api('/admin/logout', { method:'POST' });
+  checkSession();
 });
 
 el('logoutBtn').addEventListener('click', async () => {
@@ -691,7 +728,7 @@ function renderAdmins(admins){
   wrap.querySelectorAll('[data-pwd-admin]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const username = btn.getAttribute('data-pwd-admin');
-      const password = prompt('Новый пароль для "' + username + '" (мин. 6 символов):');
+      const password = prompt('Новый пароль для "' + username + '" (мин. 8 символов):');
       if(password === null) return;
       try{
         await api('/api/admin/admins/' + encodeURIComponent(username) + '/password', {
