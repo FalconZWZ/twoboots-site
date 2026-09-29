@@ -254,6 +254,21 @@ test('admin can pick "С этим покупают" products; unknown ids are dr
   assert.deepEqual(product.related, ['grip-lace']);
 });
 
+test('admin statistics: revenue excludes cancelled orders, days are bucketed', async () => {
+  const admin = await adminClient();
+  assert.equal((await client()('/api/admin/stats')).status, 401);
+  const st = (await admin('/api/admin/stats?days=7')).data;
+  assert.equal(st.byDay.length, 7);
+  const all = (await admin('/api/admin/orders')).data.orders;
+  const live = all.filter(o => o.status !== 'cancelled');
+  assert.equal(st.current.orders, live.length);
+  assert.equal(st.current.revenue, live.reduce((s, o) => s + o.total, 0));
+  assert.equal(st.current.cancelled, all.length - live.length);
+  assert.equal(st.byDay.reduce((s, d) => s + d.revenue, 0), st.current.revenue);
+  assert.ok(st.topProducts.length > 0);
+  assert.equal((await admin('/api/admin/stats?days=365')).data.byDay.length, 365);
+});
+
 test('customers never see the manager comment', async () => {
   const buyer = client();
   await buyer('/api/login', { method: 'POST', body: { email: 'buyer@test.ru', password: 'secret1' } });
