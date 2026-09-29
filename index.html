@@ -1336,8 +1336,18 @@ function pageProduct(id){
             <button class="btn btn-primary" id="pdpAdd">Добавить в корзину</button>
             <button class="btn btn-ghost" id="pdpBuyOneClick">Купить в 1 клик</button>` : `
             <button class="btn btn-primary" disabled style="opacity:.5;cursor:not-allowed;">Нет в наличии</button>
-            <a class="btn btn-ghost" href="/contact">Узнать о поступлении</a>`}
+            `}
           </div>
+          ${isOrderable(p) ? '' : `
+          <form id="restockForm" class="contact-card" style="margin-top:14px;max-width:460px;">
+            <div style="font-weight:700;margin-bottom:10px;">Сообщить о поступлении</div>
+            <div class="promo-form" style="margin-bottom:10px;">
+              <input id="rs-email" type="email" required placeholder="Ваш email" value="${escText(CURRENT_USER ? CURRENT_USER.email : '')}" style="text-transform:none;">
+              <button type="submit" class="btn btn-primary btn-sm">Сообщить</button>
+            </div>
+            ${consentField('rs-consent')}
+            <div id="restockMsg"></div>
+          </form>`}
           <div style="margin-top:10px;"><a href="/catalog?cat=${p.cat}" style="font-size:.88rem;text-decoration:underline;color:var(--ink-soft);">Похожие модели</a></div>
         </div>
       </div>
@@ -1944,6 +1954,21 @@ function bindPageEvents(path, params){
       });
     }
     bindReviews(pdpId);
+    const restockForm = document.getElementById('restockForm');
+    if(restockForm) restockForm.addEventListener('submit', async e => {
+      e.preventDefault();
+      const msg = document.getElementById('restockMsg');
+      try{
+        const res = await fetch('/api/restock', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ productId: pdpId, email: document.getElementById('rs-email').value, consent: document.getElementById('rs-consent').checked })
+        });
+        const data = await res.json();
+        if(!res.ok) throw new Error(data.error || 'Не удалось подписаться');
+        trackGoal('restock');
+        restockForm.innerHTML = '<div style="font-weight:700;margin-bottom:6px;">Готово!</div><p style="color:var(--ink-soft);margin:0;">Напишем на почту, как только товар появится.</p>';
+      }catch(err){ msg.innerHTML = `<p style="color:var(--accent);font-size:.85rem;margin:0;">${escText(err.message)}</p>`; }
+    });
     const qtyVal = document.getElementById('qtyVal');
     document.getElementById('qtyMinus').addEventListener('click', () => {
       qtyVal.textContent = Math.max(1, parseInt(qtyVal.textContent) - 1);

@@ -260,6 +260,7 @@ function roleFor(username) {
   if (!store.orders) { store.orders = []; changed = true; }
   if (!store.promos) { store.promos = []; changed = true; }
   if (!store.reviews) { store.reviews = []; changed = true; }
+  if (!store.restockSubs) { store.restockSubs = []; changed = true; }
   if (!store.orderSeq) {
     store.orderSeq = store.orders.reduce((max, o) => Math.max(max, o.number || 0), 0);
     changed = true;
@@ -327,6 +328,7 @@ const contactLimiter = limiter(5, 15, 'Слишком много сообщен�
 const promoLimiter = limiter(20, 15, 'Слишком много попыток ввода промокода. Попробуйте позже.');
 // Only accepted reviews count, so fixing a form mistake never locks a real customer out.
 const reviewLimiter = limiter(10, 60, 'Слишком много отзывов подряд. Попробуйте позже.', { skipFailedRequests: true });
+const restockLimiter = limiter(10, 60, 'Слишком много подписок подряд. Попробуйте позже.', { skipFailedRequests: true });
 const resetLimiter = limiter(5, 60, 'Слишком много запросов на восстановление пароля. Попробуйте позже.');
 
 // Uploaded files get a unique name each time, so browsers may keep them for a month.
@@ -365,6 +367,59 @@ app.get('/api/data', (req, res) => {
     products: products.filter(p => !p.hidden).map(p => (ratings[p.id] ? { ...p, rating: ratings[p.id] } : p)),
   });
 });
+
+/* ===== Back-in-stock notifications ===== */
+// A customer leaves an email on an out-of-stock product; when the product becomes orderable
+// again (stock changed in the admin, or it's un-hidden) everyone waiting gets one email and
+// their entries are removed.
+const isAvailable = p => !!p && !p.hidden && p.stock !== 'out';
+
+app.post('/api/restock', restockLimiter, (req, res) => {
+  const email = String((req.body || {}).email || '').trim().toLowerCase().slice(0, 200);
+  if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Укажите корректный email' });
+  if ((req.body || {}).consent !== true) return res.status(400).json({ error: CONSENT_ERROR });
+  const store = readStore();
+  const product = store.products.find(p => p.id === req.body.productId && !p.hidden);
+  if (!product) return res.status(404).json({ error: 'Товар не найден' });
+  if (isAvailable(product)) return res.status(400).json({ error: 'Товар уже в наличии — его можно заказать' });
+  if (!store.restockSubs.some(s => s.productId === product.id && s.email === email)) {
+    store.restockSubs.push({ id: crypto.randomUUID(), productId: product.id, email, createdAt: new Date().toISOString() });
+    writeStore(store);
+  }
+  res.json({ ok: true });
+});
+
+// pairs: [[productBefore, productAfter], …]. Removes the waiting-list entries of products that
+// just became available and returns them; the caller writes the store, then sends.
+function takeRestockSubs(store, pairs) {
+  const due = [];
+  for (const [before, after] of pairs) {
+    if (isAvailable(before) || !isAvailable(after)) continue;
+    const subs = store.restockSubs.filter(s => s.productId === after.id);
+    if (!subs.length) continue;
+    store.restockSubs = store.restockSubs.filter(s => s.productId !== after.id);
+    due.push({ product: after, emails: subs.map(s => s.email) });
+  }
+  return due;
+}
+
+function sendRestockEmails(due) {
+  if (!mailTransport) return;
+  for (const { product, emails } of due) {
+    const url = `${SITE_ORIGIN}/product/${encodeURIComponent(product.id)}`;
+    for (const to of emails) {
+      mailTransport.sendMail({
+        from: MAIL_FROM,
+        to,
+        subject: `«${product.name}» снова в наличии — Two Boots`,
+        text: `Здравствуйте!\n\nВы просили сообщить, когда появится «${product.name}». Товар снова можно заказать${product.stock === 'order' ? ' (под заказ)' : ''}:\n${url}\n\nЦена: ${unitPrice(product).toLocaleString('ru-RU')} ₽\n\nЭто однократное письмо — больше мы не напишем по этому товару.`,
+        html: `<p>Здравствуйте!</p><p>Вы просили сообщить, когда появится «${escHtml(product.name)}». Товар снова можно заказать${product.stock === 'order' ? ' (под заказ)' : ''}.</p>
+          <p><a href="${url}">Перейти к товару</a> — ${unitPrice(product).toLocaleString('ru-RU')} ₽</p>
+          <p style="color:#777;">Это однократное письмо — больше мы не напишем по этому товару.</p>`,
+      }).catch(err => console.error('Не удалось отправить письмо о поступлении:', err.message));
+    }
+  }
+}
 
 /* ===== Reviews ===== */
 // Only approved reviews are public; averages are rounded to one decimal.
@@ -594,8 +649,10 @@ app.delete('/api/admin/admins/:username', requireSuperAdmin, (req, res) => {
 
 /* ===== Admin: full data (includes hidden products) ===== */
 app.get('/api/admin/data', requireAdmin, (req, res) => {
-  const { categories, products } = readStore();
-  res.json({ categories, products });
+  const { categories, products, restockSubs } = readStore();
+  const restockCounts = {};
+  restockSubs.forEach(s => { restockCounts[s.productId] = (restockCounts[s.productId] || 0) + 1; });
+  res.json({ categories, products, restockCounts });
 });
 
 /* ===== Customer accounts ===== */
@@ -1353,7 +1410,9 @@ app.put('/api/admin/products/:id', requireAdmin, productUpload, async (req, res)
   else delete updated.images;
 
   store.products[idx] = updated;
+  const restockDue = takeRestockSubs(store, [[existing, updated]]);
   writeStore(store);
+  sendRestockEmails(restockDue);
   res.json(updated);
 });
 
@@ -1362,6 +1421,7 @@ app.patch('/api/admin/products/:id', requireAdmin, (req, res) => {
   const idx = store.products.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Товар не найден' });
   const { hidden, discountPercent, stock } = req.body || {};
+  const before = { ...store.products[idx] };
   if (hidden !== undefined) {
     if (hidden) store.products[idx].hidden = true;
     else delete store.products[idx].hidden;
@@ -1375,7 +1435,9 @@ app.patch('/api/admin/products/:id', requireAdmin, (req, res) => {
     if (pct > 0) store.products[idx].discountPercent = pct;
     else delete store.products[idx].discountPercent;
   }
+  const restockDue = takeRestockSubs(store, [[before, store.products[idx]]]);
   writeStore(store);
+  sendRestockEmails(restockDue);
   res.json(store.products[idx]);
 });
 
@@ -1384,9 +1446,11 @@ app.post('/api/admin/products/bulk', requireAdmin, (req, res) => {
   if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: 'Не выбраны товары' });
   const store = readStore();
   let count = 0;
+  const pairs = [];
   store.products.forEach(p => {
     if (!ids.includes(p.id)) return;
     count++;
+    pairs.push([{ ...p }, p]);
     if (hidden !== undefined) {
       if (hidden) p.hidden = true;
       else delete p.hidden;
@@ -1401,7 +1465,9 @@ app.post('/api/admin/products/bulk', requireAdmin, (req, res) => {
       else delete p.stock;
     }
   });
+  const restockDue = takeRestockSubs(store, pairs);
   writeStore(store);
+  sendRestockEmails(restockDue);
   res.json({ ok: true, count });
 });
 
@@ -1411,6 +1477,7 @@ app.delete('/api/admin/products/:id', requireAdmin, (req, res) => {
   if (idx === -1) return res.status(404).json({ error: 'Товар не найден' });
   const [removed] = store.products.splice(idx, 1);
   [removed.img, ...(removed.images || [])].forEach(removeUpload);
+  store.restockSubs = store.restockSubs.filter(sub => sub.productId !== removed.id);
   writeStore(store);
   res.json({ ok: true });
 });

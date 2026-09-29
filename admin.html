@@ -654,7 +654,7 @@ function renderProducts(){
       <td>${STATE.categories[p.cat] || p.cat}</td>
       <td>${p.discountPercent ? `<span class="price-old-admin" style="color:var(--ink-soft);text-decoration:line-through;">${p.price.toLocaleString('ru-RU')} ₽</span> ${Math.round(p.price*(1-p.discountPercent/100)).toLocaleString('ru-RU')} ₽` : p.price.toLocaleString('ru-RU') + ' ₽'}</td>
       <td>${p.discountPercent ? '−' + p.discountPercent + '%' : '—'}</td>
-      <td>${p.hidden ? '<span style="color:#e0433a;">Скрыт</span>' : 'Виден'}${p.stock === 'out' ? '<br><span style="color:#e0433a;">Нет в наличии</span>' : p.stock === 'order' ? '<br><span style="color:var(--ink-soft);">Под заказ</span>' : ''}</td>
+      <td>${p.hidden ? '<span style="color:#e0433a;">Скрыт</span>' : 'Виден'}${p.stock === 'out' ? `<br><span style="color:#e0433a;">Нет в наличии</span>${(STATE.restockCounts || {})[p.id] ? `<br><small style="color:var(--ink-soft);">ждут поступления: ${STATE.restockCounts[p.id]}</small>` : ''}` : p.stock === 'order' ? '<br><span style="color:var(--ink-soft);">Под заказ</span>' : ''}</td>
       <td style="white-space:nowrap;">
         <button type="button" class="btn-ghost btn-sm" data-toggle-hidden="${p.id}" data-hidden="${p.hidden ? '1' : '0'}">${p.hidden ? 'Показать' : 'Скрыть'}</button>
         <button type="button" class="btn-ghost btn-sm" data-edit="${p.id}">Изменить</button>
