@@ -163,6 +163,11 @@
         <div class="field"><label>Цвет (необязательно)</label><input id="pColor"></div>
         <div class="field"><label>Размер (необязательно)</label><input id="pSize"></div>
       </div>
+      <div class="field">
+        <label>Варианты размера на выбор (через запятую, необязательно)</label>
+        <input id="pSizes" placeholder="например: S, M, L или 280 см, 300 см">
+        <small style="color:var(--ink-soft);font-size:.78rem;">Покупатель выберет один из вариантов, выбранный размер будет в заказе. Оставьте пустым, если выбирать нечего. Поле «Размер» выше — для товаров-вариантов одного цвета (как чемоданы M/XL), а не для выбора.</small>
+      </div>
       <div class="row">
         <div class="field" style="flex:none;width:160px;"><label>Скидка, % (0 — нет)</label><input id="pDiscount" type="number" min="0" max="95" value="0"></div>
         <div class="field" style="flex:none;width:180px;"><label>Наличие</label><select id="pStock">
@@ -593,7 +598,7 @@ function renderProducts(){
     <tr>
       <td><input type="checkbox" class="prod-chk" value="${p.id}"></td>
       <td>${p.img ? `<img class="thumb" src="${p.img}">` : ''}</td>
-      <td>${p.name}${p.size ? ' · ' + p.size : ''}</td>
+      <td>${p.name}${p.size ? ' · ' + p.size : ''}${p.sizes && p.sizes.length ? `<br><small style="color:var(--ink-soft);">Размеры: ${p.sizes.join(', ')}</small>` : ''}</td>
       <td>${STATE.categories[p.cat] || p.cat}</td>
       <td>${p.discountPercent ? `<span class="price-old-admin" style="color:var(--ink-soft);text-decoration:line-through;">${p.price.toLocaleString('ru-RU')} ₽</span> ${Math.round(p.price*(1-p.discountPercent/100)).toLocaleString('ru-RU')} ₽` : p.price.toLocaleString('ru-RU') + ' ₽'}</td>
       <td>${p.discountPercent ? '−' + p.discountPercent + '%' : '—'}</td>
@@ -696,6 +701,7 @@ function startEdit(id){
   el('pPrice').value = p.price;
   el('pColor').value = p.color || '';
   el('pSize').value = p.size || '';
+  el('pSizes').value = (p.sizes || []).join(', ');
   el('pDesc').value = p.desc || '';
   el('pDiscount').value = p.discountPercent || 0;
   el('pHidden').checked = !!p.hidden;
@@ -721,6 +727,7 @@ el('productForm').addEventListener('submit', async (e) => {
   fd.append('price', el('pPrice').value);
   fd.append('color', el('pColor').value);
   fd.append('size', el('pSize').value);
+  fd.append('sizes', el('pSizes').value);
   fd.append('desc', el('pDesc').value);
   fd.append('specs', JSON.stringify(specs));
   fd.append('discountPercent', el('pDiscount').value || '0');

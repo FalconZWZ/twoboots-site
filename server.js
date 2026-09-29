@@ -639,6 +639,13 @@ app.put('/api/me', requireUser, (req, res) => {
 });
 
 /* ===== Pricing & promo codes ===== */
+// The size recorded on an order line: one of the product's size options (false if a product
+// with options arrives without a valid one), else the variant's own fixed size, else null.
+function orderSize(product, requested) {
+  if (product.sizes && product.sizes.length) return product.sizes.includes(requested) ? requested : false;
+  return product.size || null;
+}
+
 // Server-side prices for a cart: client prices are never trusted.
 function priceItems(store, items) {
   const lines = [];
@@ -647,9 +654,11 @@ function priceItems(store, items) {
     const product = store.products.find(p => p.id === item.id && !p.hidden);
     if (!product) continue;
     if (product.stock === 'out') return { error: `«${product.name}» сейчас нет в наличии — уберите его из корзины` };
+    const size = orderSize(product, item.size);
+    if (size === false) return { error: `Выберите размер для «${product.name}»` };
     const qty = Math.max(1, Math.min(99, Number(item.qty) || 1));
     const price = unitPrice(product);
-    lines.push({ id: product.id, name: product.name, size: item.size || null, price, qty });
+    lines.push({ id: product.id, name: product.name, size, price, qty });
     subtotal += price * qty;
   }
   return { lines, subtotal };
@@ -769,7 +778,7 @@ app.patch('/api/orders/:id/cancel', requireUser, (req, res) => {
 
 /* ===== Quick order (buy in one click, no account needed) ===== */
 app.post('/api/quick-order', orderLimiter, (req, res) => {
-  const { productId, qty, name, phone } = req.body || {};
+  const { productId, qty, name, phone, size: requestedSize } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Укажите имя' });
   if (!phone || !phone.trim()) return res.status(400).json({ error: 'Укажите номер телефона' });
   if (req.body.consent !== true) return res.status(400).json({ error: CONSENT_ERROR });
@@ -777,6 +786,8 @@ app.post('/api/quick-order', orderLimiter, (req, res) => {
   const product = store.products.find(p => p.id === productId && !p.hidden);
   if (!product) return res.status(404).json({ error: 'Товар не найден' });
   if (product.stock === 'out') return res.status(400).json({ error: 'Этого товара сейчас нет в наличии' });
+  const size = orderSize(product, requestedSize);
+  if (size === false) return res.status(400).json({ error: 'Выберите размер' });
 
   const qtyNum = Math.max(1, Math.min(99, Number(qty) || 1));
   const price = unitPrice(product);
@@ -791,7 +802,7 @@ app.post('/api/quick-order', orderLimiter, (req, res) => {
     number: store.orderSeq,
     userId: null,
     quick: true,
-    items: [{ id: product.id, name: product.name, size: null, price, qty: qtyNum }],
+    items: [{ id: product.id, name: product.name, size, price, qty: qtyNum }],
     subtotal,
     ...(promo ? { promo: { code: promo.code, discount } } : {}),
     total: subtotal - discount,
@@ -1044,6 +1055,13 @@ app.delete('/api/admin/categories/:id', requireAdmin, (req, res) => {
 });
 
 /* ===== Admin: products ===== */
+// Size options the buyer picks from ("S, M, L" in the admin form). Separate from `size`, which
+// marks a colour/size variant that is its own product (the suitcases).
+function parseSizes(raw) {
+  const list = String(raw || '').split(/[,;\n]/).map(x => x.trim().slice(0, 30)).filter(Boolean);
+  return [...new Set(list)].slice(0, 20);
+}
+
 function parseProductBody(body) {
   let specs = [];
   if (body.specs) {
@@ -1060,6 +1078,7 @@ function parseProductBody(body) {
     specs,
     discountPercent: discountPercent || undefined,
     stock: normStock(body.stock),
+    sizes: parseSizes(body.sizes).length ? parseSizes(body.sizes) : undefined,
     hidden: body.hidden === 'true' || body.hidden === true || undefined,
   };
 }
