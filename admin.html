@@ -343,6 +343,7 @@ el('promoForm').addEventListener('submit', async e => {
   }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
 });
 
+const DELIVERY_LABELS = { cdek: 'СДЭК', post: 'Почта России', courier: 'Курьер по Москве', pickup: 'Самовывоз' };
 const ORDER_STATUS_LABELS = { new:'Новый', processing:'В обработке', shipped:'Отправлен', completed:'Выполнен', cancelled:'Отменён' };
 
 async function loadOrders(){
@@ -366,13 +367,13 @@ function csvCell(v){
 el('exportOrdersBtn').addEventListener('click', () => {
   const list = filteredOrders();
   if(!list.length){ showMsg(el('globalMsg'), 'Нет заказов для выгрузки', 'error'); return; }
-  const header = ['Номер','Дата','Статус','Тип','Имя','Телефон','Email','Город','Адрес','Товары','Сумма товаров','Промокод','Скидка','Итого','Комментарий'];
+  const header = ['Номер','Дата','Статус','Тип','Имя','Телефон','Email','Доставка','Город','Адрес','Комментарий клиента','Товары','Сумма товаров','Промокод','Скидка','Итого','Комментарий менеджера'];
   const rows = list.map(o => [
     o.number,
     new Date(o.createdAt).toLocaleString('ru-RU'),
     ORDER_STATUS_LABELS[o.status] || o.status,
     o.quick ? 'В 1 клик' : 'Корзина',
-    o.name, o.phone, o.email, o.city, o.address,
+    o.name, o.phone, o.email, DELIVERY_LABELS[o.delivery] || '', o.city, o.address, o.customerComment,
     o.items.map(it => `${it.name}${it.size ? ' (' + it.size + ')' : ''} × ${it.qty}`).join('; '),
     o.subtotal != null ? o.subtotal : o.total,
     o.promo ? o.promo.code : '',
@@ -440,7 +441,7 @@ function renderOrders(orders){
     <tr>
       <td style="white-space:nowrap;font-weight:700;">№${o.number || o.id.slice(0,8)}</td>
       <td style="white-space:nowrap;">${new Date(o.createdAt).toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
-      <td>${o.quick ? '<span style="display:inline-block;font-size:.72rem;font-weight:700;color:#1c5e26;background:#dff3e0;padding:2px 8px;border-radius:999px;margin-bottom:4px;">В 1 клик</span><br>' : ''}${escHtml(o.name)}<br><small style="color:var(--ink-soft);">${escHtml(o.email)}${o.phone ? ' · ' + escHtml(o.phone) : ''}</small>${o.city || o.address ? `<br><small style="color:var(--ink-soft);">${escHtml([o.city, o.address].filter(Boolean).join(', '))}</small>` : ''}</td>
+      <td>${o.quick ? '<span style="display:inline-block;font-size:.72rem;font-weight:700;color:#1c5e26;background:#dff3e0;padding:2px 8px;border-radius:999px;margin-bottom:4px;">В 1 клик</span><br>' : ''}${escHtml(o.name)}<br><small style="color:var(--ink-soft);">${escHtml(o.email)}${o.phone ? ' · ' + escHtml(o.phone) : ''}</small>${o.delivery ? `<br><small><b>${DELIVERY_LABELS[o.delivery] || o.delivery}</b></small>` : ''}${o.city || o.address ? `<br><small style="color:var(--ink-soft);">${escHtml([o.city, o.address].filter(Boolean).join(', '))}</small>` : ''}${o.customerComment ? `<br><small style="color:var(--ink-soft);font-style:italic;">«${escHtml(o.customerComment)}»</small>` : ''}</td>
       <td>${o.items.map(it => `${escHtml(it.name)}${it.size ? ' · ' + escHtml(it.size) : ''} × ${it.qty}`).join('<br>')}</td>
       <td style="white-space:nowrap;">${o.total.toLocaleString('ru-RU')} ₽${o.promo ? `<br><small style="color:var(--ink-soft);">${o.promo.code}: −${o.promo.discount.toLocaleString('ru-RU')} ₽</small>` : ''}</td>
       <td>
