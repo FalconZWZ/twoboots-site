@@ -315,6 +315,9 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
     background:var(--surface);border:1px solid var(--border);box-shadow:var(--shadow);
   }
   .cookie-bar[hidden]{display:none;}
+  .update-bar{position:fixed;top:88px;left:50%;transform:translateX(-50%);z-index:98;display:flex;align-items:center;gap:14px;
+    max-width:calc(100% - 24px);padding:10px 12px 10px 18px;border-radius:999px;background:var(--ink);color:var(--bg);box-shadow:var(--shadow);font-size:.88rem;}
+  .update-bar[hidden]{display:none;}
   .cookie-bar p{margin:0;font-size:.85rem;color:var(--ink-soft);line-height:1.45;}
   .cookie-bar a{text-decoration:underline;}
   @media (max-width:560px){ .cookie-bar{flex-direction:column;align-items:stretch;} }
@@ -739,6 +742,11 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   <button type="button" class="chat-fab-toggle" id="chatFabToggle" aria-label="Написать нам" aria-expanded="false">
     <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8.5 8.5 0 0 1-12.4 7.6L3 21l1.4-5.4A8.5 8.5 0 1 1 21 12z"/></svg>
   </button>
+</div>
+
+<div class="update-bar" id="updateBar" hidden role="status">
+  <span>Сайт обновился — обновите страницу, чтобы всё работало правильно.</span>
+  <button type="button" class="btn btn-primary btn-sm" onclick="location.reload()">Обновить</button>
 </div>
 
 <div class="cookie-bar" id="cookieBar" hidden>
@@ -1983,9 +1991,30 @@ function parseLocation(){
 }
 
 function navigate(path){
+  // A newer version of the site was deployed while this tab stayed open: load the page for
+  // real so the visitor gets the new code (the cart survives — it lives in localStorage).
+  if(SITE_UPDATED){ location.assign(path); return; }
   history.pushState(null, '', path);
   render();
 }
+
+/* stale-tab guard: compare this page's build with the server's now and then */
+const PAGE_BUILD = (document.querySelector('meta[name="build"]') || {}).content || '';
+let SITE_UPDATED = false;
+let lastVersionCheck = Date.now();
+async function checkSiteVersion(){
+  if(!PAGE_BUILD || SITE_UPDATED || Date.now() - lastVersionCheck < 60 * 1000) return;
+  lastVersionCheck = Date.now();
+  try{
+    const { build } = await (await fetch('/api/version', { cache: 'no-store' })).json();
+    if(build && build !== PAGE_BUILD){
+      SITE_UPDATED = true;
+      document.getElementById('updateBar').hidden = false;
+    }
+  }catch(e){ /* offline or restarting — try again later */ }
+}
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') checkSiteVersion(); });
+setInterval(checkSiteVersion, 5 * 60 * 1000);
 
 document.addEventListener('click', e => {
   if(e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -2094,6 +2123,7 @@ function render(){
 
   bindPageEvents(path, params);
   trackPageview();
+  checkSiteVersion();
 }
 
 function bindPageEvents(path, params){
