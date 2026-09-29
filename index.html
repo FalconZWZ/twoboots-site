@@ -472,6 +472,20 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   .cart-foot .row{display:flex;justify-content:space-between;margin-bottom:16px;font-weight:700;}
   .cart-foot .row.sub{font-weight:500;color:var(--ink-soft);margin-bottom:8px;font-size:.92rem;}
   .cart-foot .row.promo{font-weight:600;color:#1c7a3a;margin-bottom:8px;font-size:.92rem;}
+  .cart-foot.checkout{max-height:78vh;overflow-y:auto;}
+  .co-title{font-weight:700;font-size:.95rem;margin:0 0 10px;}
+  .co-methods{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;}
+  .co-method{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--border);border-radius:12px;font-size:.88rem;cursor:pointer;background:var(--surface);}
+  .co-method:has(input:checked){border-color:var(--ink);box-shadow:inset 0 0 0 1px var(--ink);}
+  .co-method input{accent-color:var(--accent);margin:0;}
+  .co-field{margin-bottom:10px;}
+  .co-field input,.co-field textarea{
+    width:100%;padding:10px 14px;border-radius:12px;border:1px solid var(--border);
+    background:var(--surface);color:var(--ink);font-size:.9rem;font-family:inherit;
+  }
+  .co-field textarea{min-height:64px;resize:vertical;}
+  .co-field input:focus,.co-field textarea:focus{outline:none;border-color:var(--accent);}
+  .co-back{display:block;width:100%;margin-top:10px;background:none;border:0;color:var(--ink-soft);text-decoration:underline;font-size:.85rem;cursor:pointer;}
   .promo-form{display:flex;gap:8px;margin-bottom:14px;}
   .promo-form input{
     flex:1;min-width:0;padding:10px 14px;border-radius:999px;border:1px solid var(--border);
@@ -772,6 +786,8 @@ function updateCartUI(){
   const itemsEl = document.getElementById('cartItems');
   const footEl = document.getElementById('cartFoot');
   if(cart.length === 0){
+    CHECKOUT = null;
+    footEl.classList.remove('checkout');
     itemsEl.innerHTML = `<div class="cart-empty">Корзина пуста.<br>Загляните в каталог.</div>`;
     footEl.innerHTML = '';
     return;
@@ -789,6 +805,8 @@ function updateCartUI(){
   }).join('');
   const subtotal = cartTotal();
   const discount = promoDiscount(subtotal);
+  footEl.classList.toggle('checkout', !!CHECKOUT);
+  if(CHECKOUT){ footEl.innerHTML = checkoutFormHtml(subtotal, discount); return; }
   footEl.innerHTML = `
     ${APPLIED_PROMO ? `
     <div class="row sub"><span>Товары</span><span>${fmt(subtotal)} ₽</span></div>
@@ -800,9 +818,33 @@ function updateCartUI(){
     </form>
     <div id="promoErr"></div>`}
     <div class="row"><span>Итого</span><span class="price">${fmt(subtotal - discount)} ₽</span></div>
-    ${CURRENT_USER && !CURRENT_USER.consentAt ? consentField('cart-consent') : ''}
     <button class="btn btn-primary btn-block" id="checkoutBtn">Оформить заказ</button>
   `;
+}
+
+/* checkout step: shown in the cart footer after "Оформить заказ"; the draft survives re-renders */
+const DELIVERY_METHODS = { cdek: 'СДЭК', post: 'Почта России', courier: 'Курьер по Москве', pickup: 'Самовывоз' };
+const ADDRESS_HINT = { cdek: 'Адрес или пункт выдачи СДЭК', post: 'Адрес с индексом', courier: 'Улица, дом, квартира' };
+let CHECKOUT = null; // null = cart view, else {delivery, city, address, comment}
+
+function checkoutFormHtml(subtotal, discount){
+  const c = CHECKOUT;
+  return `
+    <form id="checkoutForm">
+      <div class="co-title">Способ доставки</div>
+      <div class="co-methods">
+        ${Object.entries(DELIVERY_METHODS).map(([k, label]) => `<label class="co-method"><input type="radio" name="co-delivery" value="${k}" ${c.delivery === k ? 'checked' : ''}> ${label}</label>`).join('')}
+      </div>
+      ${c.delivery === 'cdek' || c.delivery === 'post' ? `<div class="co-field"><input id="co-city" placeholder="Город" value="${escAttr(c.city)}" required maxlength="100"></div>` : ''}
+      ${c.delivery !== 'pickup' ? `<div class="co-field"><input id="co-address" placeholder="${ADDRESS_HINT[c.delivery]}" value="${escAttr(c.address)}" required maxlength="300"></div>`
+        : `<div class="promo-note hint" style="margin:0 0 10px;">Самовывоз в Москве — адрес и время сообщит менеджер.</div>`}
+      <div class="co-field"><textarea id="co-comment" placeholder="Комментарий к заказу (необязательно)" maxlength="1000">${c.comment.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</textarea></div>
+      ${discount ? `<div class="row promo"><span>Промокод ${APPLIED_PROMO.code}</span><span>−${fmt(discount)} ₽</span></div>` : ''}
+      <div class="row"><span>Итого</span><span class="price">${fmt(subtotal - discount)} ₽</span></div>
+      ${CURRENT_USER && !CURRENT_USER.consentAt ? consentField('cart-consent') : ''}
+      <button type="submit" class="btn btn-primary btn-block">Подтвердить заказ</button>
+      <button type="button" class="co-back" id="checkoutBack">← Назад к корзине</button>
+    </form>`;
 }
 function fmt(n){ return n.toLocaleString('ru-RU'); }
 
@@ -839,8 +881,9 @@ document.getElementById('cartFoot').addEventListener('submit', async e => {
     updateCartUI();
   }catch(err){ errEl.innerHTML = `<div class="promo-note err">${err.message}</div>`; }
 });
-document.getElementById('cartFoot').addEventListener('click', async e => {
+document.getElementById('cartFoot').addEventListener('click', e => {
   if(e.target.id === 'promoRemove'){ APPLIED_PROMO = null; updateCartUI(); return; }
+  if(e.target.id === 'checkoutBack'){ CHECKOUT = null; updateCartUI(); return; }
   if(e.target.id !== 'checkoutBtn') return;
   if(!CURRENT_USER){
     showToast('Войдите в личный кабинет, чтобы оформить заказ');
@@ -854,12 +897,23 @@ document.getElementById('cartFoot').addEventListener('click', async e => {
     navigate('/account?tab=profile');
     return;
   }
+  CHECKOUT = { delivery: 'cdek', city: CURRENT_USER.city || '', address: CURRENT_USER.address || '', comment: '' };
+  updateCartUI();
+});
+// keep the checkout draft in sync so re-renders (removing an item, switching method) don't lose it
+document.getElementById('cartFoot').addEventListener('input', e => {
+  if(!CHECKOUT) return;
+  if(e.target.name === 'co-delivery'){ CHECKOUT.delivery = e.target.value; updateCartUI(); return; }
+  const field = { 'co-city': 'city', 'co-address': 'address', 'co-comment': 'comment' }[e.target.id];
+  if(field) CHECKOUT[field] = e.target.value;
+});
+document.getElementById('cartFoot').addEventListener('submit', async e => {
+  if(e.target.id !== 'checkoutForm') return;
+  e.preventDefault();
   // Accounts created before the consent checkbox existed give it once, here.
   const consentBox = document.getElementById('cart-consent');
-  if(consentBox && !consentBox.checked){
-    showToast('Отметьте согласие на обработку персональных данных');
-    return;
-  }
+  const btn = e.target.querySelector('button[type="submit"]');
+  btn.disabled = true;
   try{
     const res = await fetch('/api/orders', {
       method:'POST', headers:{'Content-Type':'application/json'},
@@ -868,12 +922,18 @@ document.getElementById('cartFoot').addEventListener('click', async e => {
         consent: !!consentBox,
         // below the promo's minimum the code gives nothing — don't send it, or the server rejects the order
         promoCode: APPLIED_PROMO && promoDiscount(cartTotal()) ? APPLIED_PROMO.code : undefined,
+        delivery: CHECKOUT.delivery, city: CHECKOUT.city, address: CHECKOUT.address, comment: CHECKOUT.comment,
       })
     });
     const data = await res.json();
     if(!res.ok) throw new Error(data.error || 'Не удалось оформить заказ');
     if(consentBox) CURRENT_USER.consentAt = new Date().toISOString();
+    if(CHECKOUT.delivery !== 'pickup'){
+      CURRENT_USER.city = CURRENT_USER.city || data.order.city;
+      CURRENT_USER.address = CURRENT_USER.address || data.order.address;
+    }
     APPLIED_PROMO = null;
+    CHECKOUT = null;
     cart = [];
     updateCartUI();
     closeCart();
@@ -881,7 +941,7 @@ document.getElementById('cartFoot').addEventListener('click', async e => {
     trackPurchase(data.order);
     showToast(`Заказ №${data.order.number} оформлен — в ближайшее время с вами свяжется менеджер`);
     navigate('/account');
-  }catch(err){ showToast(err.message); }
+  }catch(err){ showToast(err.message); btn.disabled = false; }
 });
 
 /* mobile menu */
@@ -1532,6 +1592,7 @@ function renderOrders(orders){
       </div>
       ${o.items.map(it => `<div class="order-line"><span>${it.name}${it.size?' · '+it.size:''} × ${it.qty}</span><span>${fmt(it.price*it.qty)} ₽</span></div>`).join('')}
       ${o.promo ? `<div class="order-line"><span>Промокод ${o.promo.code}</span><span>−${fmt(o.promo.discount)} ₽</span></div>` : ''}
+      ${o.delivery ? `<div class="order-line" style="color:var(--ink-soft);"><span>Доставка: ${DELIVERY_METHODS[o.delivery] || o.delivery}${[o.city, o.address].filter(Boolean).length ? ' — ' + escAttr([o.city, o.address].filter(Boolean).join(', ')).replace(/</g, '&lt;') : ''}</span></div>` : ''}
       <div class="order-total"><span>Итого</span><span>${fmt(o.total)} ₽</span></div>
       ${['new','processing'].includes(o.status) ? `<button class="btn btn-ghost btn-sm" style="margin-top:12px;" data-cancel-order="${o.id}">Отменить заказ</button>` : ''}
     </div>

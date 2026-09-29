@@ -46,6 +46,19 @@ const mailTransport = SMTP_HOST
     })
   : null;
 
+const DELIVERY_METHODS = { cdek: 'СДЭК', post: 'Почта России', courier: 'Курьер по Москве', pickup: 'Самовывоз' };
+
+// "Доставка: СДЭК — Казань, ул. …" plus the customer's comment, one line each ('' if absent).
+function orderDeliveryLines(order) {
+  let text = '';
+  if (order.delivery) {
+    const where = [order.city, order.address].filter(Boolean).join(', ');
+    text += `Доставка: ${DELIVERY_METHODS[order.delivery] || order.delivery}${where ? ' — ' + where : ''}\n`;
+  }
+  if (order.customerComment) text += `Комментарий: ${order.customerComment}\n`;
+  return text;
+}
+
 function orderPromoLine(order) {
   return order.promo ? `Промокод ${order.promo.code}: −${order.promo.discount.toLocaleString('ru-RU')} ₽\n` : '';
 }
@@ -58,10 +71,11 @@ function sendOrderConfirmationEmail(order, user) {
     from: MAIL_FROM,
     to: user.email,
     subject: `Заказ №${order.number} принят — Two Boots`,
-    text: `Спасибо за заказ №${order.number}!\n\nВ ближайшее время с вами свяжется менеджер.\n\nСостав заказа:\n${itemsList}\n\n${orderPromoLine(order)}Итого: ${order.total.toLocaleString('ru-RU')} ₽`,
+    text: `Спасибо за заказ №${order.number}!\n\nВ ближайшее время с вами свяжется менеджер.\n\n${orderDeliveryLines(order)}\nСостав заказа:\n${itemsList}\n\n${orderPromoLine(order)}Итого: ${order.total.toLocaleString('ru-RU')} ₽`,
     html: `<p>Спасибо за заказ <b>№${order.number}</b>!</p><p>В ближайшее время с вами свяжется менеджер.</p>
       <table style="border-collapse:collapse;">${itemsHtml}</table>
       ${order.promo ? `<p>Промокод ${order.promo.code}: −${order.promo.discount.toLocaleString('ru-RU')} ₽</p>` : ''}
+      ${order.delivery ? `<p>Доставка: ${DELIVERY_METHODS[order.delivery]}${[order.city, order.address].filter(Boolean).length ? ' — ' + escHtml([order.city, order.address].filter(Boolean).join(', ')) : ''}</p>` : ''}
       <p><b>Итого: ${order.total.toLocaleString('ru-RU')} ₽</b></p>`,
   }).catch(err => console.error('Не удалось отправить письмо с подтверждением заказа:', err.message));
 }
@@ -77,7 +91,7 @@ const BOTORDER_SECRET = process.env.BOTORDER_SECRET || '';
 
 function orderNotifyText(order) {
   const itemsList = order.items.map(it => `${it.name}${it.size ? ' (' + it.size + ')' : ''} — ${it.qty} шт. × ${it.price.toLocaleString('ru-RU')} ₽`).join('\n');
-  return `Новый заказ №${order.number}${order.quick ? ' (в 1 клик)' : ''}\nИмя: ${order.name}\nТелефон: ${order.phone}\n\n${itemsList}\n\n${orderPromoLine(order)}Итого: ${order.total.toLocaleString('ru-RU')} ₽`;
+  return `Новый заказ №${order.number}${order.quick ? ' (в 1 клик)' : ''}\nИмя: ${order.name}\nТелефон: ${order.phone}\n${orderDeliveryLines(order)}\n${itemsList}\n\n${orderPromoLine(order)}Итого: ${order.total.toLocaleString('ru-RU')} ₽`;
 }
 
 // Notifies the store owner (not the customer) that a new order/lead came in —
@@ -106,6 +120,8 @@ function notifyOwnerNewOrder(order) {
         'Состав': order.items.map(it => `${it.name}${it.size ? ' (' + it.size + ')' : ''} — ${it.qty} шт. × ${it.price.toLocaleString('ru-RU')} ₽`).join('\n'),
         'Итого': `${order.total.toLocaleString('ru-RU')} ₽`,
         ...(order.promo ? { 'Промокод': `${order.promo.code} (−${order.promo.discount.toLocaleString('ru-RU')} ₽)` } : {}),
+        ...(order.delivery ? { 'Доставка': `${DELIVERY_METHODS[order.delivery]}${[order.city, order.address].filter(Boolean).length ? ' — ' + [order.city, order.address].filter(Boolean).join(', ') : ''}` } : {}),
+        ...(order.customerComment ? { 'Комментарий': order.customerComment } : {}),
       }),
     }).then(r => { if (!r.ok) return r.text().then(t => { throw new Error(t); }); })
       .catch(err => console.error('Не удалось отправить заказ в бот заявок:', err.message));
@@ -737,6 +753,19 @@ app.post('/api/orders', orderLimiter, requireUser, (req, res) => {
   const { lines, subtotal, error: itemsError } = priceItems(store, items);
   if (itemsError) return res.status(400).json({ error: itemsError });
   if (lines.length === 0) return res.status(400).json({ error: 'Товары не найдены' });
+
+  const delivery = String(req.body.delivery || '');
+  if (!DELIVERY_METHODS[delivery]) return res.status(400).json({ error: 'Выберите способ доставки' });
+  const city = String(req.body.city || '').trim().slice(0, 100) || (delivery === 'courier' ? 'Москва' : '');
+  const address = String(req.body.address || '').trim().slice(0, 300);
+  if (delivery !== 'pickup' && !address) return res.status(400).json({ error: 'Укажите адрес доставки или пункт выдачи' });
+  if ((delivery === 'cdek' || delivery === 'post') && !city) return res.status(400).json({ error: 'Укажите город' });
+  const customerComment = String(req.body.comment || '').trim().slice(0, 1000);
+  // First address a customer types becomes their profile default for next time.
+  if (delivery !== 'pickup') {
+    if (!user.city) user.city = city;
+    if (!user.address) user.address = address;
+  }
   const { promo, discount = 0, error: promoError } = applyPromo(store, req.body.promoCode, subtotal);
   if (promoError) return res.status(400).json({ error: promoError });
   if (promo) promo.uses = (promo.uses || 0) + 1;
@@ -751,7 +780,11 @@ app.post('/api/orders', orderLimiter, requireUser, (req, res) => {
     ...(promo ? { promo: { code: promo.code, discount } } : {}),
     total: subtotal - discount,
     status: 'new',
-    name: user.name, phone: user.phone, email: user.email, city: user.city, address: user.address,
+    name: user.name, phone: user.phone, email: user.email,
+    delivery,
+    city: delivery === 'pickup' ? '' : city,
+    address: delivery === 'pickup' ? '' : address,
+    ...(customerComment ? { customerComment } : {}),
     createdAt: new Date().toISOString(),
   };
   store.orders.push(order);
