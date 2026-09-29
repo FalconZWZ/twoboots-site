@@ -26,7 +26,9 @@ function client() {
     const set = res.headers.get('set-cookie');
     if (set) cookie = set.split(';')[0];
     const type = res.headers.get('content-type') || '';
-    const data = type.includes('json') ? await res.json() : await res.text();
+    const data = type.includes('json') ? await res.json()
+      : type.includes('zip') ? Buffer.from(await res.arrayBuffer())
+      : await res.text();
     return { status: res.status, data, headers: res.headers };
   };
 }
@@ -292,4 +294,27 @@ test('the store is saved atomically: valid JSON, no temp file left behind', () =
   const store = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.ok(store.orders.length >= 3);
   assert.equal(fs.existsSync(file + '.tmp'), false);
+});
+
+test('restore from a backup: round-trips the data, rejects junk, never writes outside DATA_DIR', async () => {
+  const AdmZip = require('adm-zip');
+  const admin = await adminClient();
+  const backup = await admin('/api/admin/backup');
+  assert.equal(backup.status, 200);
+  const before = (await admin('/api/admin/orders')).data.orders.length;
+
+  const upload = (buf, name = 'b.zip') => { const f = new FormData(); f.append('backup', new Blob([buf]), name); return f; };
+  assert.equal((await client()('/api/admin/restore', { method: 'POST', form: upload(backup.data) })).status, 403);
+  assert.equal((await admin('/api/admin/restore', { method: 'POST', form: upload(Buffer.from('nope')) })).status, 400);
+
+  const evil = new AdmZip(backup.data);
+  evil.addFile('uploads/../../escaped.txt', Buffer.from('x'));
+  evil.addFile('../escaped2.txt', Buffer.from('x'));
+  const r = await admin('/api/admin/restore', { method: 'POST', form: upload(evil.toBuffer()) });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.orders, before);
+  assert.equal(fs.existsSync(path.join(dataDir, '..', 'escaped.txt')) || fs.existsSync(path.join(dataDir, 'escaped.txt')), false);
+  assert.equal(fs.existsSync(path.join(dataDir, '..', 'escaped2.txt')), false);
+  assert.ok(fs.readdirSync(dataDir).some(f => f.startsWith('store.before-restore-')));
+  assert.equal((await admin('/api/admin/orders')).data.orders.length, before);
 });
