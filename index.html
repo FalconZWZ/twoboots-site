@@ -369,6 +369,20 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
     display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;
   }
   .pdp-media svg{width:44%;stroke:var(--ink);position:relative;z-index:1;}
+  .pdp-gallery{min-width:0;}
+  .pdp-media img{touch-action:pan-y;user-select:none;-webkit-user-drag:none;}
+  .gal-nav{
+    position:absolute;top:50%;transform:translateY(-50%);z-index:3;width:42px;height:42px;border-radius:50%;
+    background:var(--surface);border:1px solid var(--border);color:var(--ink);font-size:1.5rem;line-height:1;
+    display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:.9;box-shadow:var(--shadow);
+  }
+  .gal-nav:hover{opacity:1;}
+  .gal-nav.prev{left:12px;} .gal-nav.next{right:12px;}
+  .gal-count{position:absolute;bottom:12px;right:12px;z-index:3;padding:3px 10px;border-radius:999px;background:var(--surface);border:1px solid var(--border);font-size:.78rem;font-family:var(--font-mono);color:var(--ink-soft);}
+  .gal-thumbs{display:flex;gap:10px;margin-top:12px;overflow-x:auto;padding-bottom:4px;}
+  .gal-thumb{flex:none;width:72px;height:72px;padding:0;border-radius:12px;overflow:hidden;border:2px solid transparent;background:var(--surface);cursor:pointer;}
+  .gal-thumb img{width:100%;height:100%;object-fit:cover;display:block;}
+  .gal-thumb.active{border-color:var(--ink);}
   .pdp-info h1{font-size:clamp(1.7rem,3vw,2.3rem);margin-bottom:14px;}
   .pdp-price{font-size:1.7rem;margin:14px 0 20px;}
   .pdp-desc{color:var(--ink-soft);margin-bottom:24px;max-width:52ch;}
@@ -727,6 +741,9 @@ const STOCK_LABEL = { order: 'Под заказ', out: 'Нет в наличии
 const isOrderable = p => p.stock !== 'out';
 
 const hasSizeChoice = p => !!(p.sizes && p.sizes.length);
+// main photo first, then the gallery; a product may have gallery photos without a main one
+const productGallery = p => [p.img, ...(p.images || [])].filter(Boolean);
+const productImage = p => productGallery(p)[0] || null;
 
 function addToCart(id, qty=1, size=null){
   const p = productById(id);
@@ -796,7 +813,7 @@ function updateCartUI(){
     const p = productById(l.id);
     const key = lineKey(l.id, l.size);
     return `<div class="cart-line">
-      <div class="thumb">${p.img ? `<img src="${p.img}" alt="${p.name}" loading="lazy" decoding="async" style="width:100%;height:100%;object-fit:cover;border-radius:10px;">` : catIcon(p.cat)}</div>
+      <div class="thumb">${productImage(p) ? `<img src="${productImage(p)}" alt="${p.name}" loading="lazy" decoding="async" style="width:100%;height:100%;object-fit:cover;border-radius:10px;">` : catIcon(p.cat)}</div>
       <div class="info">
         <h5>${p.name}${l.size && l.size !== p.size ? ' · ' + l.size : ''}</h5>
         <div class="row"><span>${l.qty} × ${fmt(l.price)} ₽</span><a class="remove" data-remove="${key}">Удалить</a></div>
@@ -971,7 +988,7 @@ function productCard(p){
       <div class="product-media">
         ${hasDiscount ? `<span class="discount-badge">−${p.discountPercent}%</span>` : ''}
         ${STOCK_LABEL[p.stock] ? `<span class="stock-badge ${p.stock}">${STOCK_LABEL[p.stock]}</span>` : ''}
-        ${p.img ? `<img src="${p.img}" alt="${p.name}" loading="lazy" decoding="async" style="width:100%;height:100%;object-fit:cover;">` : catIcon(p.cat)}
+        ${productImage(p) ? `<img src="${productImage(p)}" alt="${p.name}" loading="lazy" decoding="async" style="width:100%;height:100%;object-fit:cover;">` : catIcon(p.cat)}
       </div>
     </a>
     <div class="product-body">
@@ -1197,10 +1214,20 @@ function pageProduct(id){
         <span>${p.name}</span>
       </div>
       <div class="pdp">
-        <div class="pdp-media">
-          ${p.discountPercent ? `<span class="discount-badge">−${p.discountPercent}%</span>` : ''}
-          ${p.img ? `<img src="${p.img}" alt="${p.name}" style="width:100%;height:100%;object-fit:cover;">` : catIcon(p.cat)}
-        </div>
+        ${(() => {
+          const gallery = productGallery(p);
+          const many = gallery.length > 1;
+          return `<div class="pdp-gallery">
+          <div class="pdp-media" id="pdpMedia">
+            ${p.discountPercent ? `<span class="discount-badge">−${p.discountPercent}%</span>` : ''}
+            ${gallery.length ? `<img id="pdpMainImg" src="${gallery[0]}" alt="${p.name}" style="width:100%;height:100%;object-fit:cover;">` : catIcon(p.cat)}
+            ${many ? `<button type="button" class="gal-nav prev" id="galPrev" aria-label="Предыдущее фото">‹</button>
+            <button type="button" class="gal-nav next" id="galNext" aria-label="Следующее фото">›</button>
+            <span class="gal-count" id="galCount">1 / ${gallery.length}</span>` : ''}
+          </div>
+          ${many ? `<div class="gal-thumbs">${gallery.map((u, i) => `<button type="button" class="gal-thumb ${i === 0 ? 'active' : ''}" data-gal="${i}" aria-label="Фото ${i + 1}"><img src="${u}" alt="" loading="lazy" decoding="async"></button>`).join('')}</div>` : ''}
+        </div>`;
+        })()}
         <div class="pdp-info">
           <span class="eyebrow">${CATEGORIES[p.cat]}</span>
           <h1 style="margin-top:10px;">${p.name}</h1>
@@ -1784,6 +1811,30 @@ function bindPageEvents(path, params){
         sw.classList.add('active');
       });
     });
+    // gallery: arrows, thumbnails, swipe on touch screens
+    const gallery = productGallery(productById(pdpId));
+    if(gallery.length > 1){
+      const mainImg = document.getElementById('pdpMainImg');
+      let current = 0;
+      const show = i => {
+        current = (i + gallery.length) % gallery.length;
+        mainImg.src = gallery[current];
+        document.getElementById('galCount').textContent = `${current + 1} / ${gallery.length}`;
+        document.querySelectorAll('.gal-thumb').forEach((t, k) => t.classList.toggle('active', k === current));
+      };
+      document.getElementById('galPrev').addEventListener('click', () => show(current - 1));
+      document.getElementById('galNext').addEventListener('click', () => show(current + 1));
+      document.querySelectorAll('.gal-thumb').forEach(t => t.addEventListener('click', () => show(Number(t.getAttribute('data-gal')))));
+      let touchX = null;
+      const media = document.getElementById('pdpMedia');
+      media.addEventListener('touchstart', e => { touchX = e.touches[0].clientX; }, { passive: true });
+      media.addEventListener('touchend', e => {
+        if(touchX === null) return;
+        const dx = e.changedTouches[0].clientX - touchX;
+        touchX = null;
+        if(Math.abs(dx) > 40) show(current + (dx < 0 ? 1 : -1));
+      });
+    }
     const qtyVal = document.getElementById('qtyVal');
     document.getElementById('qtyMinus').addEventListener('click', () => {
       qtyVal.textContent = Math.max(1, parseInt(qtyVal.textContent) - 1);

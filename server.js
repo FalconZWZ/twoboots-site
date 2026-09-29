@@ -406,7 +406,7 @@ app.get('/yml.xml', (req, res) => {
   const { categories, products } = readStore();
   const offers = products.filter(p => !p.hidden && p.stock !== 'out' && p.price > 0 && categories[p.cat]);
   const offerXml = p => {
-    const image = absoluteImageUrl(p.img);
+    const image = absoluteImageUrl(p.img || (p.images || [])[0]);
     const params = [
       ...(p.color ? [['Цвет', p.color]] : []),
       ...(p.size ? [['Размер', p.size]] : []),
@@ -420,7 +420,8 @@ app.get('/yml.xml', (req, res) => {
         <oldprice>${p.price}</oldprice>` : ''}
         <currencyId>RUR</currencyId>
         <categoryId>${ymlCategoryId(p.cat)}</categoryId>${image ? `
-        <picture>${escXml(image)}</picture>` : ''}
+        <picture>${escXml(image)}</picture>` : ''}${(p.images || []).map(absoluteImageUrl).filter(u => u !== image).slice(0, 9).map(u => `
+        <picture>${escXml(u)}</picture>`).join('')}
         <delivery>true</delivery>
         <pickup>true</pickup>
         <description>${escXml(p.desc || '')}</description>
@@ -1183,13 +1184,30 @@ async function optimizeExistingUploads() {
 }
 setTimeout(() => optimizeExistingUploads().catch(err => console.error('Сжатие старых фото:', err.message)), 5000);
 
-app.post('/api/admin/products', requireAdmin, upload.single('image'), async (req, res) => {
-  // Optimise before reading the store: nothing awaits after that, so no concurrent write is lost.
-  const imageName = req.file ? await optimizeImage(req.file.filename) : null;
+// Main photo (`image`, stored as `img`) plus up to MAX_EXTRA_IMAGES gallery photos (`images`).
+const MAX_EXTRA_IMAGES = 10;
+const productUpload = upload.fields([{ name: 'image', maxCount: 1 }, { name: 'images', maxCount: MAX_EXTRA_IMAGES }]);
+
+function removeUpload(url) {
+  if (url && url.startsWith('/uploads/')) fs.unlink(path.join(UPLOADS_DIR, path.basename(url)), () => {});
+}
+// Optimise every uploaded file before the store is read: nothing awaits after that point,
+// so a concurrent admin write can't be lost.
+async function optimizeProductUploads(req) {
+  const files = req.files || {};
+  const main = files.image && files.image[0] ? '/uploads/' + await optimizeImage(files.image[0].filename) : null;
+  const extras = [];
+  for (const f of files.images || []) extras.push('/uploads/' + await optimizeImage(f.filename));
+  return { main, extras, discard: () => [main, ...extras].forEach(removeUpload) };
+}
+
+app.post('/api/admin/products', requireAdmin, productUpload, async (req, res) => {
+  const uploads = await optimizeProductUploads(req);
   const store = readStore();
   const data = parseProductBody(req.body);
-  if (!data.cat || !store.categories[data.cat]) return res.status(400).json({ error: 'Укажите существующую категорию' });
-  if (!data.name) return res.status(400).json({ error: 'Название обязательно' });
+  const invalid = !data.cat || !store.categories[data.cat] ? 'Укажите существующую категорию'
+    : !data.name ? 'Название обязательно' : null;
+  if (invalid) { uploads.discard(); return res.status(400).json({ error: invalid }); }
 
   let id = slugify(data.name);
   if (store.products.some(p => p.id === id)) id = id + '-' + Date.now().toString(36);
@@ -1197,33 +1215,45 @@ app.post('/api/admin/products', requireAdmin, upload.single('image'), async (req
   const product = { id, ...data };
   if (!product.color) delete product.color;
   if (!product.size) delete product.size;
-  if (imageName) product.img = '/uploads/' + imageName;
+  if (uploads.main) product.img = uploads.main;
+  if (uploads.extras.length) product.images = uploads.extras;
 
   store.products.push(product);
   writeStore(store);
   res.json(product);
 });
 
-app.put('/api/admin/products/:id', requireAdmin, upload.single('image'), async (req, res) => {
-  const imageName = req.file ? await optimizeImage(req.file.filename) : null;
+app.put('/api/admin/products/:id', requireAdmin, productUpload, async (req, res) => {
+  const uploads = await optimizeProductUploads(req);
   const store = readStore();
   const idx = store.products.findIndex(p => p.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'Товар не найден' });
+  if (idx === -1) { uploads.discard(); return res.status(404).json({ error: 'Товар не найден' }); }
   const data = parseProductBody(req.body);
-  if (!data.cat || !store.categories[data.cat]) return res.status(400).json({ error: 'Укажите существующую категорию' });
+  if (!data.cat || !store.categories[data.cat]) { uploads.discard(); return res.status(400).json({ error: 'Укажите существующую категорию' }); }
 
   const existing = store.products[idx];
   const updated = { ...existing, ...data };
   if (!data.color) delete updated.color;
   if (!data.size) delete updated.size;
 
-  if (imageName) {
-    if (existing.img && existing.img.startsWith('/uploads/')) {
-      const oldPath = path.join(UPLOADS_DIR, path.basename(existing.img));
-      fs.unlink(oldPath, () => {});
-    }
-    updated.img = '/uploads/' + imageName;
+  if (uploads.main) {
+    removeUpload(existing.img);
+    updated.img = uploads.main;
   }
+
+  // keepImages lists the gallery photos the admin left in place (absent = keep all).
+  const before = existing.images || [];
+  let kept = before;
+  if (req.body.keepImages !== undefined) {
+    let wanted = [];
+    try { wanted = JSON.parse(req.body.keepImages); } catch (e) { wanted = before; }
+    kept = before.filter(u => Array.isArray(wanted) && wanted.includes(u));
+  }
+  before.filter(u => !kept.includes(u)).forEach(removeUpload);
+  const gallery = [...kept, ...uploads.extras];
+  gallery.slice(MAX_EXTRA_IMAGES).forEach(removeUpload);
+  if (gallery.length) updated.images = gallery.slice(0, MAX_EXTRA_IMAGES);
+  else delete updated.images;
 
   store.products[idx] = updated;
   writeStore(store);
@@ -1283,9 +1313,7 @@ app.delete('/api/admin/products/:id', requireAdmin, (req, res) => {
   const idx = store.products.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Товар не найден' });
   const [removed] = store.products.splice(idx, 1);
-  if (removed.img && removed.img.startsWith('/uploads/')) {
-    fs.unlink(path.join(UPLOADS_DIR, path.basename(removed.img)), () => {});
-  }
+  [removed.img, ...(removed.images || [])].forEach(removeUpload);
   writeStore(store);
   res.json({ ok: true });
 });
@@ -1324,7 +1352,7 @@ function pageSeo(pathname, query) {
   if (productMatch) {
     const p = products.find(x => x.id === productMatch[1] && !x.hidden);
     if (!p) return { status: 404, title: 'Товар не найден — Two Boots', url };
-    const image = absoluteImageUrl(p.img);
+    const image = absoluteImageUrl(p.img || (p.images || [])[0]);
     const crumbs = [{ name: 'Каталог', item: `${SITE_ORIGIN}/catalog` }];
     if (categories[p.cat]) crumbs.push({ name: categories[p.cat], item: `${SITE_ORIGIN}/catalog?cat=${encodeURIComponent(p.cat)}` });
     crumbs.push({ name: p.name, item: url });
@@ -1334,7 +1362,7 @@ function pageSeo(pathname, query) {
         {
           '@context': 'https://schema.org', '@type': 'Product',
           name: p.name, description: p.desc, sku: p.id,
-          ...(image ? { image: [image] } : {}),
+          ...(image ? { image: [...new Set([image, ...(p.images || []).map(absoluteImageUrl)])] } : {}),
           brand: { '@type': 'Brand', name: 'Two Boots' },
           offers: {
             '@type': 'Offer', url, priceCurrency: 'RUB', price: unitPrice(p),
