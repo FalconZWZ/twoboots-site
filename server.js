@@ -259,6 +259,7 @@ function roleFor(username) {
   if (!store.users) { store.users = []; changed = true; }
   if (!store.orders) { store.orders = []; changed = true; }
   if (!store.promos) { store.promos = []; changed = true; }
+  if (!store.reviews) { store.reviews = []; changed = true; }
   if (!store.orderSeq) {
     store.orderSeq = store.orders.reduce((max, o) => Math.max(max, o.number || 0), 0);
     changed = true;
@@ -324,6 +325,8 @@ const orderLimiter = limiter(10, 15, 'Слишком много заявок п�
 const contactLimiter = limiter(5, 15, 'Слишком много сообщений подряд. Попробуйте через несколько минут.');
 // Generous for real shoppers, but stops anyone from guessing codes by brute force.
 const promoLimiter = limiter(20, 15, 'Слишком много попыток ввода промокода. Попробуйте позже.');
+// Only accepted reviews count, so fixing a form mistake never locks a real customer out.
+const reviewLimiter = limiter(10, 60, 'Слишком много отзывов подряд. Попробуйте позже.', { skipFailedRequests: true });
 const resetLimiter = limiter(5, 60, 'Слишком много запросов на восстановление пароля. Попробуйте позже.');
 
 // Uploaded files get a unique name each time, so browsers may keep them for a month.
@@ -355,9 +358,71 @@ function safeUser(u) {
 
 /* ===== Public data API ===== */
 app.get('/api/data', (req, res) => {
-  const { categories, products } = readStore();
-  res.json({ categories, products: products.filter(p => !p.hidden) });
+  const { categories, products, reviews } = readStore();
+  const ratings = productRatings(reviews);
+  res.json({
+    categories,
+    products: products.filter(p => !p.hidden).map(p => (ratings[p.id] ? { ...p, rating: ratings[p.id] } : p)),
+  });
 });
+
+/* ===== Reviews ===== */
+// Only approved reviews are public; averages are rounded to one decimal.
+function productRatings(reviews) {
+  const acc = {};
+  for (const r of reviews || []) {
+    if (r.status !== 'approved') continue;
+    const a = acc[r.productId] || (acc[r.productId] = { sum: 0, count: 0 });
+    a.sum += r.rating; a.count++;
+  }
+  const out = {};
+  for (const [id, a] of Object.entries(acc)) out[id] = { avg: Math.round(a.sum / a.count * 10) / 10, count: a.count };
+  return out;
+}
+const publicReview = r => ({ id: r.id, name: r.name, rating: r.rating, text: r.text, createdAt: r.createdAt, verified: !!r.verified });
+
+app.get('/api/reviews', (req, res) => {
+  const { reviews } = readStore();
+  const list = reviews
+    .filter(r => r.productId === req.query.productId && r.status === 'approved')
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .map(publicReview);
+  res.json({ reviews: list });
+});
+
+app.post('/api/reviews', reviewLimiter, (req, res) => {
+  const body = req.body || {};
+  const name = String(body.name || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 60);
+  const text = String(body.text || '').trim().slice(0, 2000);
+  const rating = Math.round(Number(body.rating));
+  if (!name) return res.status(400).json({ error: 'Укажите имя' });
+  if (!(rating >= 1 && rating <= 5)) return res.status(400).json({ error: 'Поставьте оценку от 1 до 5 звёзд' });
+  if (text.length < 10) return res.status(400).json({ error: 'Напишите хотя бы пару слов о товаре (от 10 символов)' });
+  if (body.consent !== true) return res.status(400).json({ error: CONSENT_ERROR });
+  const store = readStore();
+  const product = store.products.find(p => p.id === body.productId && !p.hidden);
+  if (!product) return res.status(404).json({ error: 'Товар не найден' });
+  const userId = (req.session && req.session.userId) || null;
+  // "Покупатель" badge: the signed-in author has a non-cancelled order with this product.
+  const verified = !!userId && store.orders.some(o => o.userId === userId && o.status !== 'cancelled' && o.items.some(i => i.id === product.id));
+  const review = {
+    id: crypto.randomUUID(), productId: product.id, name, rating, text,
+    userId, verified, status: 'pending', createdAt: new Date().toISOString(),
+  };
+  store.reviews.push(review);
+  writeStore(store);
+  notifyOwnerReview(review, product);
+  res.json({ ok: true });
+});
+
+function notifyOwnerReview(review, product) {
+  const text = `Новый отзыв на модерации\nТовар: ${product.name}\nОценка: ${'★'.repeat(review.rating)}${'☆'.repeat(5 - review.rating)}\nИмя: ${review.name}${review.verified ? ' (покупатель)' : ''}\n\n${review.text}\n\nОпубликовать или скрыть: ${SITE_ORIGIN}/admin`;
+  if (mailTransport) {
+    mailTransport.sendMail({ from: MAIL_FROM, to: OWNER_EMAIL, subject: `Новый отзыв: ${product.name} — Two Boots`, text })
+      .catch(err => console.error('Не удалось отправить уведомление об отзыве:', err.message));
+  }
+  sendOwnerTelegram(text);
+}
 
 const SITE_ORIGIN = 'https://www.two-boots.ru';
 
@@ -921,6 +986,38 @@ app.delete('/api/admin/orders', requireSuperAdmin, (req, res) => {
 
 /* ===== Admin: backup ===== */
 // Super-admin only: the store holds password hashes of admins and customers.
+/* ===== Admin: reviews ===== */
+app.get('/api/admin/reviews', requireAdmin, (req, res) => {
+  const { reviews, products } = readStore();
+  const names = Object.fromEntries(products.map(p => [p.id, p.name]));
+  res.json({
+    reviews: [...reviews]
+      // awaiting moderation first, then newest first
+      .sort((a, b) => (b.status === 'pending') - (a.status === 'pending') || new Date(b.createdAt) - new Date(a.createdAt))
+      .map(r => ({ ...r, productName: names[r.productId] || r.productId })),
+  });
+});
+
+app.patch('/api/admin/reviews/:id', requireAdmin, (req, res) => {
+  const { status } = req.body || {};
+  if (!['approved', 'hidden', 'pending'].includes(status)) return res.status(400).json({ error: 'Некорректный статус' });
+  const store = readStore();
+  const review = store.reviews.find(r => r.id === req.params.id);
+  if (!review) return res.status(404).json({ error: 'Отзыв не найден' });
+  review.status = status;
+  writeStore(store);
+  res.json({ ok: true });
+});
+
+app.delete('/api/admin/reviews/:id', requireAdmin, (req, res) => {
+  const store = readStore();
+  const idx = store.reviews.findIndex(r => r.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Отзыв не найден' });
+  store.reviews.splice(idx, 1);
+  writeStore(store);
+  res.json({ ok: true });
+});
+
 /* ===== Admin: promo codes ===== */
 app.get('/api/admin/promos', requireAdmin, (req, res) => {
   res.json({ promos: readStore().promos });
@@ -1330,8 +1427,26 @@ function escHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// aggregateRating + the latest approved reviews, for the Product JSON-LD ({} when there are none).
+function productReviewsLd(store, productId) {
+  const approved = (store.reviews || []).filter(r => r.productId === productId && r.status === 'approved');
+  if (!approved.length) return {};
+  const { avg, count } = productRatings(approved)[productId];
+  return {
+    aggregateRating: { '@type': 'AggregateRating', ratingValue: avg, reviewCount: count, bestRating: 5, worstRating: 1 },
+    review: approved.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 5).map(r => ({
+      '@type': 'Review',
+      author: { '@type': 'Person', name: r.name },
+      datePublished: r.createdAt.slice(0, 10),
+      reviewBody: r.text,
+      reviewRating: { '@type': 'Rating', ratingValue: r.rating, bestRating: 5, worstRating: 1 },
+    })),
+  };
+}
+
 function pageSeo(pathname, query) {
-  const { categories, products } = readStore();
+  const store = readStore();
+  const { categories, products } = store;
   const url = SITE_ORIGIN + pathname;
   if (pathname === '/') {
     return { title: 'Two Boots — экипировка для фигурного катания', url, jsonLd: [{
@@ -1364,6 +1479,7 @@ function pageSeo(pathname, query) {
           name: p.name, description: p.desc, sku: p.id,
           ...(image ? { image: [...new Set([image, ...(p.images || []).map(absoluteImageUrl)])] } : {}),
           brand: { '@type': 'Brand', name: 'Two Boots' },
+          ...productReviewsLd(store, p.id),
           offers: {
             '@type': 'Offer', url, priceCurrency: 'RUB', price: unitPrice(p),
             availability: `https://schema.org/${({ order: 'BackOrder', out: 'OutOfStock' })[p.stock] || 'InStock'}`, itemCondition: 'https://schema.org/NewCondition',

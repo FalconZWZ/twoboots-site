@@ -206,6 +206,27 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   .catalog-count{color:var(--ink-faint);font-size:.88rem;flex:0 0 100%;}
   .catalog-empty{grid-column:1/-1;padding:40px 0;color:var(--ink-soft);}
 
+  /* ===== Reviews ===== */
+  .stars{color:#f2a900;letter-spacing:1px;white-space:nowrap;}
+  .stars .off{color:var(--border);}
+  .card-rating{font-size:.8rem;color:var(--ink-soft);margin:2px 0 6px;display:flex;gap:6px;align-items:center;}
+  .pdp-rating{display:inline-flex;gap:8px;align-items:center;font-size:.9rem;color:var(--ink-soft);margin:-4px 0 6px;}
+  .pdp-rating a{text-decoration:underline;}
+  .reviews-grid{display:grid;grid-template-columns:1.3fr 1fr;gap:48px;align-items:start;}
+  .review-item{padding:18px 0;border-bottom:1px solid var(--border);}
+  .review-item:first-child{padding-top:0;}
+  .review-head{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px;font-size:.9rem;}
+  .review-head b{color:var(--ink);}
+  .review-head .date{color:var(--ink-faint);font-size:.82rem;}
+  .review-badge{font-size:.72rem;font-weight:700;color:#1c7a3a;background:#dff3e0;padding:2px 8px;border-radius:999px;}
+  .review-item p{color:var(--ink-soft);white-space:pre-wrap;margin:0;}
+  .reviews-summary{display:flex;gap:12px;align-items:baseline;margin-bottom:18px;}
+  .reviews-summary .big{font-size:2.2rem;font-weight:800;font-family:var(--font-display);}
+  .star-input{display:flex;gap:4px;margin-bottom:14px;}
+  .star-input button{background:none;border:0;padding:0 2px;font-size:1.8rem;line-height:1;color:var(--border);cursor:pointer;}
+  .star-input button.on{color:#f2a900;}
+  @media (max-width:860px){ .reviews-grid{grid-template-columns:1fr;gap:32px;} }
+
   /* ===== Availability ===== */
   .stock-badge{
     position:absolute;top:10px;left:10px;z-index:2;padding:4px 10px;border-radius:999px;
@@ -745,6 +766,16 @@ const hasSizeChoice = p => !!(p.sizes && p.sizes.length);
 const productGallery = p => [p.img, ...(p.images || [])].filter(Boolean);
 const productImage = p => productGallery(p)[0] || null;
 
+const escText = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function starsHtml(value){
+  const full = Math.round(value);
+  return `<span class="stars" aria-label="Оценка ${value} из 5">${'★'.repeat(full)}<span class="off">${'★'.repeat(5 - full)}</span></span>`;
+}
+function reviewsWord(n){
+  const m10 = n % 10, m100 = n % 100;
+  return m10 === 1 && m100 !== 11 ? 'отзыв' : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? 'отзыва' : 'отзывов';
+}
+
 function addToCart(id, qty=1, size=null){
   const p = productById(id);
   if(!isOrderable(p)){ showToast(`«${p.name}» сейчас нет в наличии`); return; }
@@ -994,6 +1025,7 @@ function productCard(p){
     <div class="product-body">
       <span class="eyebrow">${CATEGORIES[p.cat]}</span>
       <a class="card-link" href="/product/${p.id}"><h3>${p.name}</h3></a>
+      ${p.rating ? `<div class="card-rating">${starsHtml(p.rating.avg)}<span>${p.rating.avg.toString().replace('.', ',')} · ${p.rating.count}</span></div>` : ''}
       <div class="product-foot">
         <span>${hasDiscount ? `<span class="price-old">${fmt(p.price)} ₽</span> ` : ''}<span class="price">${fmt(newPrice)} ₽</span></span>
         <button class="add-btn" data-add="${p.id}" aria-label="В корзину" ${isOrderable(p) ? '' : 'disabled title="Нет в наличии"'}>
@@ -1194,6 +1226,60 @@ function pdpSizeBlock(p){
   }
   return '';
 }
+async function loadReviews(productId){
+  const wrap = document.getElementById('reviewsList');
+  try{
+    const { reviews } = await (await fetch('/api/reviews?productId=' + encodeURIComponent(productId))).json();
+    if(!document.getElementById('reviewsList')) return; // navigated away meanwhile
+    if(!reviews.length){ wrap.innerHTML = '<p style="color:var(--ink-soft);">Отзывов пока нет — будьте первым.</p>'; return; }
+    const avg = Math.round(reviews.reduce((s, r) => s + r.rating, 0) / reviews.length * 10) / 10;
+    wrap.innerHTML = `
+      <div class="reviews-summary"><span class="big">${avg.toString().replace('.', ',')}</span>${starsHtml(avg)}<span style="color:var(--ink-soft);">${reviews.length} ${reviewsWord(reviews.length)}</span></div>
+      ${reviews.map(r => `<div class="review-item">
+        <div class="review-head"><b>${escText(r.name)}</b>${starsHtml(r.rating)}${r.verified ? '<span class="review-badge">Покупатель</span>' : ''}<span class="date">${new Date(r.createdAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</span></div>
+        <p>${escText(r.text)}</p>
+      </div>`).join('')}`;
+  }catch(e){ wrap.innerHTML = '<p style="color:var(--ink-soft);">Не удалось загрузить отзывы.</p>'; }
+}
+
+function bindReviews(productId){
+  loadReviews(productId);
+  document.querySelectorAll('[data-scroll-reviews]').forEach(a => a.addEventListener('click', e => {
+    e.preventDefault();
+    document.getElementById('reviews').scrollIntoView({ behavior: 'smooth' });
+  }));
+  let rating = 0;
+  const stars = document.querySelectorAll('#starInput button');
+  const paint = n => stars.forEach(b => b.classList.toggle('on', Number(b.getAttribute('data-star')) <= n));
+  stars.forEach(b => {
+    b.addEventListener('click', () => { rating = Number(b.getAttribute('data-star')); paint(rating); });
+    b.addEventListener('mouseenter', () => paint(Number(b.getAttribute('data-star'))));
+    b.addEventListener('mouseleave', () => paint(rating));
+  });
+  const form = document.getElementById('reviewForm');
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const errEl = document.getElementById('reviewErr');
+    errEl.innerHTML = '';
+    const btn = form.querySelector('button[type="submit"]');
+    try{
+      if(!rating) throw new Error('Поставьте оценку — нажмите на звёзды');
+      btn.disabled = true;
+      const res = await fetch('/api/reviews', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ productId, rating, name: document.getElementById('rv-name').value, text: document.getElementById('rv-text').value, consent: document.getElementById('rv-consent').checked })
+      });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.error || 'Не удалось отправить отзыв');
+      trackGoal('review');
+      document.getElementById('reviewFormWrap').innerHTML = '<h3 style="font-size:1.1rem;margin-bottom:8px;">Спасибо за отзыв!</h3><p style="color:var(--ink-soft);margin:0;">Он появится на сайте после проверки.</p>';
+    }catch(err){
+      errEl.innerHTML = `<p style="color:var(--accent);font-size:.85rem;margin:0 0 10px;">${escText(err.message)}</p>`;
+      btn.disabled = false;
+    }
+  });
+}
+
 function selectedSize(){
   const sel = document.querySelector('#sizeSwatches .swatch.active[data-size]');
   return sel ? sel.getAttribute('data-size') : null;
@@ -1231,6 +1317,7 @@ function pageProduct(id){
         <div class="pdp-info">
           <span class="eyebrow">${CATEGORIES[p.cat]}</span>
           <h1 style="margin-top:10px;">${p.name}</h1>
+          ${p.rating ? `<div class="pdp-rating">${starsHtml(p.rating.avg)}<span>${p.rating.avg.toString().replace('.', ',')}</span><a href="#reviews" data-scroll-reviews>${p.rating.count} ${reviewsWord(p.rating.count)}</a></div>` : ''}
           <div class="pdp-price" id="pdpPrice">${p.discountPercent ? `<span class="price-old" style="font-size:1.1rem;margin-right:10px;">${fmt(p.price)} ₽</span>` : ''}<span class="price">${fmt(effectivePrice(p))} ₽</span></div>
           <div class="pdp-stock ${p.stock || 'in'}">${({ order: 'Под заказ — срок уточнит менеджер', out: 'Нет в наличии' })[p.stock] || 'В наличии'}</div>
           <p class="pdp-desc">${p.desc}</p>
@@ -1269,6 +1356,27 @@ function pageProduct(id){
           <div id="qoErr"></div>
           <button type="submit" class="btn btn-primary btn-block">Заказать</button>
         </form>
+      </div>
+    </div>
+  </section>
+  <section class="block" id="reviews">
+    <div class="wrap">
+      <div class="section-head"><h2>Отзывы</h2></div>
+      <div class="reviews-grid">
+        <div id="reviewsList"><p style="color:var(--ink-soft);">Загрузка отзывов…</p></div>
+        <div class="contact-card" id="reviewFormWrap">
+          <h3 style="font-size:1.1rem;margin-bottom:14px;">Оставить отзыв</h3>
+          <form id="reviewForm">
+            <div class="star-input" id="starInput" role="radiogroup" aria-label="Оценка">
+              ${[1,2,3,4,5].map(n => `<button type="button" data-star="${n}" aria-label="${n} из 5">★</button>`).join('')}
+            </div>
+            <div class="field"><label for="rv-name">Ваше имя</label><input id="rv-name" required maxlength="60" value="${escText(CURRENT_USER ? CURRENT_USER.name : '')}"></div>
+            <div class="field"><label for="rv-text">Отзыв</label><textarea id="rv-text" required minlength="10" maxlength="2000" placeholder="Что понравилось, что нет, подошёл ли размер"></textarea></div>
+            ${consentField('rv-consent')}
+            <div id="reviewErr"></div>
+            <button type="submit" class="btn btn-primary btn-block">Отправить отзыв</button>
+          </form>
+        </div>
       </div>
     </div>
   </section>
@@ -1835,6 +1943,7 @@ function bindPageEvents(path, params){
         if(Math.abs(dx) > 40) show(current + (dx < 0 ? 1 : -1));
       });
     }
+    bindReviews(pdpId);
     const qtyVal = document.getElementById('qtyVal');
     document.getElementById('qtyMinus').addEventListener('click', () => {
       qtyVal.textContent = Math.max(1, parseInt(qtyVal.textContent) - 1);
