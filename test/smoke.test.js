@@ -182,6 +182,39 @@ test('admin: auth, promo code, stock, review moderation', async () => {
   assert.deepEqual(product.rating, { avg: 5, count: 1 });
 });
 
+test('articles: drafts hidden, published ones rendered and escaped', async () => {
+  const visitor = client();
+  assert.equal((await visitor('/api/data')).data.articles.length, 0, 'starter articles arrive as drafts');
+  assert.equal((await visitor('/blog')).status, 404);
+
+  const admin = client();
+  await admin('/admin/login', { method: 'POST', body: { username: 'admin', password: 'changeme123' } });
+  const drafts = (await admin('/api/admin/articles')).data.articles;
+  assert.equal(drafts.length, 3);
+
+  const form = new FormData();
+  form.append('title', 'Тест <script>'); form.append('description', 'desc');
+  form.append('body', '## Раздел\n\n- пункт **жирный**\n- [ссылка](/catalog)\n\n<img src=x onerror=alert(1)> [плохо](javascript:alert(1))');
+  form.append('published', 'true');
+  const created = await admin('/api/admin/articles', { method: 'POST', form });
+  assert.equal(created.status, 200, JSON.stringify(created.data));
+
+  const list = (await visitor('/api/data')).data.articles;
+  assert.equal(list.length, 1);
+  const article = await visitor('/api/articles/' + list[0].slug);
+  assert.match(article.data.html, /<h2>Раздел<\/h2>/);
+  assert.match(article.data.html, /<b>жирный<\/b>/);
+  assert.match(article.data.html, /<a href="\/catalog">ссылка<\/a>/);
+  assert.doesNotMatch(article.data.html, /<img|href="javascript/);
+
+  const page = await visitor('/blog/' + list[0].slug);
+  assert.equal(page.status, 200);
+  assert.match(page.data, /"@type":"BlogPosting"/);
+  assert.match(page.data, /<main id="app"><article/, 'article text is in the raw HTML for crawlers');
+  assert.doesNotMatch(page.data, /<title>Тест <script>/);
+  assert.match((await visitor('/sitemap.xml')).data, /\/blog\//);
+});
+
 test('customers never see the manager comment', async () => {
   const buyer = client();
   await buyer('/api/login', { method: 'POST', body: { email: 'buyer@test.ru', password: 'secret1' } });

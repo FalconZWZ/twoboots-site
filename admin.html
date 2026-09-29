@@ -85,6 +85,37 @@
   </div>
 
   <div class="card">
+    <h2>Статьи</h2>
+    <div id="articlesAdminList"></div>
+    <form id="articleForm" style="margin-top:16px;">
+      <h3 id="articleFormTitle" style="margin:0 0 10px;font-size:1rem;">Новая статья</h3>
+      <input type="hidden" id="aId">
+      <div class="row">
+        <div class="field"><label>Заголовок</label><input id="aTitle" required maxlength="150"></div>
+        <div class="field" style="flex:none;width:260px;"><label>Адрес (необязательно)</label><input id="aSlug" placeholder="из заголовка" maxlength="80"></div>
+      </div>
+      <div class="field"><label>Краткое описание — для списка статей и поисковиков (до 300 символов)</label><textarea id="aDesc" maxlength="300" style="min-height:54px;"></textarea></div>
+      <div class="field">
+        <label>Текст</label>
+        <textarea id="aBody" required style="min-height:260px;font-family:inherit;"></textarea>
+        <small style="color:var(--ink-soft);font-size:.78rem;display:block;margin-top:4px;">Абзацы разделяйте пустой строкой. <code>## Подзаголовок</code>, <code>### Подзаголовок поменьше</code>, строки с <code>- </code> — список, с <code>1. </code> — нумерованный список, <code>**жирный**</code>, ссылка — <code>[текст](/catalog?cat=bags)</code>.</small>
+      </div>
+      <div class="row">
+        <div class="field"><label>Обложка (необязательно)</label><input id="aCover" type="file" accept="image/*"></div>
+        <div class="field" id="aCoverWrap" hidden style="flex:none;">
+          <img id="aCoverImg" class="thumb" style="width:120px;height:68px;">
+          <label style="display:flex;gap:6px;align-items:center;font-size:.82rem;margin-top:4px;"><input type="checkbox" id="aRemoveCover" style="width:auto;"> убрать</label>
+        </div>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;font-weight:600;margin-bottom:12px;"><input type="checkbox" id="aPublished" style="width:auto;"> Опубликовать на сайте</label>
+      <button class="btn-primary" type="submit">Сохранить</button>
+      <button class="btn-ghost" type="button" id="aPreviewBtn">Предпросмотр</button>
+      <button class="btn-ghost" type="button" id="aCancelBtn" hidden>Отменить редактирование</button>
+      <div id="aPreview" hidden style="margin-top:14px;padding:16px 20px;border:1px dashed var(--border);border-radius:12px;"></div>
+    </form>
+  </div>
+
+  <div class="card">
     <h2>Отзывы <span id="pendingReviewsBadge" style="font-size:.8rem;font-weight:700;color:#fff;background:var(--accent);border-radius:999px;padding:2px 10px;vertical-align:middle;" hidden></span></h2>
     <div id="reviewsAdminList"></div>
   </div>
@@ -263,6 +294,7 @@ async function loadAll(){
   await loadOrders();
   await loadPromos();
   await loadAdminReviews();
+  await loadAdminArticles();
   el('backupsCard').hidden = !IS_SUPER;
   if(IS_SUPER) await loadBackups(); else el('backupsList').innerHTML = '';
 }
@@ -280,6 +312,95 @@ async function loadBackups(){
       }).join('')
     : '<span style="color:var(--ink-soft);font-size:.88rem;">Копий пока нет — первая появится в течение получаса (а если сейчас ночь до 03:00 — в 03:00).</span>';
 }
+
+/* ===== Articles ===== */
+let ARTICLES_ADMIN = [];
+async function loadAdminArticles(){
+  ARTICLES_ADMIN = (await api('/api/admin/articles')).articles;
+  el('articlesAdminList').innerHTML = ARTICLES_ADMIN.length ? `<table>
+    <thead><tr><th></th><th>Заголовок</th><th>Статус</th><th>Дата</th><th></th></tr></thead>
+    <tbody>${ARTICLES_ADMIN.map(a => `<tr>
+      <td>${a.cover ? `<img class="thumb" src="${a.cover}">` : ''}</td>
+      <td><b>${escHtml(a.title)}</b><br><small style="color:var(--ink-soft);">/blog/${escHtml(a.slug)}</small></td>
+      <td>${a.published ? '<span style="color:#1c5e26;font-weight:700;">Опубликована</span>' : '<span style="color:#b26a00;font-weight:700;">Черновик</span>'}</td>
+      <td style="white-space:nowrap;">${new Date(a.publishedAt || a.createdAt).toLocaleDateString('ru-RU')}</td>
+      <td style="white-space:nowrap;">
+        ${a.published ? `<a href="/blog/${encodeURIComponent(a.slug)}" target="_blank" class="btn-ghost btn-sm" style="text-decoration:none;display:inline-block;border:1px solid var(--border);border-radius:999px;padding:5px 12px;">Открыть</a>` : ''}
+        <button type="button" class="${a.published ? 'btn-ghost' : 'btn-primary'} btn-sm" data-article-toggle="${a.id}">${a.published ? 'Снять с сайта' : 'Опубликовать'}</button>
+        <button type="button" class="btn-ghost btn-sm" data-article-edit="${a.id}">Изменить</button>
+        <button type="button" class="btn-danger btn-sm" data-article-del="${a.id}">Удалить</button>
+      </td>
+    </tr>`).join('')}</tbody></table>` : '<p style="color:var(--ink-soft);font-size:.88rem;">Статей пока нет.</p>';
+
+  el('articlesAdminList').querySelectorAll('[data-article-edit]').forEach(b => b.addEventListener('click', () => editArticle(b.getAttribute('data-article-edit'))));
+  el('articlesAdminList').querySelectorAll('[data-article-toggle]').forEach(b => b.addEventListener('click', async () => {
+    const a = ARTICLES_ADMIN.find(x => x.id === b.getAttribute('data-article-toggle'));
+    try{
+      await api('/api/admin/articles/' + a.id, { method:'PUT', body: articleFormData({ ...a, published: !a.published }) });
+      showMsg(el('globalMsg'), a.published ? 'Статья снята с сайта' : 'Статья опубликована', 'ok');
+      loadAdminArticles();
+    }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+  }));
+  el('articlesAdminList').querySelectorAll('[data-article-del]').forEach(b => b.addEventListener('click', async () => {
+    if(!confirm('Удалить статью насовсем?')) return;
+    try{
+      await api('/api/admin/articles/' + b.getAttribute('data-article-del'), { method:'DELETE' });
+      if(el('aId').value === b.getAttribute('data-article-del')) resetArticleForm();
+      loadAdminArticles();
+    }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+  }));
+}
+function articleFormData(a, coverFile, removeCover){
+  const fd = new FormData();
+  fd.append('title', a.title); fd.append('slug', a.slug || ''); fd.append('description', a.description || '');
+  fd.append('body', a.body); fd.append('published', a.published ? 'true' : 'false');
+  if(coverFile) fd.append('cover', coverFile);
+  if(removeCover) fd.append('removeCover', 'true');
+  return fd;
+}
+function resetArticleForm(){
+  el('articleForm').reset();
+  el('aId').value = '';
+  el('aCoverWrap').hidden = true;
+  el('aPreview').hidden = true;
+  el('aCancelBtn').hidden = true;
+  el('articleFormTitle').textContent = 'Новая статья';
+}
+function editArticle(id){
+  const a = ARTICLES_ADMIN.find(x => x.id === id);
+  if(!a) return;
+  el('aId').value = a.id; el('aTitle').value = a.title; el('aSlug').value = a.slug;
+  el('aDesc').value = a.description || ''; el('aBody').value = a.body; el('aPublished').checked = !!a.published;
+  el('aRemoveCover').checked = false;
+  el('aCoverWrap').hidden = !a.cover;
+  if(a.cover) el('aCoverImg').src = a.cover;
+  el('aPreview').hidden = true;
+  el('aCancelBtn').hidden = false;
+  el('articleFormTitle').textContent = 'Редактирование статьи';
+  el('articleForm').scrollIntoView({ behavior:'smooth' });
+}
+el('aCancelBtn').addEventListener('click', resetArticleForm);
+el('aPreviewBtn').addEventListener('click', async () => {
+  try{
+    const { html } = await api('/api/admin/articles/preview', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ body: el('aBody').value }) });
+    el('aPreview').innerHTML = `<h2 style="margin-top:0;">${escHtml(el('aTitle').value)}</h2>` + html;
+    el('aPreview').hidden = false;
+  }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+});
+el('articleForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const id = el('aId').value;
+  const fd = articleFormData({
+    title: el('aTitle').value, slug: el('aSlug').value, description: el('aDesc').value,
+    body: el('aBody').value, published: el('aPublished').checked,
+  }, el('aCover').files[0], el('aRemoveCover').checked);
+  try{
+    await api('/api/admin/articles' + (id ? '/' + id : ''), { method: id ? 'PUT' : 'POST', body: fd });
+    showMsg(el('globalMsg'), id ? 'Статья сохранена' : 'Статья создана', 'ok');
+    resetArticleForm();
+    loadAdminArticles();
+  }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+});
 
 /* ===== Reviews moderation ===== */
 const REVIEW_STATUS = { pending: ['На модерации', '#b26a00'], approved: ['Опубликован', '#1c5e26'], hidden: ['Скрыт', 'var(--ink-soft)'] };

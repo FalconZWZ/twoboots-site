@@ -261,6 +261,13 @@ function roleFor(username) {
   if (!store.promos) { store.promos = []; changed = true; }
   if (!store.reviews) { store.reviews = []; changed = true; }
   if (!store.restockSubs) { store.restockSubs = []; changed = true; }
+  // Starter articles arrive as drafts: the owner reads them and publishes from the admin.
+  if (!store.articles) {
+    const now = new Date().toISOString();
+    store.articles = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'articles.json'), 'utf8'))
+      .map(a => ({ id: crypto.randomUUID(), ...a, cover: null, published: false, createdAt: now, updatedAt: now }));
+    changed = true;
+  }
   if (!store.orderSeq) {
     store.orderSeq = store.orders.reduce((max, o) => Math.max(max, o.number || 0), 0);
     changed = true;
@@ -360,12 +367,44 @@ function safeUser(u) {
 
 /* ===== Public data API ===== */
 app.get('/api/data', (req, res) => {
-  const { categories, products, reviews } = readStore();
+  const { categories, products, reviews, articles } = readStore();
   const ratings = productRatings(reviews);
   res.json({
     categories,
+    articles: publishedArticles(articles).map(articleSummary),
     products: products.filter(p => !p.hidden).map(p => (ratings[p.id] ? { ...p, rating: ratings[p.id] } : p)),
   });
+});
+
+/* ===== Articles ===== */
+// Bodies are written in a tiny Markdown subset and rendered here, so the storefront and
+// crawlers get the same escaped HTML: blank line = new block, "## "/"### " headings,
+// "- " bullet lists, "1. " numbered lists, **bold**, [text](/link or https://…).
+function renderArticleBody(md) {
+  const inline = t => escHtml(t)
+    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+    .replace(/\[([^\]]+)\]\(((?:https?:\/\/|\/)[^\s)]*)\)/g, (m, text, url) =>
+      `<a href="${url}"${/^https?:/.test(url) ? ' target="_blank" rel="noopener"' : ''}>${text}</a>`);
+  return String(md || '').replace(/\r/g, '').split(/\n\s*\n/).map(block => {
+    const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
+    if (!lines.length) return '';
+    if (lines.length === 1 && /^### /.test(lines[0])) return `<h3>${inline(lines[0].slice(4))}</h3>`;
+    if (lines.length === 1 && /^## /.test(lines[0])) return `<h2>${inline(lines[0].slice(3))}</h2>`;
+    if (lines.every(l => /^- /.test(l))) return `<ul>${lines.map(l => `<li>${inline(l.slice(2))}</li>`).join('')}</ul>`;
+    if (lines.every(l => /^\d+[.)] /.test(l))) return `<ol>${lines.map(l => `<li>${inline(l.replace(/^\d+[.)] /, ''))}</li>`).join('')}</ol>`;
+    return `<p>${lines.map(inline).join('<br>')}</p>`;
+  }).join('\n');
+}
+
+const publishedArticles = articles => (articles || [])
+  .filter(a => a.published)
+  .sort((a, b) => new Date(b.publishedAt || b.createdAt) - new Date(a.publishedAt || a.createdAt));
+const articleSummary = a => ({ slug: a.slug, title: a.title, description: a.description, cover: a.cover || null, date: a.publishedAt || a.createdAt });
+
+app.get('/api/articles/:slug', (req, res) => {
+  const a = publishedArticles(readStore().articles).find(x => x.slug === req.params.slug);
+  if (!a) return res.status(404).json({ error: 'Статья не найдена' });
+  res.json({ ...articleSummary(a), updatedAt: a.updatedAt, html: renderArticleBody(a.body) });
 });
 
 /* ===== Back-in-stock notifications ===== */
@@ -506,6 +545,8 @@ app.get('/health', (req, res) => {
 app.get('/sitemap.xml', (req, res) => {
   const { categories, products } = readStore();
   const staticUrls = ['/', '/catalog', '/about', '/contact', '/delivery', '/privacy'];
+  const articleUrls = publishedArticles(readStore().articles).map(a => `/blog/${a.slug}`);
+  if (articleUrls.length) staticUrls.push('/blog', ...articleUrls);
   const catalogUrls = Object.keys(categories).map(cat => `/catalog?cat=${cat}`);
   const productUrls = products.filter(p => !p.hidden).map(p => `/product/${p.id}`);
   const urls = [...staticUrls, ...catalogUrls, ...productUrls];
@@ -1055,6 +1096,65 @@ app.delete('/api/admin/orders', requireSuperAdmin, (req, res) => {
 
 /* ===== Admin: backup ===== */
 // Super-admin only: the store holds password hashes of admins and customers.
+/* ===== Admin: articles ===== */
+function parseArticleBody(body) {
+  return {
+    title: String(body.title || '').trim().slice(0, 150),
+    slug: slugify(String(body.slug || '').trim() || String(body.title || '')).slice(0, 80),
+    description: String(body.description || '').replace(/\s+/g, ' ').trim().slice(0, 300),
+    body: String(body.body || '').slice(0, 50000),
+    published: body.published === 'true' || body.published === true,
+  };
+}
+
+app.get('/api/admin/articles', requireAdmin, (req, res) => {
+  const articles = [...readStore().articles].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  res.json({ articles });
+});
+
+app.post('/api/admin/articles/preview', requireAdmin, (req, res) => {
+  res.json({ html: renderArticleBody((req.body || {}).body) });
+});
+
+app.post('/api/admin/articles', requireAdmin, upload.single('cover'), async (req, res) => {
+  const cover = req.file ? '/uploads/' + await optimizeImage(req.file.filename) : null;
+  const data = parseArticleBody(req.body || {});
+  const store = readStore();
+  if (!data.title || !data.body.trim()) { removeUpload(cover); return res.status(400).json({ error: 'Нужны заголовок и текст статьи' }); }
+  if (store.articles.some(a => a.slug === data.slug)) { removeUpload(cover); return res.status(400).json({ error: 'Статья с таким адресом уже есть — поменяйте заголовок или адрес' }); }
+  const now = new Date().toISOString();
+  const article = { id: crypto.randomUUID(), ...data, cover, createdAt: now, updatedAt: now, ...(data.published ? { publishedAt: now } : {}) };
+  store.articles.push(article);
+  writeStore(store);
+  res.json(article);
+});
+
+app.put('/api/admin/articles/:id', requireAdmin, upload.single('cover'), async (req, res) => {
+  const cover = req.file ? '/uploads/' + await optimizeImage(req.file.filename) : null;
+  const data = parseArticleBody(req.body || {});
+  const store = readStore();
+  const article = store.articles.find(a => a.id === req.params.id);
+  if (!article) { removeUpload(cover); return res.status(404).json({ error: 'Статья не найдена' }); }
+  if (!data.title || !data.body.trim()) { removeUpload(cover); return res.status(400).json({ error: 'Нужны заголовок и текст статьи' }); }
+  if (store.articles.some(a => a.slug === data.slug && a.id !== article.id)) { removeUpload(cover); return res.status(400).json({ error: 'Статья с таким адресом уже есть' }); }
+  if (data.published && !article.published) article.publishedAt = new Date().toISOString();
+  if (cover) { removeUpload(article.cover); article.cover = cover; }
+  if (req.body.removeCover === 'true' && !cover) { removeUpload(article.cover); article.cover = null; }
+  Object.assign(article, data, { updatedAt: new Date().toISOString() });
+  writeStore(store);
+  res.json(article);
+});
+
+app.delete('/api/admin/articles/:id', requireAdmin, (req, res) => {
+  const store = readStore();
+  const idx = store.articles.findIndex(a => a.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Статья не найдена' });
+  const [removed] = store.articles.splice(idx, 1);
+  removeUpload(removed.cover);
+  writeStore(store);
+  res.json({ ok: true });
+});
+
 /* ===== Admin: reviews ===== */
 app.get('/api/admin/reviews', requireAdmin, (req, res) => {
   const { reviews, products } = readStore();
@@ -1576,6 +1676,35 @@ function pageSeo(pathname, query) {
     '/privacy': 'Политика конфиденциальности — Two Boots', '/consent': 'Согласие на обработку персональных данных — Two Boots',
   };
   if (staticTitles[pathname]) return { title: staticTitles[pathname], url };
+  if (pathname === '/blog') {
+    const list = publishedArticles(store.articles);
+    if (!list.length) return { status: 404, title: 'Страница не найдена — Two Boots', url };
+    return {
+      title: 'Статьи — Two Boots', url,
+      description: 'Советы для фигуристов и родителей: как выбрать и ухаживать за экипировкой, что взять на тренировки и соревнования.',
+      bodyHtml: `<section class="block"><div class="wrap"><h1>Статьи</h1><ul>${list.map(a => `<li><a href="/blog/${escHtml(a.slug)}">${escHtml(a.title)}</a> — ${escHtml(a.description)}</li>`).join('')}</ul></div></section>`,
+    };
+  }
+  const articleMatch = pathname.match(/^\/blog\/([^/]+)$/);
+  if (articleMatch) {
+    const a = publishedArticles(store.articles).find(x => x.slug === articleMatch[1]);
+    if (!a) return { status: 404, title: 'Статья не найдена — Two Boots', url };
+    const image = absoluteImageUrl(a.cover);
+    return {
+      title: `${a.title} — Two Boots`, description: a.description, url, image,
+      // crawlers get the article text in the raw HTML; the SPA re-renders the same content
+      bodyHtml: `<article class="block"><div class="wrap doc-page"><h1>${escHtml(a.title)}</h1>${renderArticleBody(a.body)}</div></article>`,
+      jsonLd: [{
+        '@context': 'https://schema.org', '@type': 'BlogPosting',
+        headline: a.title, description: a.description, url,
+        datePublished: (a.publishedAt || a.createdAt).slice(0, 10), dateModified: a.updatedAt.slice(0, 10),
+        ...(image ? { image: [image] } : {}),
+        author: { '@type': 'Organization', name: 'Two Boots', url: SITE_ORIGIN + '/' },
+        publisher: { '@type': 'Organization', name: 'Two Boots', url: SITE_ORIGIN + '/' },
+        mainEntityOfPage: url,
+      }],
+    };
+  }
   if (pathname === '/delivery') {
     return { title: 'Доставка и оплата — Two Boots', url,
       description: 'Доставка СДЭК, Почтой России, курьером по Москве и самовывоз. Оплата переводом, по СБП или при получении. Условия возврата.' };
@@ -1601,7 +1730,9 @@ function renderIndex(seo) {
   if (seo.status === 404 || seo.noindex) extra += '<meta name="robots" content="noindex">\n';
   // "<" escaped so product text can never close the <script> tag early.
   if (seo.jsonLd) extra += `<script type="application/ld+json">${JSON.stringify(seo.jsonLd).replace(/</g, '\\u003c')}</script>\n`;
-  return html.replace('</head>', () => extra + '</head>');
+  html = html.replace('</head>', () => extra + '</head>');
+  if (seo.bodyHtml) html = html.replace('<main id="app"></main>', () => `<main id="app">${seo.bodyHtml}</main>`);
+  return html;
 }
 
 app.get('*', (req, res) => {
