@@ -47,9 +47,9 @@ say "Устанавливаю системные пакеты"
 apt-get update -y
 apt-get install -y curl git nginx ufw ca-certificates openssl certbot python3-certbot-nginx
 
-if ! command -v node >/dev/null || [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 20 ]; then
-  say "Устанавливаю Node.js 20"
-  if curl -fsSL https://deb.nodesource.com/setup_20.x | bash -; then
+if ! command -v node >/dev/null || [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ]; then
+  say "Устанавливаю Node.js 22"
+  if curl -fsSL https://deb.nodesource.com/setup_22.x | bash -; then
     apt-get install -y nodejs
   else
     apt-get install -y nodejs npm   # запасной вариант — Node из Ubuntu
