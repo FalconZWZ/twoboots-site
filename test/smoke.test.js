@@ -31,6 +31,19 @@ function client() {
   };
 }
 
+// The factory admin password has to be replaced on first login; later logins use the new one.
+const ADMIN_PASSWORD = 'test-admin-pass-1';
+async function adminClient() {
+  const admin = client();
+  let r = await admin('/admin/login', { method: 'POST', body: { username: 'admin', password: ADMIN_PASSWORD } });
+  if (r.status === 401) {
+    r = await admin('/admin/login', { method: 'POST', body: { username: 'admin', password: 'changeme123' } });
+    assert.equal(r.status, 200);
+    assert.equal((await admin('/api/admin/admins/admin/password', { method: 'PUT', body: { password: ADMIN_PASSWORD } })).status, 200);
+  }
+  return admin;
+}
+
 before(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'twoboots-test-'));
   const env = { ...process.env, PORT: String(PORT), DATA_DIR: dataDir, SESSION_SECRET: 'test-secret' };
@@ -149,12 +162,26 @@ test('quick order needs consent and gets the next number', async () => {
   assert.equal(r.data.order.quick, true);
 });
 
+test('admin: the factory password must be changed before anything else', async () => {
+  const admin = client();
+  const login = await admin('/admin/login', { method: 'POST', body: { username: 'admin', password: 'changeme123' } });
+  assert.equal(login.status, 200);
+  assert.equal(login.data.mustChangePassword, true);
+  assert.equal((await admin('/admin/session')).data.mustChangePassword, true);
+  assert.equal((await admin('/api/admin/orders')).status, 403);
+  assert.equal((await admin('/api/admin/backup')).status, 403);
+  assert.equal((await admin('/api/admin/admins/admin/password', { method: 'PUT', body: { password: 'short' } })).status, 400);
+  assert.equal((await admin('/api/admin/admins/admin/password', { method: 'PUT', body: { password: 'changeme123' } })).status, 400);
+  assert.equal((await admin('/api/admin/admins/admin/password', { method: 'PUT', body: { password: ADMIN_PASSWORD } })).status, 200);
+  assert.equal((await admin('/api/admin/orders')).status, 200);
+  assert.equal((await client()('/admin/login', { method: 'POST', body: { username: 'admin', password: 'changeme123' } })).status, 401);
+});
+
 test('admin: auth, promo code, stock, review moderation', async () => {
   const anon = client();
   assert.equal((await anon('/api/admin/orders')).status, 401);
 
-  const admin = client();
-  assert.equal((await admin('/admin/login', { method: 'POST', body: { username: 'admin', password: 'changeme123' } })).status, 200);
+  const admin = await adminClient();
   const orders = await admin('/api/admin/orders');
   assert.ok(orders.data.orders.length >= 2);
 
@@ -187,8 +214,7 @@ test('articles: drafts hidden, published ones rendered and escaped', async () =>
   assert.equal((await visitor('/api/data')).data.articles.length, 0, 'starter articles arrive as drafts');
   assert.equal((await visitor('/blog')).status, 404);
 
-  const admin = client();
-  await admin('/admin/login', { method: 'POST', body: { username: 'admin', password: 'changeme123' } });
+  const admin = await adminClient();
   const drafts = (await admin('/api/admin/articles')).data.articles;
   assert.equal(drafts.length, 3);
 
@@ -219,9 +245,15 @@ test('customers never see the manager comment', async () => {
   const buyer = client();
   await buyer('/api/login', { method: 'POST', body: { email: 'buyer@test.ru', password: 'secret1' } });
   const order = (await buyer('/api/orders')).data.orders[0];
-  const admin = client();
-  await admin('/admin/login', { method: 'POST', body: { username: 'admin', password: 'changeme123' } });
+  const admin = await adminClient();
   assert.equal((await admin(`/api/admin/orders/${order.id}`, { method: 'PATCH', body: { comment: 'internal note' } })).status, 200);
   const seen = (await buyer('/api/orders')).data.orders[0];
   assert.equal('comment' in seen, false);
+});
+
+test('the store is saved atomically: valid JSON, no temp file left behind', () => {
+  const file = path.join(dataDir, 'store.json');
+  const store = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.ok(store.orders.length >= 3);
+  assert.equal(fs.existsSync(file + '.tmp'), false);
 });
