@@ -336,7 +336,9 @@ function limiter(limit, windowMinutes, error, extra = {}) {
     standardHeaders: 'draft-8',
     legacyHeaders: false,
     handler: (req, res) => {
-      console.warn(`Rate limit: ${req.ip} ${req.method} ${req.originalUrl}`);
+      // X-Forwarded-For is logged too: if every visitor shows the same req.ip, the proxy hop
+      // count in `trust proxy` is wrong and the limits are shared by everyone.
+      console.warn(`Rate limit: ${req.ip} (xff: ${req.headers['x-forwarded-for'] || '-'}) ${req.method} ${req.originalUrl}`);
       res.status(429).json({ error });
     },
     ...extra,
@@ -344,7 +346,8 @@ function limiter(limit, windowMinutes, error, extra = {}) {
 }
 // Only failed attempts count, so a user who logs in successfully never burns the budget.
 const loginLimiter = limiter(10, 15, 'Слишком много неудачных попыток входа. Попробуйте через 15 минут.', { skipSuccessfulRequests: true });
-const registerLimiter = limiter(5, 60, 'Слишком много регистраций с вашего адреса. Попробуйте позже.');
+// Only successful sign-ups count: a form mistake (no consent tick, taken email) never locks anyone out.
+const registerLimiter = limiter(10, 60, 'Слишком много регистраций с вашего адреса. Попробуйте позже.', { skipFailedRequests: true });
 const orderLimiter = limiter(10, 15, 'Слишком много заявок подряд. Попробуйте через несколько минут или позвоните нам.');
 const contactLimiter = limiter(5, 15, 'Слишком много сообщений подряд. Попробуйте через несколько минут.');
 // Generous for real shoppers, but stops anyone from guessing codes by brute force.

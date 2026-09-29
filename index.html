@@ -293,7 +293,10 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   .article-card .date{color:var(--ink-faint);font-size:.8rem;}
 
   /* ===== Personal data consent + cookie notice ===== */
-  .consent-check{display:flex;gap:10px;align-items:flex-start;margin:4px 0 14px;font-size:.84rem;line-height:1.45;color:var(--ink-soft);cursor:pointer;}
+  .consent-check{display:flex;gap:10px;align-items:flex-start;margin:4px 0 14px;font-size:.84rem;line-height:1.45;color:var(--ink-soft);cursor:pointer;flex-wrap:wrap;}
+  .consent-check.needs{color:var(--accent);}
+  .consent-check.needs input{outline:2px solid var(--accent);outline-offset:2px;}
+  .consent-check .consent-hint{flex-basis:100%;padding-left:26px;font-weight:600;color:var(--accent);}
   .consent-check input{margin-top:2px;flex:none;width:16px;height:16px;accent-color:var(--accent);}
   .consent-check a{text-decoration:underline;}
   .cookie-bar{
@@ -2243,8 +2246,8 @@ function bindPageEvents(path, params){
             method:'POST', headers:{'Content-Type':'application/json'},
             body: JSON.stringify({ email: document.getElementById('li-email').value, password: document.getElementById('li-pass').value })
           });
-          const data = await res.json();
-          if(!res.ok) throw new Error(data.error);
+          const data = await readJson(res);
+          if(!res.ok) throw new Error(data.error || 'Не получилось — попробуйте ещё раз');
           CURRENT_USER = data.user;
           render();
         }catch(err){ errEl.innerHTML = `<p style="color:var(--accent);font-size:.85rem;margin:8px 0 0;">${err.message}</p>`; }
@@ -2288,8 +2291,8 @@ function bindPageEvents(path, params){
               consent: document.getElementById('rg-consent').checked,
             })
           });
-          const data = await res.json();
-          if(!res.ok) throw new Error(data.error);
+          const data = await readJson(res);
+          if(!res.ok) throw new Error(data.error || 'Не получилось — попробуйте ещё раз');
           CURRENT_USER = data.user;
           render();
         }catch(err){ errEl.innerHTML = `<p style="color:var(--accent);font-size:.85rem;margin:8px 0 0;">${err.message}</p>`; }
@@ -2366,6 +2369,30 @@ function bindPageEvents(path, params){
 }
 
 window.addEventListener('popstate', () => { if(PRODUCTS.length) render(); });
+
+// The browser's own "tick this box" bubble is easy to miss, especially on phones — so an unticked
+// consent box also turns red with a text hint, which disappears once it's ticked.
+document.addEventListener('invalid', e => {
+  const label = e.target.closest && e.target.closest('.consent-check');
+  if(!label) return;
+  label.classList.add('needs');
+  if(!label.querySelector('.consent-hint')) label.insertAdjacentHTML('beforeend', '<span class="consent-hint">Отметьте галочку, чтобы продолжить</span>');
+  label.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}, true);
+document.addEventListener('change', e => {
+  const label = e.target.closest && e.target.closest('.consent-check');
+  if(!label || !e.target.checked) return;
+  label.classList.remove('needs');
+  const hint = label.querySelector('.consent-hint');
+  if(hint) hint.remove();
+});
+
+// Reads a JSON reply; if the server answered with something else (e.g. a proxy error page while
+// the site restarts), gives a readable message instead of "Unexpected token <".
+async function readJson(res){
+  try{ return await res.json(); }
+  catch(e){ return { error: res.ok ? 'Неожиданный ответ сервера' : 'Сайт на минуту недоступен — попробуйте ещё раз чуть позже' }; }
+}
 
 /* floating "write to us" button */
 (() => {
