@@ -712,9 +712,16 @@ function effectivePrice(p){
 const STOCK_LABEL = { order: 'Под заказ', out: 'Нет в наличии' };
 const isOrderable = p => p.stock !== 'out';
 
+const hasSizeChoice = p => !!(p.sizes && p.sizes.length);
+
 function addToCart(id, qty=1, size=null){
   const p = productById(id);
   if(!isOrderable(p)){ showToast(`«${p.name}» сейчас нет в наличии`); return; }
+  if(hasSizeChoice(p) && !p.sizes.includes(size)){
+    showToast('Выберите размер');
+    if(location.pathname !== '/product/' + p.id) navigate('/product/' + p.id);
+    return;
+  }
   if(!size) size = p.size || null;
   const unitPrice = effectivePrice(p);
   const key = lineKey(id, size);
@@ -735,10 +742,28 @@ function promoDiscount(subtotal){
   return p.type === 'percent' ? Math.round(subtotal * p.value / 100) : Math.min(p.value, subtotal);
 }
 
+/* the cart survives reloads and closed tabs; prices are always re-read from the live catalog */
+const CART_KEY = 'twoboots-cart';
+function saveCart(){
+  try{ localStorage.setItem(CART_KEY, JSON.stringify(cart.map(({id, qty, size}) => ({id, qty, size})))); }catch(e){}
+}
+function restoreCart(){
+  let saved = [];
+  try{ saved = JSON.parse(localStorage.getItem(CART_KEY) || '[]'); }catch(e){}
+  if(!Array.isArray(saved)) return;
+  cart = saved.map(l => {
+    const p = l && productById(l.id);
+    if(!p || !isOrderable(p)) return null;             // removed, hidden or out of stock since
+    if(hasSizeChoice(p) && !p.sizes.includes(l.size)) return null; // that size was dropped
+    return { id: p.id, qty: Math.max(1, Math.min(99, parseInt(l.qty) || 1)), size: l.size || p.size || null, price: effectivePrice(p) };
+  }).filter(Boolean);
+}
+
 function cartCount(){ return cart.reduce((s,l)=>s+l.qty,0); }
 function cartTotal(){ return cart.reduce((s,l)=>s+l.qty*l.price,0); }
 
 function updateCartUI(){
+  saveCart();
   const count = cartCount();
   const badge = document.getElementById('cartCount');
   badge.textContent = count;
@@ -757,7 +782,7 @@ function updateCartUI(){
     return `<div class="cart-line">
       <div class="thumb">${p.img ? `<img src="${p.img}" alt="${p.name}" loading="lazy" decoding="async" style="width:100%;height:100%;object-fit:cover;border-radius:10px;">` : catIcon(p.cat)}</div>
       <div class="info">
-        <h5>${p.name}</h5>
+        <h5>${p.name}${l.size && l.size !== p.size ? ' · ' + l.size : ''}</h5>
         <div class="row"><span>${l.qty} × ${fmt(l.price)} ₽</span><a class="remove" data-remove="${key}">Удалить</a></div>
       </div>
     </div>`;
@@ -1076,6 +1101,27 @@ function pageCatalog(params){
   `;
 }
 
+// Colour/size variants (separate products, e.g. suitcases M/XL) link to each other;
+// size options set in the admin are picked here and travel with the order.
+function pdpSizeBlock(p){
+  const group = (label, buttons) => `<div class="option-group"><span class="label">${label}</span><div class="swatches" id="sizeSwatches">${buttons}</div></div>`;
+  if(p.color && p.size){
+    const order = ['XS','S','M','L','XL','XXL'];
+    const rank = sz => { const i = order.indexOf(sz); return i === -1 ? 99 : i; };
+    const variants = PRODUCTS.filter(v => v.color === p.color && v.size).sort((a, b) => rank(a.size) - rank(b.size));
+    return group('Размер', variants.map(v => `<button class="swatch ${v.id === p.id ? 'active' : ''}" data-variant="${v.id}">${v.size}</button>`).join(''));
+  }
+  if(hasSizeChoice(p)){
+    const single = p.sizes.length === 1;
+    return group(p.cat === 'ropes' ? 'Длина' : 'Размер', p.sizes.map(sz => `<button class="swatch ${single ? 'active' : ''}" data-size="${escAttr(sz)}">${String(sz).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</button>`).join(''));
+  }
+  return '';
+}
+function selectedSize(){
+  const sel = document.querySelector('#sizeSwatches .swatch.active[data-size]');
+  return sel ? sel.getAttribute('data-size') : null;
+}
+
 function pageProduct(id){
   const p = productById(id);
   if(!p){
@@ -1104,32 +1150,7 @@ function pageProduct(id){
           <ul class="spec-list">
             ${p.specs.map(([k,v]) => `<li><b>${k}:</b> ${v}</li>`).join('')}
           </ul>
-          <div class="option-group">
-            <span class="label">${p.cat === 'ropes' ? 'Длина' : 'Размер'}</span>
-            <div class="swatches" id="sizeSwatches">
-              ${(() => {
-                if(p.cat === 'ropes'){
-                  const lengths = [250,260,270,280,290,300,310,320];
-                  return lengths.map(len => {
-                    const isAvailable = len === 300;
-                    return `<button class="swatch ${isAvailable?'active':''}" data-size="${len} см" ${isAvailable?'':'disabled'}>${len} см</button>`;
-                  }).join('');
-                }
-                if(p.color && p.size){
-                  const allSizes = ['XS','S','M','L','XL'];
-                  const variantBySize = {};
-                  PRODUCTS.filter(v => v.color === p.color).forEach(v => { variantBySize[v.size] = v.id; });
-                  return allSizes.map(s => {
-                    const variantId = variantBySize[s];
-                    const isAvailable = !!variantId;
-                    const isActive = variantId === p.id;
-                    return `<button class="swatch ${isActive?'active':''}" data-variant="${variantId||''}" ${isAvailable?'':'disabled'}>${s}</button>`;
-                  }).join('');
-                }
-                return ['XS','S','M','L'].map((s,i) => `<button class="swatch ${i===1?'active':''}" data-size="${s}">${s}</button>`).join('');
-              })()}
-            </div>
-          </div>
+          ${pdpSizeBlock(p)}
           <div class="qty-row">
             <span class="label" style="margin:0;">Количество</span>
             <div class="qty-stepper">
@@ -1712,14 +1733,18 @@ function bindPageEvents(path, params){
     const addBtn = document.getElementById('pdpAdd');
     if(addBtn){
       addBtn.addEventListener('click', () => {
-        addToCart(pdpId, parseInt(qtyVal.textContent));
+        addToCart(pdpId, parseInt(qtyVal.textContent), selectedSize());
       });
     }
 
     const qoOverlay = document.getElementById('qoOverlay');
     const buyOneClickBtn = document.getElementById('pdpBuyOneClick');
     if(buyOneClickBtn && qoOverlay){
-      buyOneClickBtn.addEventListener('click', () => qoOverlay.classList.add('open'));
+      buyOneClickBtn.addEventListener('click', () => {
+        const p = productById(pdpId);
+        if(hasSizeChoice(p) && !selectedSize()){ showToast('Выберите размер'); return; }
+        qoOverlay.classList.add('open');
+      });
       qoOverlay.addEventListener('click', e => { if(e.target === qoOverlay) qoOverlay.classList.remove('open'); });
       document.getElementById('qoClose').addEventListener('click', () => qoOverlay.classList.remove('open'));
       document.getElementById('qoForm').addEventListener('submit', async e => {
@@ -1736,6 +1761,7 @@ function bindPageEvents(path, params){
               phone: document.getElementById('qo-phone').value,
               consent: document.getElementById('qo-consent').checked,
               promoCode: document.getElementById('qo-promo').value || undefined,
+              size: selectedSize() || undefined,
             })
           });
           const data = await res.json();
@@ -1923,6 +1949,7 @@ window.addEventListener('popstate', () => { if(PRODUCTS.length) render(); });
 (async () => {
   app.innerHTML = `<section class="block"><div class="wrap"><p style="color:var(--ink-soft);">Загрузка каталога…</p></div></section>`;
   await Promise.all([loadData(), loadMe()]);
+  restoreCart();
   updateCartUI();
   render();
 })();
