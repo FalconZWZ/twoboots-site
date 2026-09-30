@@ -132,7 +132,10 @@ function notifyOwnerNewOrder(order) {
         ...(order.customerComment ? { 'Комментарий': order.customerComment } : {}),
       }),
     }).then(r => { if (!r.ok) return r.text().then(t => { throw new Error(t); }); })
-      .catch(err => console.error('Не удалось отправить заказ в бот заявок:', err.message));
+      .catch(err => {
+        console.error('Не удалось отправить заказ в бот заявок:', err.message);
+        sendOwnerTelegram(text); // бот недоступен — хотя бы простое уведомление в Telegram
+      });
   } else {
     sendOwnerTelegram(text);
   }
