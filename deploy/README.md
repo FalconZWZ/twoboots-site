@@ -124,3 +124,18 @@ bash /opt/twoboots/deploy/install.sh ssl dmitry-sokol@mail.ru
 | Изменить настройки | `nano /etc/twoboots.env`, затем перезапуск |
 | Обновить прямо сейчас | `systemctl start twoboots-update && journalctl -u twoboots-update -n 20` |
 | Состояние сайта | `systemctl status twoboots` |
+
+## Бот заявок на этом же сервере
+
+Railway из России недоступен, поэтому бот заявок (`twoboots-botorder`) тоже ставится на VPS:
+
+1. На Railway остановите сервис бота: два бота одновременно мешают друг другу в Telegram.
+2. На сервере выполните `bash /opt/twoboots/deploy/bot.sh`. Репозиторий бота должен быть
+   публичным, секретов в нём нет.
+3. В `nano /etc/twoboots-bot.env` вставьте переменные бота из Railway (Variables → Raw Editor).
+4. Ещё раз выполните `bash /opt/twoboots/deploy/bot.sh`. Скрипт запустит бота и переключит
+   на него сайт.
+5. Каждый получатель заявок один раз открывает бота, нажимает `/start` → «Поделиться номером».
+
+Бот обновляется из GitHub сам (каждые 5 минут). Логи: `journalctl -u twoboots-bot -f`.
+Если бот недоступен, сайт отправляет заказ напрямую в Telegram (`TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`).
