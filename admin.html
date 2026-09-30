@@ -67,6 +67,21 @@
   @media (max-width:760px){ .kpis{grid-template-columns:1fr 1fr;} .stats-cols{grid-template-columns:1fr;} .kpi .k-value{font-size:1.1rem;} }
   select[data-order-status]{min-width:132px;}
   [data-order-comment]{white-space:nowrap;}
+  /* ===== Tabs ===== */
+  .tabs{position:sticky;top:0;z-index:20;background:var(--bg);display:flex;gap:4px;overflow-x:auto;padding:6px 0 10px;margin:-8px 0 16px;border-bottom:1px solid var(--border);scrollbar-width:thin;}
+  .tabs button{flex:none;background:none;border:1px solid transparent;color:var(--ink-soft);padding:8px 16px;display:inline-flex;align-items:center;gap:6px;}
+  .tabs button:hover{color:var(--ink);background:var(--surface);}
+  .tabs button.on{background:var(--ink);color:#fff;}
+  .tab-badge{font-size:.72rem;font-weight:700;color:#fff;background:var(--accent);border-radius:999px;padding:1px 7px;}
+  .tab-off{display:none!important;}
+  #bulkBar{flex-wrap:wrap;column-gap:10px;}
+  /* phones: form rows stack, wide tables scroll inside their card instead of widening the page */
+  @media (max-width:640px){ .wrap{padding:20px 12px 60px;} .top-bar{flex-wrap:wrap;gap:10px;} .row{flex-wrap:wrap;} .row .field{flex:1 1 100%!important;width:auto!important;} .card{overflow-x:auto;padding:16px;} }
+  #bulkBar .field{margin-bottom:6px;}
+  .cat-tabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;}
+  .cat-tabs button{border:1px solid var(--border);background:#fff;color:var(--ink);padding:6px 14px;font-size:.85rem;}
+  .cat-tabs button.on{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .cat-tabs small{opacity:.7;font-weight:500;margin-left:2px;}
   .cat-pill{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:999px;padding:4px 6px 4px 14px;margin:0 8px 8px 0;font-size:.85rem;}
 </style>
 </head>
@@ -99,9 +114,18 @@
       <button class="btn-ghost" id="logoutBtn">Выйти (<span id="meLabel"></span>)</button>
     </div>
   </div>
+  <nav class="tabs" id="adminTabs" role="tablist" aria-label="Разделы админки">
+    <button type="button" role="tab" data-tab-btn="orders">Заказы <span class="tab-badge" id="tabBadgeOrders" hidden></span></button>
+    <button type="button" role="tab" data-tab-btn="products">Товары</button>
+    <button type="button" role="tab" data-tab-btn="reviews">Отзывы <span class="tab-badge" id="tabBadgeReviews" hidden></span></button>
+    <button type="button" role="tab" data-tab-btn="promos">Промокоды</button>
+    <button type="button" role="tab" data-tab-btn="articles">Статьи</button>
+    <button type="button" role="tab" data-tab-btn="stats">Статистика</button>
+    <button type="button" role="tab" data-tab-btn="settings">Настройки</button>
+  </nav>
   <div id="globalMsg"></div>
 
-  <div class="card" id="statsCard">
+  <div class="card" id="statsCard" data-tab="stats">
     <div class="stats-head">
       <h2>Статистика</h2>
       <div class="seg" id="statsPeriod" role="group" aria-label="Период">
@@ -124,7 +148,7 @@
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" data-tab="orders">
     <div style="display:flex;justify-content:space-between;align-items:center;">
       <h2>Заказы <span id="newOrdersBadge" style="font-size:.8rem;font-weight:700;color:#fff;background:var(--accent);border-radius:999px;padding:2px 10px;vertical-align:middle;" hidden></span></h2>
       <button class="btn-ghost" id="resetOrdersBtn" hidden>Сбросить заказы</button>
@@ -143,7 +167,7 @@
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" data-tab="articles">
     <h2>Статьи</h2>
     <div id="articlesAdminList"></div>
     <form id="articleForm" style="margin-top:16px;">
@@ -174,12 +198,12 @@
     </form>
   </div>
 
-  <div class="card">
+  <div class="card" data-tab="reviews">
     <h2>Отзывы <span id="pendingReviewsBadge" style="font-size:.8rem;font-weight:700;color:#fff;background:var(--accent);border-radius:999px;padding:2px 10px;vertical-align:middle;" hidden></span></h2>
     <div id="reviewsAdminList"></div>
   </div>
 
-  <div class="card">
+  <div class="card" data-tab="promos">
     <h2>Промокоды</h2>
     <table>
       <thead><tr><th>Код</th><th>Скидка</th><th>Условия</th><th>Использован</th><th>Статус</th><th></th></tr></thead>
@@ -200,7 +224,7 @@
     </form>
   </div>
 
-  <div class="card" id="backupsCard" hidden>
+  <div class="card" id="backupsCard" data-tab="settings" hidden>
     <h2>Резервные копии</h2>
     <p id="backupsNote" style="color:var(--ink-soft);font-size:.88rem;margin:0 0 10px;"></p>
     <div id="backupsList"></div>
@@ -215,7 +239,7 @@
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" data-tab="settings">
     <h2>Администраторы</h2>
     <div id="adminsList"></div>
     <form id="adminForm" class="row" style="margin-top:12px;">
@@ -225,18 +249,12 @@
     </form>
   </div>
 
-  <div class="card">
-    <h2>Категории</h2>
-    <div id="categoriesList"></div>
-    <form id="catForm" class="row" style="margin-top:12px;">
-      <div class="field"><label>ID (латиницей)</label><input id="catId" placeholder="new-cat" required></div>
-      <div class="field"><label>Название</label><input id="catLabel" placeholder="Новая категория" required></div>
-      <div class="field" style="flex:none;align-self:flex-end;"><button class="btn-primary" type="submit">Добавить</button></div>
-    </form>
-  </div>
-
-  <div class="card">
-    <h2>Товары</h2>
+  <div class="card" data-tab="products">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+      <h2>Товары</h2>
+      <button type="button" class="btn-primary btn-sm" id="addProductBtn">+ Добавить товар</button>
+    </div>
+    <div class="cat-tabs" id="prodCatTabs" role="tablist" aria-label="Категории товаров"></div>
     <div id="bulkBar" class="row" style="align-items:flex-end;margin-bottom:14px;">
       <div class="field" style="flex:none;width:140px;"><label>Скидка, % (для выбранных)</label><input id="bulkDiscount" type="number" min="0" max="95" placeholder="0"></div>
       <div class="field" style="flex:none;align-self:flex-end;"><button type="button" class="btn-primary btn-sm" id="bulkApplyDiscountBtn">Применить скидку</button></div>
@@ -248,13 +266,15 @@
       </select></div>
       <div class="field" style="flex:none;align-self:flex-end;"><button type="button" class="btn-ghost btn-sm" id="bulkStockBtn">Применить наличие</button></div>
     </div>
+    <div style="overflow-x:auto;">
     <table>
       <thead><tr><th><input type="checkbox" id="selectAllChk"></th><th></th><th>Название</th><th>Категория</th><th>Цена</th><th>Скидка</th><th>Статус</th><th></th></tr></thead>
       <tbody id="productsBody"></tbody>
     </table>
+    </div>
   </div>
 
-  <div class="card">
+  <div class="card" data-tab="products" id="productFormCard">
     <h2 id="formTitle">Добавить товар</h2>
     <form id="productForm">
       <input type="hidden" id="pId">
@@ -301,6 +321,18 @@
       <button class="btn-ghost" type="button" id="cancelEditBtn" hidden>Отменить редактирование</button>
     </form>
   </div>
+
+  <div class="card" data-tab="products">
+    <h2>Категории</h2>
+    <p style="color:var(--ink-soft);font-size:.85rem;margin:-6px 0 12px;">Категории — это разделы каталога на сайте и вкладки в списке товаров выше.</p>
+    <div id="categoriesList"></div>
+    <form id="catForm" class="row" style="margin-top:12px;">
+      <div class="field"><label>ID (латиницей)</label><input id="catId" placeholder="new-cat" required></div>
+      <div class="field"><label>Название</label><input id="catLabel" placeholder="Новая категория" required></div>
+      <div class="field" style="flex:none;align-self:flex-end;"><button class="btn-primary" type="submit">Добавить</button></div>
+    </form>
+  </div>
+
 </div>
 
 <script>
@@ -309,6 +341,29 @@ let STATE = { categories: {}, products: [] };
 function el(id){ return document.getElementById(id); }
 function showMsg(target, text, type){
   target.innerHTML = text ? `<div class="msg ${type}">${text}</div>` : '';
+}
+
+/* ===== Tabs: one section of the admin at a time; the open tab is kept in the address (#orders) ===== */
+const TAB_NAMES = ['orders','products','reviews','promos','articles','stats','settings'];
+function showTab(name){
+  if(!TAB_NAMES.includes(name)) name = 'orders';
+  document.querySelectorAll('#adminScreen [data-tab]').forEach(card => card.classList.toggle('tab-off', card.dataset.tab !== name));
+  document.querySelectorAll('#adminTabs [data-tab-btn]').forEach(btn => {
+    const on = btn.dataset.tabBtn === name;
+    btn.classList.toggle('on', on);
+    btn.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  if(location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
+}
+document.querySelectorAll('#adminTabs [data-tab-btn]').forEach(btn => btn.addEventListener('click', () => {
+  showTab(btn.dataset.tabBtn);
+  window.scrollTo({ top: 0 });
+}));
+window.addEventListener('hashchange', () => showTab(location.hash.slice(1)));
+showTab(location.hash.slice(1));
+function setTabBadge(id, count){
+  el(id).hidden = !count;
+  el(id).textContent = count || '';
 }
 
 async function api(url, opts){
@@ -628,6 +683,7 @@ async function loadAdminReviews(){
   const { reviews } = await api('/api/admin/reviews');
   const pending = reviews.filter(r => r.status === 'pending').length;
   el('pendingReviewsBadge').hidden = !pending;
+  setTabBadge('tabBadgeReviews', pending);
   el('pendingReviewsBadge').textContent = 'На модерации: ' + pending;
   el('reviewsAdminList').innerHTML = reviews.map(r => {
     const [label, color] = REVIEW_STATUS[r.status] || [r.status, 'inherit'];
@@ -822,6 +878,7 @@ function refreshOrders(){
   renderOrders(list);
   const newCount = ALL_ORDERS.filter(o => o.status === 'new').length;
   el('newOrdersBadge').hidden = !newCount;
+  setTabBadge('tabBadgeOrders', newCount);
   el('newOrdersBadge').textContent = 'Новых: ' + newCount;
   el('ordersCount').textContent = list.length === ALL_ORDERS.length
     ? `Всего заказов: ${ALL_ORDERS.length}`
@@ -982,12 +1039,33 @@ el('catForm').addEventListener('submit', async (e) => {
     });
     el('catForm').reset();
     showMsg(el('globalMsg'), 'Категория добавлена', 'ok');
-    renderCategories(); renderCatSelect();
+    renderCategories(); renderCatSelect(); renderProducts();
   }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
 });
 
+// Category tabs above the product list: "Все", one per category, and "Без категории" if needed
+let PROD_CAT = '';
+const NO_CAT = '__none__';
+function renderProdCatTabs(){
+  const count = cat => STATE.products.filter(p => cat === NO_CAT ? !STATE.categories[p.cat] : p.cat === cat).length;
+  const tabs = [['', 'Все', STATE.products.length],
+    ...Object.entries(STATE.categories).map(([id, label]) => [id, label, count(id)])];
+  if(count(NO_CAT)) tabs.push([NO_CAT, 'Без категории', count(NO_CAT)]);
+  if(!tabs.some(([id]) => id === PROD_CAT)) PROD_CAT = '';
+  el('prodCatTabs').innerHTML = tabs.map(([id, label, n]) =>
+    `<button type="button" role="tab" data-prod-cat="${escHtml(id)}" class="${id === PROD_CAT ? 'on' : ''}" aria-selected="${id === PROD_CAT}">${escHtml(label)}<small>${n}</small></button>`).join('');
+  el('prodCatTabs').querySelectorAll('[data-prod-cat]').forEach(btn => btn.addEventListener('click', () => {
+    PROD_CAT = btn.getAttribute('data-prod-cat');
+    renderProducts();
+    // a new product is added to the category that is open
+    if(!el('pId').value && STATE.categories[PROD_CAT]) el('pCat').value = PROD_CAT;
+  }));
+}
+
 function renderProducts(){
-  el('productsBody').innerHTML = STATE.products.map(p => `
+  renderProdCatTabs();
+  const shown = STATE.products.filter(p => !PROD_CAT || (PROD_CAT === NO_CAT ? !STATE.categories[p.cat] : p.cat === PROD_CAT));
+  el('productsBody').innerHTML = shown.map(p => `
     <tr>
       <td><input type="checkbox" class="prod-chk" value="${p.id}"></td>
       <td>${p.img ? `<img class="thumb" src="${p.img}">` : ''}${p.images && p.images.length ? `<small style="color:var(--ink-soft);white-space:nowrap;">+${p.images.length} фото</small>` : ''}</td>
@@ -1002,7 +1080,7 @@ function renderProducts(){
         <button type="button" class="btn-danger btn-sm" data-del="${p.id}">Удалить</button>
       </td>
     </tr>
-  `).join('') || '<tr><td colspan="8" style="color:var(--ink-soft)">Товаров пока нет.</td></tr>';
+  `).join('') || `<tr><td colspan="8" style="color:var(--ink-soft)">${PROD_CAT ? 'В этой категории пока нет товаров.' : 'Товаров пока нет.'}</td></tr>`;
 
   el('productsBody').querySelectorAll('[data-edit]').forEach(btn => {
     btn.addEventListener('click', () => startEdit(btn.getAttribute('data-edit')));
@@ -1105,7 +1183,13 @@ function resetForm(){
   renderRelatedPicker();
   el('formTitle').textContent = 'Добавить товар';
   el('cancelEditBtn').hidden = true;
+  if(STATE.categories[PROD_CAT]) el('pCat').value = PROD_CAT;
 }
+el('addProductBtn').addEventListener('click', () => {
+  resetForm();
+  el('productFormCard').scrollIntoView({ behavior:'smooth' });
+  el('pName').focus({ preventScroll: true });
+});
 el('cancelEditBtn').addEventListener('click', resetForm);
 
 function startEdit(id){
@@ -1130,7 +1214,7 @@ function startEdit(id){
   renderRelatedPicker(p.related || [], p.id);
   el('formTitle').textContent = 'Изменить товар';
   el('cancelEditBtn').hidden = false;
-  window.scrollTo({top: document.body.scrollHeight, behavior:'smooth'});
+  el('productFormCard').scrollIntoView({ behavior:'smooth' });
 }
 
 el('productForm').addEventListener('submit', async (e) => {
