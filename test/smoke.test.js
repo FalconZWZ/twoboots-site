@@ -12,6 +12,7 @@ const PORT = 3900 + Math.floor(Math.random() * 1000);
 const BASE = `http://127.0.0.1:${PORT}`;
 let server;
 let dataDir;
+const BOT_SECRET = 'test-bot-secret-0123456789';
 
 // Minimal cookie-keeping client: one per "browser".
 function client() {
@@ -48,7 +49,7 @@ async function adminClient() {
 
 before(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'twoboots-test-'));
-  const env = { ...process.env, PORT: String(PORT), DATA_DIR: dataDir, SESSION_SECRET: 'test-secret' };
+  const env = { ...process.env, PORT: String(PORT), DATA_DIR: dataDir, SESSION_SECRET: 'test-secret', BOTORDER_SECRET: BOT_SECRET };
   for (const k of ['SMTP_HOST', 'BOTORDER_URL', 'TELEGRAM_BOT_TOKEN', 'WHATSAPP_CALLMEBOT_APIKEY']) delete env[k];
   server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = '';
@@ -170,6 +171,24 @@ test('quick order needs consent and gets the next number', async () => {
   assert.equal(r.status, 200);
   assert.equal(r.data.order.total, 390 * 3);
   assert.equal(r.data.order.quick, true);
+});
+
+test('the order bot pulls new orders with its secret, and nothing without it', async () => {
+  const pull = (query, token) => fetch(`${BASE}/api/bot/orders${query}`, { headers: token ? { 'X-Webhook-Token': token } : {} });
+  assert.equal((await pull('?after=0')).status, 403);
+  assert.equal((await pull('?after=0', 'wrong-secret-0123456789ab')).status, 403);
+
+  const start = await (await pull('', BOT_SECRET)).json();
+  assert.deepEqual(start.orders, [], 'a fresh bot only learns the latest number');
+  const r = await client()('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'Бот', phone: '+7900', consent: true } });
+  assert.equal(r.status, 200);
+
+  const next = await (await pull(`?after=${start.latest}`, BOT_SECRET)).json();
+  assert.equal(next.orders.length, 1);
+  assert.equal(next.orders[0].number, r.data.order.number);
+  assert.equal(next.orders[0].fields.name, 'Бот');
+  assert.match(next.orders[0].fields['Заказ'], /в 1 клик/);
+  assert.deepEqual((await (await pull(`?after=${next.latest}`, BOT_SECRET)).json()).orders, []);
 });
 
 test('admin: the factory password must be changed before anything else', async () => {

@@ -102,6 +102,20 @@ function orderNotifyText(order) {
   return `Новый заказ №${order.number}${order.quick ? ' (в 1 клик)' : ''}\nИмя: ${order.name}\nТелефон: ${order.phone}\n${orderDeliveryLines(order)}\n${itemsList}\n\n${orderPromoLine(order)}Итого: ${order.total.toLocaleString('ru-RU')} ₽`;
 }
 
+// The order as the order-desk bot shows it: field name → text
+function botOrderFields(order) {
+  return {
+    'Заказ': `№${order.number}${order.quick ? ' (в 1 клик)' : ''}`,
+    name: order.name,
+    phone: order.phone,
+    'Состав': order.items.map(it => `${it.name}${it.size ? ' (' + it.size + ')' : ''} — ${it.qty} шт. × ${it.price.toLocaleString('ru-RU')} ₽`).join('\n'),
+    'Итого': `${order.total.toLocaleString('ru-RU')} ₽`,
+    ...(order.promo ? { 'Промокод': `${order.promo.code} (−${order.promo.discount.toLocaleString('ru-RU')} ₽)` } : {}),
+    ...(order.delivery ? { 'Доставка': `${DELIVERY_METHODS[order.delivery]}${[order.city, order.address].filter(Boolean).length ? ' — ' + [order.city, order.address].filter(Boolean).join(', ') : ''}` } : {}),
+    ...(order.customerComment ? { 'Комментарий': order.customerComment } : {}),
+  };
+}
+
 // Notifies the store owner (not the customer) that a new order/lead came in —
 // over every channel that has credentials configured; channels without
 // credentials are silently skipped (the startup warning already covers that).
@@ -121,16 +135,7 @@ function notifyOwnerNewOrder(order) {
     fetch(BOTORDER_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Webhook-Token': BOTORDER_SECRET },
-      body: JSON.stringify({
-        'Заказ': `№${order.number}${order.quick ? ' (в 1 клик)' : ''}`,
-        name: order.name,
-        phone: order.phone,
-        'Состав': order.items.map(it => `${it.name}${it.size ? ' (' + it.size + ')' : ''} — ${it.qty} шт. × ${it.price.toLocaleString('ru-RU')} ₽`).join('\n'),
-        'Итого': `${order.total.toLocaleString('ru-RU')} ₽`,
-        ...(order.promo ? { 'Промокод': `${order.promo.code} (−${order.promo.discount.toLocaleString('ru-RU')} ₽)` } : {}),
-        ...(order.delivery ? { 'Доставка': `${DELIVERY_METHODS[order.delivery]}${[order.city, order.address].filter(Boolean).length ? ' — ' + [order.city, order.address].filter(Boolean).join(', ') : ''}` } : {}),
-        ...(order.customerComment ? { 'Комментарий': order.customerComment } : {}),
-      }),
+      body: JSON.stringify(botOrderFields(order)),
     }).then(r => { if (!r.ok) return r.text().then(t => { throw new Error(t); }); })
       .catch(err => {
         console.error('Не удалось отправить заказ в бот заявок:', err.message);
@@ -1075,6 +1080,30 @@ app.post('/api/quick-order', orderLimiter, (req, res) => {
   writeStore(store);
   notifyOwnerNewOrder(order);
   res.json({ order });
+});
+
+/* ===== Order-desk bot pulls new orders =====
+   When the site can't reach the bot (the Russian server can't reach Railway or Telegram),
+   the bot fetches orders itself: GET /api/bot/orders?after=<last order number it has>,
+   authorised with the same X-Webhook-Token secret. Without `after` it only reports the
+   latest number, so a freshly started bot doesn't re-send the whole history. */
+app.get('/api/bot/orders', (req, res) => {
+  const token = Buffer.from(String(req.get('X-Webhook-Token') || ''));
+  const secret = Buffer.from(BOTORDER_SECRET);
+  if (secret.length < 16 || token.length !== secret.length || !crypto.timingSafeEqual(token, secret)) {
+    return res.status(403).json({ error: 'forbidden' });
+  }
+  const store = readStore();
+  const latest = store.orders.reduce((max, o) => Math.max(max, o.number || 0), 0);
+  if (req.query.after === undefined) return res.json({ latest, orders: [] });
+  let after = Math.max(0, parseInt(req.query.after, 10) || 0);
+  if (after > latest) after = 0; // order numbering was reset in the admin
+  const orders = store.orders
+    .filter(o => o.number > after)
+    .sort((a, b) => a.number - b.number)
+    .slice(0, 20)
+    .map(o => ({ number: o.number, fields: botOrderFields(o) }));
+  res.json({ latest, orders });
 });
 
 /* ===== Contact form ===== */
