@@ -945,6 +945,30 @@ function removeFromCart(key){
 }
 /* promo code: the server re-checks the code and recomputes the discount on checkout */
 let APPLIED_PROMO = null; // {code, type, value, minTotal}
+// A partner's link (/?promo=CODE) remembers the code for 30 days; it is applied by itself
+// as soon as the cart has something in it, and pre-fills the one-click form.
+const LINK_PROMO_KEY = 'twoboots-link-promo';
+function linkPromo(){
+  try{
+    const v = JSON.parse(localStorage.getItem(LINK_PROMO_KEY) || 'null');
+    return v && Date.now() - v.at < 30 * 24 * 3600 * 1000 ? v.code : '';
+  }catch(e){ return ''; }
+}
+let linkPromoTried = '';
+async function applyLinkPromo(){
+  const code = linkPromo();
+  if(!code || APPLIED_PROMO || !cart.length || linkPromoTried === code + cartTotal()) return;
+  linkPromoTried = code + cartTotal();
+  try{
+    const res = await fetch('/api/promo/check', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, items: cart.map(l => ({ id: l.id, qty: l.qty, size: l.size })) }) });
+    const data = await res.json();
+    if(!res.ok) return;
+    APPLIED_PROMO = { code: data.code, type: data.type, value: data.value, minTotal: data.minTotal };
+    updateCartUI();
+    showToast(`Промокод ${data.code} применён`);
+  }catch(e){}
+}
 function promoDiscount(subtotal){
   const p = APPLIED_PROMO;
   if(!p || subtotal < (p.minTotal || 0)) return 0;
@@ -1194,6 +1218,7 @@ document.getElementById('cartClose').addEventListener('click', closeCart);
 document.getElementById('overlay').addEventListener('click', () => { closeCart(); closeMenu(); });
 function openCart(){
   updateCartUI(); // the consent checkbox depends on who is logged in now
+  applyLinkPromo();
   document.getElementById('cartDrawer').classList.add('open');
   document.getElementById('overlay').classList.add('open');
 }
@@ -1601,6 +1626,8 @@ async function loadReviews(productId){
 
 function bindReviews(productId){
   loadReviews(productId);
+  // the review-request email links to /product/<id>#reviews
+  if(location.hash === '#reviews') setTimeout(() => document.getElementById('reviews').scrollIntoView({ behavior: 'smooth' }), 300);
   document.querySelectorAll('[data-scroll-reviews]').forEach(a => a.addEventListener('click', e => {
     e.preventDefault();
     document.getElementById('reviews').scrollIntoView({ behavior: 'smooth' });
@@ -1720,7 +1747,7 @@ function pageProduct(id){
         <form id="qoForm">
           <div class="field"><label for="qo-name">Ваше имя</label><input id="qo-name" required></div>
           <div class="field"><label for="qo-phone">Телефон</label><input id="qo-phone" type="tel" placeholder="+7 ..." required></div>
-          <div class="field"><label for="qo-promo">Промокод (если есть)</label><input id="qo-promo" autocomplete="off" style="text-transform:uppercase;"></div>
+          <div class="field"><label for="qo-promo">Промокод (если есть)</label><input id="qo-promo" autocomplete="off" style="text-transform:uppercase;" value="${escText(linkPromo())}"></div>
           ${consentField('qo-consent')}
           <div id="qoErr"></div>
           <button type="submit" class="btn btn-primary btn-block">Заказать</button>
@@ -2671,6 +2698,13 @@ async function readJson(res){
   render();
   // the abandoned-cart email links to /?cart=1
   const qs = new URLSearchParams(location.search);
+  if(qs.get('promo')){
+    const code = qs.get('promo').trim().toUpperCase().slice(0, 30);
+    try{ localStorage.setItem(LINK_PROMO_KEY, JSON.stringify({ code, at: Date.now() })); }catch(e){}
+    qs.delete('promo');
+    history.replaceState(null, '', location.pathname + (qs.toString() ? '?' + qs : ''));
+    showToast(`Промокод ${code} сохранён — скидка применится в корзине`);
+  }
   if(qs.get('cart')){
     qs.delete('cart');
     history.replaceState(null, '', location.pathname + (qs.toString() ? '?' + qs : ''));
