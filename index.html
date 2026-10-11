@@ -199,6 +199,13 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   .fav-btn.on svg,.fav-inline.on svg{fill:var(--accent);stroke:var(--accent);}
   .fav-btn:hover{border-color:var(--ink-soft);}
   .fav-inline{display:inline-flex;align-items:center;gap:8px;}
+  .gift-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;}
+  .gift-card{border-radius:var(--radius-m);padding:22px 18px;background:linear-gradient(135deg,var(--ink) 0%,#2a3540 100%);color:#fff;display:flex;flex-direction:column;gap:6px;min-height:170px;}
+  .gift-amount{font-size:1.9rem;font-weight:800;letter-spacing:-.01em;}
+  .gift-sub{font-size:.8rem;opacity:.75;flex:1;}
+  .gift-card .btn{align-self:flex-start;}
+  .gift-codes{margin-top:10px;padding:10px 12px;border:1px dashed var(--accent);border-radius:12px;font-size:.88rem;}
+  .gift-codes code{font-family:var(--font-mono);font-weight:700;font-size:.95rem;}
   .share-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px;font-size:.85rem;color:var(--ink-soft);}
   .share-row a,.share-row button{font:inherit;font-size:.82rem;font-weight:600;color:var(--ink);border:1px solid var(--border);border-radius:999px;padding:5px 12px;background:var(--surface);cursor:pointer;text-decoration:none;}
   .share-row a:hover,.share-row button:hover{border-color:var(--ink-soft);}
@@ -821,6 +828,10 @@ const ICONS = {
     <path d="M30 62 h40 M30 72 h28" />
   </svg>`,
 };
+ICONS.gift = `<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="20" y="40" width="60" height="38" rx="5"/><rect x="16" y="30" width="68" height="12" rx="4"/>
+    <path d="M50 30 v48"/><path d="M50 30 c-6-12-22-12-20-2 c1 5 12 3 20 2 c8 1 19 3 20-2 c2-10-14-10-20 2"/>
+  </svg>`;
 const DEFAULT_ICON = `<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
   <rect x="22" y="28" width="56" height="46" rx="8"/>
   <path d="M22 44 h56"/>
@@ -860,7 +871,8 @@ async function loadData(){
 function renderFooterCatalogLinks(){
   const el = document.getElementById('footerCatalogLinks');
   if(!el) return;
-  el.innerHTML = Object.keys(CATEGORIES).map(cat => `<li><a href="/catalog?cat=${cat}">${CATEGORIES[cat]}</a></li>`).join('');
+  el.innerHTML = Object.keys(CATEGORIES).map(cat => `<li><a href="/catalog?cat=${cat}">${CATEGORIES[cat]}</a></li>`).join('')
+    + '<li><a href="/gift">Подарочные сертификаты</a></li>';
 }
 
 let CURRENT_USER = null;
@@ -872,7 +884,17 @@ async function loadMe(){
   }catch(e){ CURRENT_USER = null; }
 }
 
-const productById = id => PRODUCTS.find(p => p.id === id);
+// Gift certificates are not catalog products: gift-1000 … gift-10000 exist only in the cart
+const GIFT_AMOUNTS = [1000, 2000, 3000, 5000, 10000];
+function giftProduct(id){
+  const m = /^gift-(\d+)$/.exec(id || '');
+  const amount = m && Number(m[1]);
+  if(!GIFT_AMOUNTS.includes(amount)) return undefined;
+  return { id, gift: true, cat: 'gift', name: `Подарочный сертификат на ${fmt(amount)} ₽`, price: amount, specs: [], desc: '' };
+}
+const productById = id => PRODUCTS.find(p => p.id === id) || giftProduct(id);
+const isGiftLine = l => /^gift-/.test(l.id);
+const cartGoodsTotal = () => cart.filter(l => !isGiftLine(l)).reduce((s, l) => s + l.qty * l.price, 0);
 
 /* ============ Cart ============ */
 let cart = []; // {id, qty, size, price}
@@ -1060,6 +1082,8 @@ function mergeAccountFavorites(){
 document.addEventListener('click', e => {
   const fav = e.target.closest('[data-fav]');
   if(fav){ e.preventDefault(); e.stopPropagation(); toggleFav(fav.getAttribute('data-fav')); return; }
+  const gift = e.target.closest('[data-add-gift]');
+  if(gift){ addToCart(gift.getAttribute('data-add-gift'), 1); trackGoal('gift_add'); return; }
   const share = e.target.closest('[data-share]');
   if(!share) return;
   const kind = share.getAttribute('data-share');
@@ -1072,6 +1096,31 @@ document.addEventListener('click', e => {
     navigator.share({ title: share.getAttribute('data-title'), url: share.getAttribute('data-url') }).catch(() => {});
   }
 }, true);
+
+function pageGift(){
+  return `
+  <section class="block" style="padding-top:44px;">
+    <div class="wrap">
+      <div class="section-head"><div><h2>Подарочный сертификат</h2><p>Лучший подарок фигуристу — возможность выбрать самому: чехлы, сумку, скакалку или аксессуары.</p></div></div>
+      <div class="gift-grid">
+        ${GIFT_AMOUNTS.map(a => `<div class="gift-card">
+          <div class="gift-amount">${fmt(a)} ₽</div>
+          <div class="gift-sub">Two Boots · действует год</div>
+          <button class="btn btn-primary btn-sm" data-add-gift="gift-${a}">В корзину</button>
+        </div>`).join('')}
+      </div>
+      <div class="doc-page" style="margin-top:28px;">
+        <h2>Как это работает</h2>
+        <ul>
+          <li>Выберите номинал и оформите заказ — доставка не нужна, сертификат электронный.</li>
+          <li>После подтверждения оплаты код придёт на вашу почту и появится в личном кабинете. Перешлите его тому, кому дарите, или распечатайте.</li>
+          <li>Получатель вводит код при оформлении заказа в поле «Подарочный сертификат». Им можно оплатить товары и доставку.</li>
+          <li>Сертификат можно тратить частями — остаток сохраняется. Срок действия — 1 год.</li>
+        </ul>
+      </div>
+    </div>
+  </section>`;
+}
 
 function pageFavorites(){
   const list = FAVORITES.map(productById).filter(Boolean);
@@ -1137,7 +1186,7 @@ function updateCartUI(){
       <button class="add-btn" data-upsell="${p.id}" aria-label="Добавить ${escAttr(p.name)}"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
     </div>`).join('')}</div>`;
   const subtotal = cartTotal();
-  const discount = promoDiscount(subtotal);
+  const discount = promoDiscount(cartGoodsTotal()); // certificates are never discounted
   footEl.classList.toggle('checkout', !!CHECKOUT);
   if(CHECKOUT){ footEl.innerHTML = checkoutFormHtml(subtotal, discount); return; }
   footEl.innerHTML = `
@@ -1193,11 +1242,25 @@ function afterSignIn(user, message){
   showToast(message);
 }
 
+let APPLIED_GIFT = null; // {code, balance}
 function checkoutFormHtml(subtotal, discount){
   const c = CHECKOUT;
-  const goods = subtotal - discount;
-  const m = deliveryMethod(c.delivery) || DELIVERY[0];
+  const giftOnly = cart.every(isGiftLine);
+  const certs = subtotal - cartGoodsTotal();
+  const goods = cartGoodsTotal() - discount;
+  const m = giftOnly ? null : deliveryMethod(c.delivery) || DELIVERY[0];
   const quote = m ? deliveryQuote(m, goods) : { cost: 0, text: '' };
+  // a certificate pays for goods and delivery, not for other certificates
+  const giftPay = APPLIED_GIFT && !giftOnly ? Math.min(APPLIED_GIFT.balance, goods + quote.cost) : 0;
+  if(giftOnly) return `
+    <form id="checkoutForm">
+      <div class="promo-note hint" style="margin:0 0 12px;">Сертификат электронный: после подтверждения оплаты код придёт на ${escText(CURRENT_USER.email)} и появится в личном кабинете.</div>
+      <div class="co-field"><textarea id="co-comment" placeholder="Комментарий: кому подарок, пожелания (необязательно)" maxlength="1000">${c.comment.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</textarea></div>
+      <div class="row"><span>Итого</span><span class="price">${fmt(subtotal)} ₽</span></div>
+      ${CURRENT_USER && !CURRENT_USER.consentAt ? consentField('cart-consent') : ''}
+      <button type="submit" class="btn btn-primary btn-block">Подтвердить заказ</button>
+      <button type="button" class="co-back" id="checkoutBack">← Назад к корзине</button>
+    </form>`;
   const hint = { point: 'Адрес пункта выдачи', address: m && m.carrier === 'post' ? 'Адрес с индексом' : 'Улица, дом, квартира', courier: 'Улица, дом, квартира' };
   return `
     <form id="checkoutForm">
@@ -1212,9 +1275,13 @@ function checkoutFormHtml(subtotal, discount){
       ${m && m.kind === 'point' ? `<a class="co-map" href="${escText(pointsMapUrl(m, c.city))}" target="_blank" rel="noopener">📍 Найти пункт выдачи на карте</a>` : ''}
       ${m && hint[m.kind] ? `<div class="co-field"><input id="co-address" placeholder="${hint[m.kind]}" value="${escText(c.address)}" required maxlength="300"></div>` : ''}
       <div class="co-field"><textarea id="co-comment" placeholder="Комментарий к заказу (необязательно)" maxlength="1000">${c.comment.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</textarea></div>
+      ${APPLIED_GIFT ? `<div class="row promo"><span>Сертификат ${escText(APPLIED_GIFT.code)}<a class="remove" id="giftRemove">убрать</a></span><span>−${fmt(giftPay)} ₽</span></div>
+        ${APPLIED_GIFT.balance > giftPay ? `<div class="promo-note hint">Останется на сертификате: ${fmt(APPLIED_GIFT.balance - giftPay)} ₽</div>` : ''}`
+        : `<div class="promo-form" style="margin-bottom:6px;"><input id="giftInput" placeholder="Подарочный сертификат" autocomplete="off" aria-label="Код подарочного сертификата"><button type="button" class="btn btn-ghost btn-sm" id="giftApply">Применить</button></div><div id="giftErr"></div>`}
       ${discount ? `<div class="row promo"><span>Промокод ${APPLIED_PROMO.code}</span><span>−${fmt(discount)} ₽</span></div>` : ''}
+      ${certs ? `<div class="row"><span>Сертификаты</span><span>${fmt(certs)} ₽</span></div>` : ''}
       ${m ? `<div class="row"><span>Доставка</span><span>${quote.cost ? fmt(quote.cost) + ' ₽' : escText(quote.text)}</span></div>` : ''}
-      <div class="row"><span>Итого</span><span class="price">${fmt(goods + quote.cost)} ₽</span></div>
+      <div class="row"><span>Итого</span><span class="price">${fmt(goods + certs + quote.cost - giftPay)} ₽</span></div>
       ${CURRENT_USER && !CURRENT_USER.consentAt ? consentField('cart-consent') : ''}
       <button type="submit" class="btn btn-primary btn-block">Подтвердить заказ</button>
       <button type="button" class="co-back" id="checkoutBack">← Назад к корзине</button>
@@ -1262,6 +1329,19 @@ document.getElementById('cartFoot').addEventListener('submit', async e => {
 document.getElementById('cartFoot').addEventListener('click', e => {
   if(e.target.id === 'promoRemove'){ APPLIED_PROMO = null; updateCartUI(); return; }
   if(e.target.id === 'checkoutBack'){ CHECKOUT = null; updateCartUI(); return; }
+  if(e.target.id === 'giftRemove'){ APPLIED_GIFT = null; updateCartUI(); return; }
+  if(e.target.id === 'giftApply'){
+    const code = document.getElementById('giftInput').value.trim();
+    if(!code) return;
+    fetch('/api/gift/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) })
+      .then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if(!ok){ document.getElementById('giftErr').innerHTML = `<div class="promo-note err">${escText(d.error || 'Не удалось проверить сертификат')}</div>`; return; }
+        APPLIED_GIFT = { code: d.code, balance: d.balance };
+        updateCartUI();
+      }).catch(() => {});
+    return;
+  }
   if(e.target.id !== 'checkoutBtn') return;
   if(!CURRENT_USER){
     showToast('Войдите или зарегистрируйтесь — и сразу вернёмся к оформлению заказа');
@@ -1302,7 +1382,8 @@ document.getElementById('cartFoot').addEventListener('submit', async e => {
         items: cart.map(l => ({ id: l.id, qty: l.qty, size: l.size })),
         consent: !!consentBox,
         // below the promo's minimum the code gives nothing — don't send it, or the server rejects the order
-        promoCode: APPLIED_PROMO && promoDiscount(cartTotal()) ? APPLIED_PROMO.code : undefined,
+        promoCode: APPLIED_PROMO && promoDiscount(cartGoodsTotal()) ? APPLIED_PROMO.code : undefined,
+        giftCode: APPLIED_GIFT && !cart.every(isGiftLine) ? APPLIED_GIFT.code : undefined,
         delivery: CHECKOUT.delivery, city: CHECKOUT.city, address: CHECKOUT.address, comment: CHECKOUT.comment,
       })
     });
@@ -1314,6 +1395,7 @@ document.getElementById('cartFoot').addEventListener('submit', async e => {
       CURRENT_USER.address = CURRENT_USER.address || data.order.address;
     }
     APPLIED_PROMO = null;
+    APPLIED_GIFT = null;
     CHECKOUT = null;
     cart = [];
     updateCartUI();
@@ -2148,6 +2230,9 @@ function renderOrders(orders){
       ${o.items.map(it => `<div class="order-line"><span>${it.name}${it.size?' · '+it.size:''} × ${it.qty}</span><span>${fmt(it.price*it.qty)} ₽</span></div>`).join('')}
       ${o.promo ? `<div class="order-line"><span>Промокод ${o.promo.code}</span><span>−${fmt(o.promo.discount)} ₽</span></div>` : ''}
       ${o.delivery ? `<div class="order-line" style="color:var(--ink-soft);"><span>Доставка: ${escText(deliveryLabel(o))}${[o.city, o.address].filter(Boolean).length ? ' — ' + escText([o.city, o.address].filter(Boolean).join(', ')) : ''}</span><span>${o.deliveryCost ? fmt(o.deliveryCost) + ' ₽' : o.deliveryPrice ? escText(o.deliveryPrice) : ''}</span></div>` : ''}
+      ${o.giftCard ? `<div class="order-line"><span>Сертификат ${escText(o.giftCard.code)}</span><span>−${fmt(o.giftCard.amount)} ₽</span></div>` : ''}
+      ${o.giftCodes ? `<div class="gift-codes"><b>Ваши подарочные сертификаты:</b>${o.giftCodes.map(g => `<div><code>${escText(g.code)}</code> — ${fmt(g.amount)} ₽, до ${g.expiresAt.split('-').reverse().join('.')}</div>`).join('')}</div>`
+        : o.items.some(it => it.gift) && o.status !== 'cancelled' ? `<div class="promo-note hint" style="margin-top:8px;">Код сертификата появится здесь и придёт на почту после подтверждения оплаты.</div>` : ''}
       ${o.trackNumber ? `<div class="order-track">Трек-номер: <b>${escText(o.trackNumber)}</b>${o.trackUrl ? ` · <a href="${escText(o.trackUrl)}" target="_blank" rel="noopener">Отследить посылку</a>` : ''}</div>` : ''}
       <div class="order-total"><span>Итого</span><span>${fmt(o.total)} ₽</span></div>
       ${['new','processing'].includes(o.status) ? `<button class="btn btn-ghost btn-sm" style="margin-top:12px;" data-cancel-order="${o.id}">Отменить заказ</button>` : ''}
@@ -2309,6 +2394,9 @@ function render(){
   } else if(path === '/consent'){
     html = pageConsent();
     setMeta('Согласие на обработку персональных данных — Two Boots');
+  } else if(path === '/gift'){
+    html = pageGift();
+    setMeta('Подарочный сертификат — Two Boots', 'Подарочный сертификат Two Boots на 1 000–10 000 ₽ — подарок фигуристу, который сам выберет экипировку. Действует год, можно тратить частями.');
   } else if(path === '/favorites'){
     html = pageFavorites();
     setMeta('Избранное — Two Boots');

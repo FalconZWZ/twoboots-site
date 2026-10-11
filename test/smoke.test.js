@@ -424,6 +424,45 @@ test('stock quantity: limits orders, goes out at 0, comes back on cancel; catalo
   assert.match(print.data, /Склад/);
 });
 
+test('gift certificates: buy without delivery, issue once, pay in parts, refund on cancel', async () => {
+  const admin = await adminClient();
+  const giver = client();
+  await giver('/api/register', { method: 'POST', body: { name: 'Даритель', email: 'giver@test.ru', password: 'secret1', phone: '+7 905 000-00-14', consent: true } });
+  assert.equal((await giver('/api/orders', { method: 'POST', body: { items: [{ id: 'gift-1234', qty: 1 }] } })).status, 400, 'only the offered amounts');
+  assert.match((await giver('/api/orders', { method: 'POST', body: { items: [{ id: 'gift-3000', qty: 1 }], promoCode: 'TEST10' } })).data.error, /не действуют на подарочные/);
+  const bought = await giver('/api/orders', { method: 'POST', body: { items: [{ id: 'gift-3000', qty: 1 }], comment: 'для Маши' } });
+  assert.equal(bought.status, 200, JSON.stringify(bought.data));
+  assert.equal(bought.data.order.total, 3000);
+  assert.equal(bought.data.order.delivery, '', 'no delivery for a certificate');
+
+  const issued = await admin('/api/admin/orders/' + bought.data.order.id + '/issue-gifts', { method: 'POST' });
+  assert.equal(issued.status, 200);
+  const code = issued.data.order.giftCodes[0].code;
+  assert.match(code, /^TB-[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+  assert.equal((await admin('/api/admin/orders/' + bought.data.order.id + '/issue-gifts', { method: 'POST' })).status, 400, 'issued once');
+  assert.equal((await giver('/api/orders')).data.orders[0].giftCodes[0].code, code, 'the buyer sees the code in the account');
+
+  const check = await client()('/api/gift/check', { method: 'POST', body: { code: code.toLowerCase().replace(/-/g, ' ') } });
+  assert.equal(check.data.balance, 3000);
+
+  const friend = client();
+  await friend('/api/register', { method: 'POST', body: { name: 'Маша', email: 'masha@test.ru', password: 'secret1', phone: '+7 905 000-00-15', consent: true } });
+  const spend = await friend('/api/orders', { method: 'POST', body: { items: [{ id: 'dry-glide', qty: 1 }, { id: 'gift-1000', qty: 1 }], delivery: 'pickup', giftCode: code } });
+  assert.equal(spend.status, 200, JSON.stringify(spend.data));
+  assert.equal(spend.data.order.giftCard.amount, 1490, 'pays the goods, not the certificate in the same cart');
+  assert.equal(spend.data.order.total, 1000);
+  assert.equal((await client()('/api/gift/check', { method: 'POST', body: { code } })).data.balance, 1510);
+
+  assert.equal((await friend(`/api/orders/${spend.data.order.id}/cancel`, { method: 'PATCH' })).status, 200);
+  assert.equal((await client()('/api/gift/check', { method: 'POST', body: { code } })).data.balance, 3000, 'cancelling gives the money back');
+
+  const manual = await admin('/api/admin/gift-cards', { method: 'POST', body: { amount: 500, note: 'розыгрыш' } });
+  assert.equal(manual.data.giftCard.balance, 500);
+  await admin('/api/admin/gift-cards/' + manual.data.giftCard.code, { method: 'PATCH', body: { active: false } });
+  assert.match((await client()('/api/gift/check', { method: 'POST', body: { code: manual.data.giftCard.code } })).data.error, /отключён/);
+  assert.equal((await client()('/gift')).status, 200);
+});
+
 test('admin: auth, promo code, stock, review moderation', async () => {
   const anon = client();
   assert.equal((await anon('/api/admin/orders')).status, 401);
