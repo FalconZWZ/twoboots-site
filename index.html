@@ -932,6 +932,15 @@ function addToCart(id, qty=1, size=null){
     return;
   }
   if(!size) size = p.size || null;
+  // never more than is left on the shelf (all sizes of a product share one count)
+  if(p.left !== undefined){
+    const inCart = cart.filter(l => l.id === id).reduce((n, l) => n + l.qty, 0);
+    if(inCart + qty > p.left){
+      qty = p.left - inCart;
+      if(qty <= 0){ showToast(`«${p.name}» осталось только ${p.left} шт. — все уже в корзине`); return; }
+      showToast(`Осталось только ${p.left} шт. — добавили ${qty}`);
+    }
+  }
   const unitPrice = effectivePrice(p);
   const key = lineKey(id, size);
   const line = cart.find(l => lineKey(l.id, l.size) === key);
@@ -1343,7 +1352,7 @@ function productCard(p){
     <a class="card-link" href="/product/${p.id}">
       <div class="product-media">
         ${hasDiscount ? `<span class="discount-badge">−${p.discountPercent}%</span>` : ''}
-        ${STOCK_LABEL[p.stock] ? `<span class="stock-badge ${p.stock}">${STOCK_LABEL[p.stock]}</span>` : ''}
+        ${STOCK_LABEL[p.stock] ? `<span class="stock-badge ${p.stock}">${STOCK_LABEL[p.stock]}</span>` : p.left > 0 && p.left <= 3 ? `<span class="stock-badge order">Осталось ${p.left} шт.</span>` : ''}
         ${productImage(p) ? `<img src="${productImage(p)}" alt="${p.name}" loading="lazy" decoding="async" style="width:100%;height:100%;object-fit:cover;">` : catIcon(p.cat)}
       </div>
     </a>
@@ -1703,7 +1712,7 @@ function pageProduct(id){
           <h1 style="margin-top:10px;">${p.name}</h1>
           ${p.rating ? `<div class="pdp-rating">${starsHtml(p.rating.avg)}<span>${p.rating.avg.toString().replace('.', ',')}</span><a href="#reviews" data-scroll-reviews>${p.rating.count} ${reviewsWord(p.rating.count)}</a></div>` : ''}
           <div class="pdp-price" id="pdpPrice">${p.discountPercent ? `<span class="price-old" style="font-size:1.1rem;margin-right:10px;">${fmt(p.price)} ₽</span>` : ''}<span class="price">${fmt(effectivePrice(p))} ₽</span></div>
-          <div class="pdp-stock ${p.stock || 'in'}">${({ order: 'Под заказ — срок уточнит менеджер', out: 'Нет в наличии' })[p.stock] || 'В наличии'}</div>
+          <div class="pdp-stock ${p.stock || 'in'}">${({ order: 'Под заказ — срок уточнит менеджер', out: 'Нет в наличии' })[p.stock] || (p.left > 0 ? `В наличии — осталось ${p.left} шт.` : 'В наличии')}</div>
           <p class="pdp-desc">${p.desc}</p>
           <ul class="spec-list">
             ${p.specs.map(([k,v]) => `<li><b>${k}:</b> ${v}</li>`).join('')}
@@ -2428,7 +2437,8 @@ function bindPageEvents(path, params){
       qtyVal.textContent = Math.max(1, parseInt(qtyVal.textContent) - 1);
     });
     document.getElementById('qtyPlus').addEventListener('click', () => {
-      qtyVal.textContent = Math.min(9, parseInt(qtyVal.textContent) + 1);
+      const left = (productById(pdpId) || {}).left;
+      qtyVal.textContent = Math.min(left > 0 ? Math.min(9, left) : 9, parseInt(qtyVal.textContent) + 1);
     });
     const addBtn = document.getElementById('pdpAdd');
     if(addBtn){
