@@ -2052,6 +2052,23 @@ function trackPageview(){
   lastTrackedUrl = location.href;
 }
 function trackGoal(goal){ ym(METRIKA_ID, 'reachGoal', goal); }
+
+/* ============ Own visitor counter (shown in the admin) ============ */
+// One beacon per page shown (the first one carries where the visitor came from) and a ping
+// each minute while the tab is open, for "now on the site". No cookies are set.
+let lastCountedUrl = null;
+function sendHit(data){
+  const body = JSON.stringify(data);
+  try{ if(navigator.sendBeacon && navigator.sendBeacon('/api/hit', new Blob([body], { type: 'application/json' }))) return; }catch(e){}
+  fetch('/api/hit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(() => {});
+}
+function countVisit(){
+  if(location.href === lastCountedUrl) return;
+  const landing = lastCountedUrl === null;
+  lastCountedUrl = location.href;
+  sendHit({ path: location.pathname + location.search, ref: landing ? document.referrer : '' });
+}
+setInterval(() => { if(document.visibilityState === 'visible') sendHit({ ping: true }); }, 60000);
 function trackPurchase(order){
   window.dataLayer.push({ ecommerce: { currencyCode: 'RUB', purchase: {
     actionField: { id: String(order.number), revenue: order.total, ...(order.promo ? { coupon: order.promo.code } : {}) },
@@ -2123,6 +2140,7 @@ function render(){
 
   bindPageEvents(path, params);
   trackPageview();
+  countVisit();
   checkSiteVersion();
 }
 

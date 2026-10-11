@@ -107,7 +107,10 @@
 
 <div id="adminScreen" class="wrap" hidden>
   <div class="top-bar">
-    <h1>Two Boots — Админка</h1>
+    <div>
+      <h1 style="margin-bottom:4px;">Two Boots — Админка</h1>
+      <a href="#stats" id="visitorsNow" hidden style="font-size:.85rem;color:var(--ink-soft);text-decoration:none;"></a>
+    </div>
     <div>
       <a href="/api/admin/backup" id="backupBtn" class="btn-ghost" style="text-decoration:none;display:none;padding:9px 18px;border:1px solid var(--border);border-radius:999px;">Резервная копия</a>
       <a href="/" class="btn-ghost" style="text-decoration:none;display:inline-block;padding:9px 18px;border:1px solid var(--border);border-radius:999px;">На сайт</a>
@@ -146,6 +149,21 @@
         <h3>Промокоды</h3><div id="statsPromos"></div>
       </div>
     </div>
+  </div>
+
+  <div class="card" data-tab="stats">
+    <h2>Посетители</h2>
+    <div class="kpis" id="visitsKpis"></div>
+    <h3 style="font-size:.9rem;margin:0;" id="visitsChartTitle">Посетители по дням</h3>
+    <div class="chart" id="visitsChart"></div>
+    <div class="stats-cols">
+      <div><h3>Популярные страницы</h3><div id="visitsPages"></div></div>
+      <div>
+        <h3>Откуда приходят</h3><div id="visitsSources" style="margin-bottom:14px;"></div>
+        <h3>Устройства</h3><div id="visitsDevices"></div>
+      </div>
+    </div>
+    <p style="color:var(--ink-soft);font-size:.8rem;margin:14px 0 0;"><span id="visitsSince"></span> Считаются люди в браузерах; поисковые роботы и вы сами, пока вошли в админку, не учитываются. Подробная статистика — в Яндекс Метрике.</p>
   </div>
 
   <div class="card" data-tab="orders">
@@ -447,6 +465,8 @@ async function loadAll(){
   await loadAdmins();
   await loadOrders();
   await loadStats();
+  await loadVisits();
+  loadVisitorsNow();
   await loadPromos();
   await loadAdminReviews();
   await loadAdminArticles();
@@ -491,19 +511,23 @@ const MONTHS = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'и�
 const dayLabel = d => { const [, m, day] = d.split('-'); return `${Number(day)} ${MONTHS[Number(m) - 1]}`; };
 
 // 7/30 days → a bar per day, 90 → per week, a year → per month (a bar per day would be a hairline)
+// Every numeric field of a day (orders, revenue, visitors…) is summed into its bucket.
 function bucketize(byDay, days){
-  if(days <= 31) return byDay.map(d => ({ label: dayLabel(d.date), orders: d.orders, revenue: d.revenue }));
+  const fields = byDay.length ? Object.keys(byDay[0]).filter(k => k !== 'date') : [];
+  const pick = d => Object.fromEntries(fields.map(f => [f, d[f]]));
+  if(days <= 31) return byDay.map(d => ({ label: dayLabel(d.date), ...pick(d) }));
   const size = days <= 90 ? 7 : null;
   const out = [];
   byDay.forEach((d, i) => {
     const key = size ? Math.floor(i / size) : d.date.slice(0, 7);
     let b = out.find(x => x.key === key);
-    if(!b){ b = { key, first: d.date, last: d.date, orders: 0, revenue: 0 }; out.push(b); }
-    b.last = d.date; b.orders += d.orders; b.revenue += d.revenue;
+    if(!b){ b = { key, first: d.date, last: d.date, ...Object.fromEntries(fields.map(f => [f, 0])) }; out.push(b); }
+    b.last = d.date;
+    fields.forEach(f => { b[f] += d[f]; });
   });
   return out.map(b => ({
     label: size ? `${dayLabel(b.first)} – ${dayLabel(b.last)}` : `${MONTHS[Number(b.first.slice(5, 7)) - 1]} ${b.first.slice(0, 4)}`,
-    orders: b.orders, revenue: b.revenue,
+    ...pick(b),
   }));
 }
 
@@ -514,26 +538,26 @@ function deltaHtml(cur, prev){
   return `<span class="k-delta ${cls}"><b>${pct > 0 ? '▲ +' : pct < 0 ? '▼ ' : ''}${pct}%</b> к прошлым ${STATS_DAYS === 365 ? '12 мес.' : STATS_DAYS + ' дн.'}</span>`;
 }
 
-function renderChart(buckets){
-  const max = Math.max(...buckets.map(b => b.revenue), 0);
-  const chart = el('statsChart');
-  if(!max){ chart.innerHTML = '<p style="color:var(--ink-soft);font-size:.88rem;padding:30px 0;text-align:center;">За этот период заказов нет.</p>'; return; }
+// opts: value(bucket) → bar height, axis(n) → y-axis label, tip/aria(bucket) → texts, empty → no-data text
+function renderChart(chart, buckets, opts){
+  const max = Math.max(...buckets.map(opts.value), 0);
+  if(!max){ chart.innerHTML = `<p style="color:var(--ink-soft);font-size:.88rem;padding:30px 0;text-align:center;">${opts.empty}</p>`; return; }
   // axis top: the smallest "nice" number (1, 1.5, 2, 2.5, 3, 4, 5, 6, 8 ×10ⁿ) above the max
   const pow = Math.pow(10, Math.floor(Math.log10(max)));
   const top = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].map(m => m * pow).find(v => v >= max);
   const ticks = [top, top / 2];
   chart.innerHTML = `
-    <div class="chart-plot" id="chartPlot">
-      ${ticks.map(t => `<div class="chart-grid" style="bottom:${t / top * 100}%"></div><div class="chart-ylabel" style="bottom:${t / top * 100}%;transform:translateY(50%);">${shortRub(t)}</div>`).join('')}
-      ${buckets.map((b, i) => `<div class="chart-bar" tabindex="0" data-i="${i}" aria-label="${b.label}: ${rub(b.revenue)}, заказов ${b.orders}"><i style="height:${b.revenue / top * 100}%"></i></div>`).join('')}
+    <div class="chart-plot">
+      ${ticks.map(t => `<div class="chart-grid" style="bottom:${t / top * 100}%"></div><div class="chart-ylabel" style="bottom:${t / top * 100}%;transform:translateY(50%);">${opts.axis(t)}</div>`).join('')}
+      ${buckets.map((b, i) => `<div class="chart-bar" tabindex="0" data-i="${i}" aria-label="${opts.aria(b)}"><i style="height:${opts.value(b) / top * 100}%"></i></div>`).join('')}
     </div>
     <div class="chart-x"><span>${buckets[0].label}</span>${buckets.length > 2 ? `<span>${buckets[Math.floor(buckets.length / 2)].label}</span>` : ''}<span>${buckets[buckets.length - 1].label}</span></div>`;
-  const plot = el('chartPlot');
+  const plot = chart.querySelector('.chart-plot');
   const tip = document.createElement('div');
   tip.className = 'chart-tip'; tip.hidden = true; chart.appendChild(tip);
   const show = bar => {
     const b = buckets[Number(bar.getAttribute('data-i'))];
-    tip.innerHTML = `<b>${b.label}</b><br>${rub(b.revenue)} · заказов: ${b.orders}`;
+    tip.innerHTML = opts.tip(b);
     const r = bar.getBoundingClientRect(), c = chart.getBoundingClientRect();
     const barTop = r.bottom - bar.firstElementChild.getBoundingClientRect().height;
     tip.style.left = Math.min(Math.max(r.left - c.left + r.width / 2, 70), c.width - 70) + 'px';
@@ -561,7 +585,11 @@ async function loadStats(){
 
   const buckets = bucketize(st.byDay, STATS_DAYS);
   el('statsChartTitle').textContent = STATS_DAYS <= 31 ? 'Выручка по дням' : STATS_DAYS <= 90 ? 'Выручка по неделям' : 'Выручка по месяцам';
-  renderChart(buckets);
+  renderChart(el('statsChart'), buckets, {
+    value: b => b.revenue, axis: shortRub, empty: 'За этот период заказов нет.',
+    tip: b => `<b>${b.label}</b><br>${rub(b.revenue)} · заказов: ${b.orders}`,
+    aria: b => `${b.label}: ${rub(b.revenue)}, заказов ${b.orders}`,
+  });
   el('statsTable').innerHTML = `<table><thead><tr><th>Период</th><th class="num">Заказы</th><th class="num">Выручка</th></tr></thead><tbody>${
     buckets.slice().reverse().map(b => `<tr><td>${b.label}</td><td class="num">${b.orders}</td><td class="num">${rub(b.revenue)}</td></tr>`).join('')}</tbody></table>`;
 
@@ -579,7 +607,7 @@ async function loadStats(){
 el('statsPeriod').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
   STATS_DAYS = Number(b.getAttribute('data-days'));
   el('statsPeriod').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
-  loadStats().catch(e => showMsg(el('globalMsg'), e.message, 'error'));
+  Promise.all([loadStats(), loadVisits()]).catch(e => showMsg(el('globalMsg'), e.message, 'error'));
 }));
 el('statsTableToggle').addEventListener('click', () => {
   const show = el('statsTable').hidden;
@@ -587,6 +615,48 @@ el('statsTableToggle').addEventListener('click', () => {
   el('statsChart').hidden = show;
   el('statsTableToggle').textContent = show ? 'Показать графиком' : 'Показать таблицей';
 });
+
+/* ===== Visitors ===== */
+const SOURCE_LABELS = { direct: 'Прямые заходы и закладки', yandex: 'Яндекс', google: 'Google', vk: 'ВКонтакте', telegram: 'Telegram', avito: 'Авито' };
+const plural = (n, one, few, many) => { const m10 = n % 10, m100 = n % 100; return m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many; };
+function shareRows(entries, label){
+  const total = entries.reduce((s, [, n]) => s + n, 0);
+  return entries.length ? entries.map(([k, n]) => `<div style="display:flex;justify-content:space-between;gap:10px;font-size:.85rem;padding:3px 0;border-bottom:1px solid var(--border);"><span>${escHtml(label(k))}</span><span class="num">${n} · ${Math.round(n / total * 100)}%</span></div>`).join('')
+    : '<p style="color:var(--ink-soft);font-size:.85rem;">Пока нет данных.</p>';
+}
+async function loadVisits(){
+  const v = await api('/api/admin/visits?days=' + STATS_DAYS);
+  const c = v.current, p = v.previous;
+  el('visitsKpis').innerHTML = [
+    ['Посетители', c.visitors, c.visitors, p.visitors, '<span class="k-delta" style="display:block;">уникальные за каждый день</span>'],
+    ['Просмотры страниц', c.views, c.views, p.views, c.visitors ? `<span class="k-delta" style="display:block;">${(c.views / c.visitors).toFixed(1).replace('.', ',')} на посетителя</span>` : ''],
+    ['Конверсия в заказ', c.visitors ? (c.conversion * 100).toFixed(1).replace('.', ',') + '%' : '—', null, null, `<span class="k-delta">заказов: ${c.orders}</span>`],
+    ['Сейчас на сайте', v.online, null, null, '<span class="k-delta">за последние 5 минут</span>'],
+  ].map(([label, value, cur, prev, extra]) => `<div class="kpi"><div class="k-label">${label}</div><div class="k-value">${value}</div>${cur === null ? '' : deltaHtml(cur, prev)}${extra}</div>`).join('');
+  el('visitsSince').textContent = v.since ? `Счёт идёт с ${dayLabel(v.since)} ${v.since.slice(0, 4)}.` : 'Счёт начнётся с первого посетителя.';
+  const buckets = bucketize(v.byDay, STATS_DAYS);
+  el('visitsChartTitle').textContent = STATS_DAYS <= 31 ? 'Посетители по дням' : STATS_DAYS <= 90 ? 'Посетители по неделям' : 'Посетители по месяцам';
+  renderChart(el('visitsChart'), buckets, {
+    value: b => b.visitors, axis: n => String(Math.round(n)), empty: 'За этот период посетителей ещё не было.',
+    tip: b => `<b>${b.label}</b><br>посетителей: ${b.visitors} · просмотров: ${b.views}`,
+    aria: b => `${b.label}: посетителей ${b.visitors}, просмотров ${b.views}`,
+  });
+  el('visitsPages').innerHTML = v.pages.length ? `<table><thead><tr><th>Страница</th><th class="num">Просмотры</th></tr></thead><tbody>${
+    v.pages.map(pg => `<tr><td><a href="${escHtml(pg.key)}" target="_blank" rel="noopener" style="color:inherit;">${escHtml(pg.label)}</a></td><td class="num">${pg.views}</td></tr>`).join('')}</tbody></table>`
+    : '<p style="color:var(--ink-soft);font-size:.85rem;">Пока нет данных.</p>';
+  el('visitsSources').innerHTML = shareRows(v.sources.map(s => [s.source, s.visitors]), k => SOURCE_LABELS[k] || k);
+  el('visitsDevices').innerHTML = shareRows(Object.entries(v.devices).sort((a, b) => b[1] - a[1]), k => k === 'mobile' ? 'Телефоны и планшеты' : 'Компьютеры');
+}
+
+// Small live counter under the title: today's visitors and who is on the site now
+async function loadVisitorsNow(){
+  try{
+    const n = await api('/api/admin/visitors-now');
+    el('visitorsNow').innerHTML = `Сегодня: <b>${n.today.visitors}</b> ${plural(n.today.visitors, 'посетитель', 'посетителя', 'посетителей')} · сейчас на сайте: <b>${n.online}</b>`;
+    el('visitorsNow').hidden = false;
+  }catch(e){ /* not logged in any more — the next full load will show the login screen */ }
+}
+setInterval(() => { if(!el('adminScreen').hidden && document.visibilityState === 'visible') loadVisitorsNow(); }, 60000);
 
 /* ===== Articles ===== */
 let ARTICLES_ADMIN = [];
