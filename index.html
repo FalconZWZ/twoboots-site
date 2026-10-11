@@ -191,6 +191,17 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
     display:flex;align-items:center;justify-content:center;
   }
   .menu-toggle{display:none;}
+  .nav-links .nav-fav{display:none;}
+  /* favorites: heart on cards, on the product page and in the header */
+  .product-card{position:relative;}
+  .fav-btn{position:absolute;top:10px;right:10px;z-index:2;width:36px;height:36px;border-radius:999px;border:1px solid var(--border);background:rgba(255,255,255,.92);display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;}
+  .fav-btn svg,.fav-inline svg{width:18px;height:18px;stroke:var(--ink);fill:none;transition:fill .15s ease,stroke .15s ease;}
+  .fav-btn.on svg,.fav-inline.on svg{fill:var(--accent);stroke:var(--accent);}
+  .fav-btn:hover{border-color:var(--ink-soft);}
+  .fav-inline{display:inline-flex;align-items:center;gap:8px;}
+  .share-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px;font-size:.85rem;color:var(--ink-soft);}
+  .share-row a,.share-row button{font:inherit;font-size:.82rem;font-weight:600;color:var(--ink);border:1px solid var(--border);border-radius:999px;padding:5px 12px;background:var(--surface);cursor:pointer;text-decoration:none;}
+  .share-row a:hover,.share-row button:hover{border-color:var(--ink-soft);}
   .header-phone{font-weight:700;font-size:.92rem;white-space:nowrap;margin-right:6px;color:var(--ink);}
   .header-phone:hover{color:var(--accent);}
   @media (max-width:1100px){ .header-phone{display:none;} }
@@ -649,6 +660,9 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
     .nav-links.open{opacity:1;pointer-events:auto;transform:translateY(0);}
     .nav-links a{padding:16px;font-size:1.05rem;border-radius:12px;}
     .menu-toggle{display:flex;}
+    /* no room for a fourth icon on phones: favorites live in the menu there */
+    #favLink{display:none;}
+    .nav-links .nav-fav{display:block;}
     .footer-grid{grid-template-columns:1fr;gap:28px;padding:48px 0 28px;}
     .cat-grid{grid-template-columns:1fr 1fr;}
     .product-grid{grid-template-columns:1fr 1fr;}
@@ -671,9 +685,14 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
       <a href="/about" data-route="/about">О бренде</a>
       <a href="/blog" data-route="/blog" id="navBlog" hidden>Статьи</a>
       <a href="/contact" data-route="/contact">Контакты</a>
+      <a href="/favorites" data-route="/favorites" class="nav-fav">Избранное <span id="favCountMenu"></span></a>
     </nav>
     <div class="header-actions">
       <a class="header-phone" href="tel:+79263497586">+7 (926) 349-75-86</a>
+      <a class="icon-btn" href="/favorites" aria-label="Избранное" id="favLink">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20s-7.5-4.6-9.2-9.4C1.6 7.2 3.9 4 7.2 4c2 0 3.6 1.1 4.8 2.8C13.2 5.1 14.8 4 16.8 4c3.3 0 5.6 3.2 4.4 6.6C19.5 15.4 12 20 12 20z"/></svg>
+        <span class="cart-count" id="favCount" style="display:none;">0</span>
+      </a>
       <a class="icon-btn" href="/account" aria-label="Личный кабинет">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 20c1.5-4 5-6 7.5-6s6 2 7.5 6"/></svg>
       </a>
@@ -934,12 +953,25 @@ function promoDiscount(subtotal){
 
 /* the cart survives reloads and closed tabs; prices are always re-read from the live catalog */
 const CART_KEY = 'twoboots-cart';
+let cartSyncTimer = null;
 function saveCart(){
-  try{ localStorage.setItem(CART_KEY, JSON.stringify(cart.map(({id, qty, size}) => ({id, qty, size})))); }catch(e){}
+  const lines = cart.map(({id, qty, size}) => ({id, qty, size}));
+  try{ localStorage.setItem(CART_KEY, JSON.stringify(lines)); }catch(e){}
+  // a signed-in customer's cart is also kept on the server: other devices, reminders
+  if(!CURRENT_USER) return;
+  const json = JSON.stringify(lines);
+  if(json === JSON.stringify(CURRENT_USER.cart || [])) return;
+  CURRENT_USER.cart = lines;
+  clearTimeout(cartSyncTimer);
+  cartSyncTimer = setTimeout(() => fetch('/api/cart', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items: lines }) }).catch(() => {}), 1200);
 }
-function restoreCart(){
-  let saved = [];
-  try{ saved = JSON.parse(localStorage.getItem(CART_KEY) || '[]'); }catch(e){}
+// After loading or signing in: an empty cart here picks up the one saved in the account
+function adoptAccountCart(){
+  if(CURRENT_USER && !cart.length && CURRENT_USER.cart && CURRENT_USER.cart.length) restoreCart(CURRENT_USER.cart);
+}
+function restoreCart(fromAccount){
+  let saved = fromAccount || [];
+  if(!fromAccount){ try{ saved = JSON.parse(localStorage.getItem(CART_KEY) || '[]'); }catch(e){} }
   if(!Array.isArray(saved)) return;
   cart = saved.map(l => {
     const p = l && productById(l.id);
@@ -947,6 +979,91 @@ function restoreCart(){
     if(hasSizeChoice(p) && !p.sizes.includes(l.size)) return null; // that size was dropped
     return { id: p.id, qty: Math.max(1, Math.min(99, parseInt(l.qty) || 1)), size: l.size || p.size || null, price: effectivePrice(p) };
   }).filter(Boolean);
+}
+
+/* ============ Favorites ============ */
+// Kept in the browser; for a signed-in customer also in the account (merged on sign-in)
+const FAV_KEY = 'twoboots-fav';
+let FAVORITES = [];
+try{ FAVORITES = JSON.parse(localStorage.getItem(FAV_KEY) || '[]'); }catch(e){}
+if(!Array.isArray(FAVORITES)) FAVORITES = [];
+const isFav = id => FAVORITES.includes(id);
+function favButton(id, cls){
+  const on = isFav(id);
+  return `<button type="button" class="${cls} ${on ? 'on' : ''}" data-fav="${id}" aria-pressed="${on}" aria-label="${on ? 'Убрать из избранного' : 'В избранное'}" title="${on ? 'Убрать из избранного' : 'В избранное'}"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20s-7.5-4.6-9.2-9.4C1.6 7.2 3.9 4 7.2 4c2 0 3.6 1.1 4.8 2.8C13.2 5.1 14.8 4 16.8 4c3.3 0 5.6 3.2 4.4 6.6C19.5 15.4 12 20 12 20z"/></svg>${cls === 'fav-inline btn btn-ghost' ? `<span>${on ? 'В избранном' : 'В избранное'}</span>` : ''}</button>`;
+}
+function saveFavorites(sync = true){
+  try{ localStorage.setItem(FAV_KEY, JSON.stringify(FAVORITES)); }catch(e){}
+  updateFavBadge();
+  if(sync && CURRENT_USER){
+    CURRENT_USER.favorites = FAVORITES.slice();
+    fetch('/api/favorites', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: FAVORITES }) }).catch(() => {});
+  }
+}
+function updateFavBadge(){
+  const n = FAVORITES.filter(productById).length;
+  const badge = document.getElementById('favCount');
+  badge.textContent = n;
+  badge.style.display = n ? 'flex' : 'none';
+  document.getElementById('favCountMenu').textContent = n ? `(${n})` : '';
+}
+function toggleFav(id){
+  const on = !isFav(id);
+  FAVORITES = on ? [...FAVORITES, id] : FAVORITES.filter(x => x !== id);
+  saveFavorites();
+  if(on) trackGoal('favorite_add');
+  if(location.pathname === '/favorites'){ render(); return; }
+  document.querySelectorAll(`[data-fav="${id}"]`).forEach(b => b.outerHTML = favButton(id, b.className.replace(/\s*\bon\b/, '').trim()));
+  showToast(on ? 'Добавлено в избранное' : 'Убрано из избранного');
+}
+// union of this browser's and the account's favorites
+function mergeAccountFavorites(){
+  if(!CURRENT_USER) return;
+  const merged = [...new Set([...(CURRENT_USER.favorites || []), ...FAVORITES])];
+  const changed = merged.length !== (CURRENT_USER.favorites || []).length;
+  FAVORITES = merged;
+  saveFavorites(changed);
+}
+document.addEventListener('click', e => {
+  const fav = e.target.closest('[data-fav]');
+  if(fav){ e.preventDefault(); e.stopPropagation(); toggleFav(fav.getAttribute('data-fav')); return; }
+  const share = e.target.closest('[data-share]');
+  if(!share) return;
+  const kind = share.getAttribute('data-share');
+  trackGoal('share_' + kind);
+  if(kind === 'copy'){
+    e.preventDefault();
+    navigator.clipboard.writeText(share.getAttribute('data-url')).then(() => showToast('Ссылка скопирована'), () => showToast(share.getAttribute('data-url')));
+  } else if(kind === 'native'){
+    e.preventDefault();
+    navigator.share({ title: share.getAttribute('data-title'), url: share.getAttribute('data-url') }).catch(() => {});
+  }
+}, true);
+
+function pageFavorites(){
+  const list = FAVORITES.map(productById).filter(Boolean);
+  return `
+  <section class="block" style="padding-top:44px;">
+    <div class="wrap">
+      <div class="section-head"><div><h2>Избранное</h2><p>${list.length ? 'Товары, которые вы отложили' : ''}</p></div></div>
+      ${list.length ? `<div class="product-grid">${list.map(productCard).join('')}</div>`
+        : `<p style="color:var(--ink-soft);">Здесь пока пусто. Нажмите ♡ на товаре, чтобы отложить его, — <a href="/catalog" style="text-decoration:underline;">перейти в каталог</a>.</p>`}
+    </div>
+  </section>`;
+}
+
+// Share a product: VK, Telegram, WhatsApp, copy link; the phone's own share sheet where available
+function shareRow(p){
+  const url = SITE_ORIGIN + '/product/' + p.id;
+  const text = p.name + ' — Two Boots';
+  const u = encodeURIComponent(url), t = encodeURIComponent(text);
+  return `<div class="share-row"><span>Поделиться:</span>
+    ${navigator.share ? `<button type="button" data-share="native" data-url="${url}" data-title="${escText(text)}">📤 Отправить</button>` : ''}
+    <a href="https://vk.com/share.php?url=${u}&title=${t}" target="_blank" rel="noopener" data-share="vk">ВКонтакте</a>
+    <a href="https://t.me/share/url?url=${u}&text=${t}" target="_blank" rel="noopener" data-share="telegram">Telegram</a>
+    <a href="https://wa.me/?text=${encodeURIComponent(text + ' ' + url)}" target="_blank" rel="noopener" data-share="whatsapp">WhatsApp</a>
+    <button type="button" data-share="copy" data-url="${url}">Скопировать ссылку</button>
+  </div>`;
 }
 
 function cartCount(){ return cart.reduce((s,l)=>s+l.qty,0); }
@@ -1026,6 +1143,10 @@ let RESUME_CHECKOUT = false; // came to /account from "Оформить зака
 // take them straight back to it instead of leaving them on the account page.
 function afterSignIn(user, message){
   CURRENT_USER = user;
+  adoptAccountCart();
+  saveCart(); // a cart filled before signing in now goes to the account
+  mergeAccountFavorites();
+  updateCartUI();
   if(RESUME_CHECKOUT && cart.length){
     RESUME_CHECKOUT = false;
     navigate('/catalog');
@@ -1193,6 +1314,7 @@ function productCard(p){
   const hasDiscount = !!p.discountPercent;
   const newPrice = effectivePrice(p);
   return `<div class="product-card">
+    ${favButton(p.id, 'fav-btn')}
     <a class="card-link" href="/product/${p.id}">
       <div class="product-media">
         ${hasDiscount ? `<span class="discount-badge">−${p.discountPercent}%</span>` : ''}
@@ -1572,7 +1694,9 @@ function pageProduct(id){
             <button class="btn btn-ghost" id="pdpBuyOneClick">Купить в 1 клик</button>` : `
             <button class="btn btn-primary" disabled style="opacity:.5;cursor:not-allowed;">Нет в наличии</button>
             `}
+            ${favButton(p.id, 'fav-inline btn btn-ghost')}
           </div>
+          ${shareRow(p)}
           ${isOrderable(p) ? '' : `
           <form id="restockForm" class="contact-card" style="margin-top:14px;max-width:460px;">
             <div style="font-weight:700;margin-bottom:10px;">Сообщить о поступлении</div>
@@ -1752,7 +1876,7 @@ function pageContact(){
 /* ============ Legal pages ============ */
 // Who processes personal data (152-ФЗ "оператор"). Shown in the privacy policy and the consent text.
 const OPERATOR_NAME = 'Иванов Антон Александрович';
-const DOCS_DATE = '28 сентября 2026 г.';
+const DOCS_DATE = '11 октября 2026 г.';
 
 // Required, never pre-checked. Links open in a new tab so the half-filled form survives.
 function consentField(id){
@@ -1807,7 +1931,7 @@ function pagePrivacy(){
       <ul>
         <li>имя или ФИО, номер телефона, email;</li>
         <li>город и адрес доставки — если вы указали их в профиле;</li>
-        <li>состав и история заказов, текст сообщений через форму обратной связи;</li>
+        <li>состав и история заказов, корзина и избранное в личном кабинете, текст сообщений через форму обратной связи;</li>
         <li>технические данные: cookie, IP-адрес, сведения о браузере и устройстве, действия на сайте (через сервис Яндекс.Метрика).</li>
       </ul>
 
@@ -1817,6 +1941,8 @@ function pagePrivacy(){
         <li>приём и выполнение заказов, связь по заказу, доставка;</li>
         <li>ответы на обращения;</li>
         <li>письма о статусе заказа;</li>
+        <li>напоминания о товарах, оставленных в корзине, и новости магазина — только если вы отдельно отметили это при регистрации или в профиле; отказаться можно в профиле или по ссылке в любом таком письме;</li>
+        <li>просьба оценить купленный товар — одно письмо после заказа, от него тоже можно отписаться по ссылке в письме;</li>
         <li>анализ посещаемости и улучшение сайта.</li>
       </ul>
 
@@ -1907,6 +2033,7 @@ function pageAccount(){
               <div class="field"><label for="rg-city">Город</label><input id="rg-city"></div>
               <div class="field"><label for="rg-address">Адрес</label><input id="rg-address"></div>
               ${consentField('rg-consent')}
+              <label class="consent-check"><input type="checkbox" id="rg-marketing"><span>Присылать напоминания о товарах в корзине и новости магазина (необязательно, отписаться можно в любой момент)</span></label>
               <div id="registerErr"></div>
               <button type="submit" class="btn btn-primary btn-block">Зарегистрироваться</button>
             </form>
@@ -1937,6 +2064,7 @@ function pageAccount(){
             <div class="field"><label for="pf-phone">Телефон</label><input id="pf-phone" type="tel" value="${escAttr(CURRENT_USER.phone)}" required></div>
             <div class="field"><label for="pf-city">Город</label><input id="pf-city" value="${escAttr(CURRENT_USER.city)}"></div>
             <div class="field"><label for="pf-address">Адрес</label><input id="pf-address" value="${escAttr(CURRENT_USER.address)}"></div>
+            <label class="consent-check"><input type="checkbox" id="pf-marketing" ${CURRENT_USER.marketing ? 'checked' : ''}><span>Присылать напоминания о товарах в корзине, просьбы оценить покупку и новости магазина</span></label>
             <div id="profileMsg"></div>
             <button type="submit" class="btn btn-primary">Сохранить</button>
           </form>
@@ -2145,6 +2273,9 @@ function render(){
   } else if(path === '/consent'){
     html = pageConsent();
     setMeta('Согласие на обработку персональных данных — Two Boots');
+  } else if(path === '/favorites'){
+    html = pageFavorites();
+    setMeta('Избранное — Two Boots');
   } else if(path === '/blog'){
     html = pageBlog();
     setMeta('Статьи — Two Boots', 'Советы для фигуристов и родителей: как выбрать и ухаживать за экипировкой, что взять на тренировки и соревнования.');
@@ -2397,6 +2528,7 @@ function bindPageEvents(path, params){
               city: document.getElementById('rg-city').value,
               address: document.getElementById('rg-address').value,
               consent: document.getElementById('rg-consent').checked,
+              marketing: document.getElementById('rg-marketing').checked,
             })
           });
           const data = await readJson(res);
@@ -2436,6 +2568,7 @@ function bindPageEvents(path, params){
               phone: document.getElementById('pf-phone').value,
               city: document.getElementById('pf-city').value,
               address: document.getElementById('pf-address').value,
+              marketing: document.getElementById('pf-marketing').checked,
             })
           });
           const data = await res.json();
@@ -2531,8 +2664,18 @@ async function readJson(res){
   app.innerHTML = `<section class="block"><div class="wrap"><p style="color:var(--ink-soft);">Загрузка каталога…</p></div></section>`;
   await Promise.all([loadData(), loadMe()]);
   restoreCart();
+  adoptAccountCart();
+  mergeAccountFavorites();
+  updateFavBadge();
   updateCartUI();
   render();
+  // the abandoned-cart email links to /?cart=1
+  const qs = new URLSearchParams(location.search);
+  if(qs.get('cart')){
+    qs.delete('cart');
+    history.replaceState(null, '', location.pathname + (qs.toString() ? '?' + qs : ''));
+    if(cart.length) openCart();
+  }
 })();
 </script>
 </body>

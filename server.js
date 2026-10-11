@@ -508,8 +508,44 @@ function signIn(req, res, user) {
 }
 
 function safeUser(u) {
-  return { id: u.id, email: u.email, name: u.name, phone: u.phone, city: u.city, address: u.address, consentAt: u.consentAt || null };
+  return {
+    id: u.id, email: u.email, name: u.name, phone: u.phone, city: u.city, address: u.address, consentAt: u.consentAt || null,
+    marketing: !!u.marketingConsentAt && !u.noEmails,
+    favorites: u.favorites || [],
+    cart: (u.cart && u.cart.items) || [],
+  };
 }
+
+// Cart lines as the storefront sends them: product id, quantity, chosen size
+function cleanCartItems(items) {
+  return (Array.isArray(items) ? items : []).slice(0, 50).map(l => ({
+    id: String((l && l.id) || '').slice(0, 80),
+    qty: Math.max(1, Math.min(99, parseInt(l && l.qty, 10) || 1)),
+    size: l && l.size ? String(l.size).slice(0, 40) : null,
+  })).filter(l => l.id);
+}
+
+/* ===== Optional emails: unsubscribe link =====
+   Reminders (abandoned cart, review requests) carry a link that turns all of them off.
+   The link is signed with SESSION_SECRET, so nobody can unsubscribe someone else. */
+function unsubscribeToken(userId) {
+  return crypto.createHmac('sha256', SESSION_SECRET).update('unsubscribe:' + userId).digest('hex').slice(0, 32);
+}
+function unsubscribeUrl(user) {
+  return `${SITE_ORIGIN}/unsubscribe?u=${encodeURIComponent(user.id)}&t=${unsubscribeToken(user.id)}`;
+}
+app.get('/unsubscribe', (req, res) => {
+  const id = String(req.query.u || ''), token = String(req.query.t || '');
+  const expected = unsubscribeToken(id);
+  const store = readStore();
+  const user = token.length === expected.length && crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expected)) && store.users.find(u => u.id === id);
+  if (user) { user.noEmails = true; delete user.marketingConsentAt; writeStore(store); }
+  res.set('Cache-Control', 'no-store').type('html').send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<title>Отписка — Two Boots</title><body style="font-family:-apple-system,Segoe UI,Arial,sans-serif;max-width:520px;margin:80px auto;padding:0 20px;color:#0F161D;">
+<h1 style="font-size:1.4rem;">${user ? 'Вы отписались' : 'Ссылка недействительна'}</h1>
+<p>${user ? 'Больше не будем присылать напоминания о корзине и просьбы оставить отзыв. Письма о ваших заказах (подтверждение, статус, трек-номер) будут приходить как обычно.' : 'Возможно, ссылка скопировалась не полностью. Отписаться можно и в личном кабинете, во вкладке «Профиль».'}</p>
+<p><a href="/" style="color:#FF4B2B;">Вернуться в магазин</a></p></body>`);
+});
 
 /* ===== Public data API ===== */
 app.get('/api/data', (req, res) => {
@@ -884,6 +920,8 @@ app.post('/api/register', registerLimiter, (req, res) => {
     passwordHash: hashPassword(password),
     name, phone: phone || '', city: city || '', address: address || '',
     consentAt: new Date().toISOString(),
+    // separate, optional consent to reminders and news (38-ФЗ «О рекламе»)
+    ...(req.body.marketing === true ? { marketingConsentAt: new Date().toISOString() } : {}),
     createdAt: new Date().toISOString(),
   };
   store.users.push(user);
@@ -976,8 +1014,37 @@ app.put('/api/me', requireUser, (req, res) => {
   if (phone !== undefined) user.phone = phone;
   if (city !== undefined) user.city = city;
   if (address !== undefined) user.address = address;
+  if (req.body.marketing === true) { user.marketingConsentAt = user.marketingConsentAt || new Date().toISOString(); delete user.noEmails; }
+  if (req.body.marketing === false) { delete user.marketingConsentAt; user.noEmails = true; }
   writeStore(store);
   res.json({ user: safeUser(user) });
+});
+
+// The cart of a signed-in customer is kept on the server too: it follows them to other
+// devices and lets the shop remind them about it (only if they agreed to reminders).
+app.put('/api/cart', requireUser, (req, res) => {
+  const store = readStore();
+  const user = store.users.find(u => u.id === req.session.userId);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  const items = cleanCartItems((req.body || {}).items);
+  const same = user.cart && JSON.stringify(user.cart.items) === JSON.stringify(items);
+  if (!same) {
+    if (items.length) user.cart = { items, updatedAt: new Date().toISOString() };
+    else delete user.cart;
+    writeStore(store);
+  }
+  res.json({ ok: true });
+});
+
+app.put('/api/favorites', requireUser, (req, res) => {
+  const store = readStore();
+  const user = store.users.find(u => u.id === req.session.userId);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  const ids = [...new Set((Array.isArray((req.body || {}).ids) ? req.body.ids : []).map(String))]
+    .filter(id => store.products.some(p => p.id === id)).slice(0, 200);
+  if (ids.length) user.favorites = ids; else delete user.favorites;
+  writeStore(store);
+  res.json({ favorites: ids });
 });
 
 /* ===== Pricing & promo codes ===== */
@@ -1122,6 +1189,7 @@ app.post('/api/orders', orderLimiter, customerOrderLimiter, requireUser, (req, r
     createdAt: new Date().toISOString(),
   };
   store.orders.push(order);
+  delete user.cart;
   writeStore(store);
   sendOrderConfirmationEmail(order, user);
   notifyOwnerNewOrder(order);
@@ -1740,6 +1808,43 @@ async function runDailyBackup() {
   }
 }
 setInterval(runDailyBackup, 30 * 60 * 1000);
+
+/* ===== Abandoned cart reminder =====
+   One email, 3 hours after a signed-in customer last changed a cart they didn't order —
+   only to those who ticked «напоминания и новости», never twice for the same cart. */
+const CART_REMIND_AFTER_MS = 3 * 3600 * 1000;
+const CART_REMIND_UNTIL_MS = 7 * 24 * 3600 * 1000;
+function sendCartReminders(now = Date.now()) {
+  const store = readStore();
+  let sent = 0;
+  for (const user of store.users) {
+    const c = user.cart;
+    if (!c || !c.items.length || c.remindedAt || !user.marketingConsentAt || user.noEmails) continue;
+    const age = now - new Date(c.updatedAt).getTime();
+    if (age < CART_REMIND_AFTER_MS || age > CART_REMIND_UNTIL_MS) continue;
+    if (store.orders.some(o => o.userId === user.id && o.createdAt > c.updatedAt)) continue;
+    const lines = c.items.map(l => {
+      const p = store.products.find(x => x.id === l.id && !x.hidden && x.stock !== 'out');
+      return p && `${p.name}${l.size ? ' (' + l.size + ')' : ''} — ${l.qty} шт.`;
+    }).filter(Boolean);
+    c.remindedAt = new Date(now).toISOString();
+    if (!lines.length) continue;
+    sent++;
+    if (mailTransport) mailTransport.sendMail({
+      from: MAIL_FROM,
+      to: user.email,
+      subject: 'Вы оставили товары в корзине — Two Boots',
+      text: `Здравствуйте${user.name ? ', ' + user.name : ''}!\n\nВ вашей корзине остались товары:\n${lines.join('\n')}\n\nОформить заказ: ${SITE_ORIGIN}/?cart=1\n\nЕсли есть вопросы по размеру или доставке — просто ответьте на это письмо или позвоните: +7 926 349-75-86.\n\nНе хотите получать напоминания? Отписаться: ${unsubscribeUrl(user)}`,
+    }).catch(err => console.error('Не удалось отправить напоминание о корзине:', err.message));
+  }
+  writeStore(store);
+  return sent;
+}
+setInterval(() => { try { sendCartReminders(); } catch (e) { console.error('Напоминания о корзине:', e.message); } }, 15 * 60 * 1000).unref();
+// Lets the smoke tests run the reminder job at a chosen moment instead of waiting hours.
+if (process.env.NODE_ENV === 'test') {
+  app.post('/api/test/run-reminders', (req, res) => res.json({ cart: sendCartReminders(Date.now() + Number((req.body || {}).shiftMs || 0)) }));
+}
 setTimeout(runDailyBackup, 60 * 1000);
 
 app.get('/api/admin/backups', requireSuperAdmin, (req, res) => {
@@ -2157,6 +2262,7 @@ function pageSeo(pathname, query) {
     '/privacy': 'Политика конфиденциальности — Two Boots', '/consent': 'Согласие на обработку персональных данных — Two Boots',
   };
   if (staticTitles[pathname]) return { title: staticTitles[pathname], url };
+  if (pathname === '/favorites') return { title: 'Избранное — Two Boots', url, noindex: true };
   if (pathname === '/blog') {
     const list = publishedArticles(store.articles);
     if (!list.length) return { status: 404, title: 'Страница не найдена — Two Boots', url };
