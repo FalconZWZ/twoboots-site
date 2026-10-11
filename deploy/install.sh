@@ -103,6 +103,8 @@ SESSION_SECRET=$(openssl rand -hex 32)
 # TELEGRAM_CHAT_ID="..."
 # BOTORDER_URL="..."
 # BOTORDER_SECRET="..."
+# YOOKASSA_SHOP_ID="..."        — онлайн-оплата, см. deploy/README.md
+# YOOKASSA_SECRET_KEY="..."
 CONF
   chmod 600 "$ENV_FILE"
 fi
