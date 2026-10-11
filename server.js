@@ -612,6 +612,7 @@ app.get('/api/data', (req, res) => {
   res.json({
     categories,
     categoryContent: publicCategoryContent(categories, categoryContent),
+    payments: { online: paymentsEnabled() },
     deliveryMethods: deliveryMethods.filter(m => m.enabled).map(publicDeliveryMethod),
     articles: publishedArticles(articles).map(articleSummary),
     products: products.filter(p => !p.hidden).map(publicProduct(ratings)),
@@ -1339,7 +1340,7 @@ app.get('/api/orders', requireUser, (req, res) => {
   res.json({ orders });
 });
 
-app.post('/api/orders', orderLimiter, customerOrderLimiter, requireUser, (req, res) => {
+app.post('/api/orders', orderLimiter, customerOrderLimiter, requireUser, async (req, res) => {
   const { items } = req.body || {};
   if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'Корзина пуста' });
   const store = readStore();
@@ -1414,6 +1415,7 @@ app.post('/api/orders', orderLimiter, customerOrderLimiter, requireUser, (req, r
     city,
     address,
     ...(customerComment ? { customerComment } : {}),
+    ...(req.body.payOnline === true && paymentsEnabled() ? { payment: { method: 'online', status: 'new' } } : {}),
     createdAt: new Date().toISOString(),
   };
   store.orders.push(order);
@@ -1425,6 +1427,12 @@ app.post('/api/orders', orderLimiter, customerOrderLimiter, requireUser, (req, r
   notifyLowStock(low);
   sendOrderConfirmationEmail(order, user);
   notifyOwnerNewOrder(order);
+  // online payment: send the customer straight to YooKassa; if that fails the order stays
+  // and can be paid later from the account
+  if (order.payment && order.total > 0) {
+    try { return res.json({ order, paymentUrl: await startPayment(order.id) }); }
+    catch (e) { console.error('Оплата заказа:', e.message); return res.json({ order, paymentError: true }); }
+  }
   res.json({ order });
 });
 
@@ -1437,6 +1445,8 @@ app.patch('/api/orders/:id/cancel', requireUser, (req, res) => {
   if (!CUSTOMER_CANCELLABLE_STATUSES.includes(order.status)) {
     return res.status(400).json({ error: 'Этот заказ уже нельзя отменить' });
   }
+  // a paid order is cancelled by the manager, who also returns the money
+  if (order.paidAt) return res.status(400).json({ error: 'Заказ уже оплачен — чтобы отменить его и вернуть деньги, позвоните нам: +7 926 349-75-86' });
   order.status = 'cancelled';
   setOrderStatusStock(store, order, 'cancelled');
   setOrderGiftHold(store, order, 'cancelled');
@@ -1553,6 +1563,106 @@ app.put('/api/admin/delivery-methods', requireAdmin, (req, res) => {
   store.deliveryMethods = methods;
   writeStore(store);
   res.json({ methods });
+});
+
+/* ===== Online payment: YooKassa =====
+   Turned on by YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY (ЮKassa → Интеграция → Ключи API).
+   The customer is sent to YooKassa's page (card, SBP, SberPay…) and comes back to their
+   account. Whether an order is paid is always decided by asking YooKassa itself: the webhook
+   (HTTP notification to /api/payments/yookassa) only says «look at payment X», so a forged
+   notification can't mark anything paid. Paid certificates are issued automatically.
+   Receipts (54-ФЗ): for the self-employed YooKassa sends them to «Мой налог» by itself. */
+const YK_SHOP = process.env.YOOKASSA_SHOP_ID || '';
+const YK_SECRET = process.env.YOOKASSA_SECRET_KEY || '';
+const YK_API = (process.env.YOOKASSA_API_URL || 'https://api.yookassa.ru/v3').replace(/\/$/, '');
+const paymentsEnabled = () => !!(YK_SHOP && YK_SECRET);
+
+async function yookassa(method, pathPart, body, idempotenceKey) {
+  const res = await fetch(YK_API + pathPart, {
+    method,
+    headers: {
+      Authorization: 'Basic ' + Buffer.from(`${YK_SHOP}:${YK_SECRET}`).toString('base64'),
+      'Content-Type': 'application/json',
+      ...(idempotenceKey ? { 'Idempotence-Key': idempotenceKey } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(15000),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`ЮKassa ${res.status}: ${data.description || data.code || 'ошибка'}`);
+  return data;
+}
+
+// Creates a payment for the order's total and returns the page to send the customer to.
+async function startPayment(orderId) {
+  const store = readStore();
+  const order = store.orders.find(o => o.id === orderId);
+  if (!order) throw new Error('Заказ не найден');
+  const payment = await yookassa('POST', '/payments', {
+    amount: { value: order.total.toFixed(2), currency: 'RUB' },
+    capture: true,
+    confirmation: { type: 'redirect', return_url: `${SITE_ORIGIN}/account?paid=${order.id}` },
+    description: `Заказ №${order.number} в Two Boots`.slice(0, 128),
+    metadata: { orderId: order.id, orderNumber: String(order.number) },
+  }, `${order.id}-${Date.now()}`);
+  const fresh = readStore();
+  const o = fresh.orders.find(x => x.id === orderId);
+  o.payment = { method: 'online', id: payment.id, status: payment.status, createdAt: new Date().toISOString() };
+  writeStore(fresh);
+  return payment.confirmation && payment.confirmation.confirmation_url;
+}
+
+// Reads the payment from YooKassa and records the result on its order (once).
+async function syncPayment(paymentId) {
+  const payment = await yookassa('GET', '/payments/' + encodeURIComponent(paymentId));
+  const store = readStore();
+  const order = store.orders.find(o => o.id === (payment.metadata || {}).orderId);
+  if (!order || !order.payment || order.payment.id !== payment.id) return null;
+  if (order.paidAt) return order;
+  order.payment.status = payment.status;
+  if (payment.status !== 'succeeded') { writeStore(store); return order; }
+  const amount = Number(payment.amount && payment.amount.value);
+  order.paidAt = new Date().toISOString();
+  order.paidAmount = amount;
+  if (order.status === 'new') order.status = 'processing';
+  const codes = issueGiftCards(store, order);
+  writeStore(store);
+  const user = order.userId && store.users.find(u => u.id === order.userId);
+  if (codes) sendGiftCodesEmail(order, (user && user.email) || order.email);
+  const text = `Оплачен онлайн заказ №${order.number}: ${amount.toLocaleString('ru-RU')} ₽\nИмя: ${order.name}\nТелефон: ${order.phone}`;
+  if (mailTransport) mailTransport.sendMail({ from: MAIL_FROM, to: OWNER_EMAIL, subject: `Оплачен заказ №${order.number} — Two Boots`, text })
+    .catch(err => console.error('Не удалось отправить уведомление об оплате:', err.message));
+  if (Math.abs(amount - order.total) > 0.01) console.warn(`Заказ №${order.number}: оплачено ${amount}, а сумма заказа ${order.total}`);
+  return order;
+}
+
+app.post('/api/payments/yookassa', async (req, res) => {
+  const id = req.body && req.body.object && req.body.object.id;
+  res.status(200).end(); // YooKassa only needs to know it was received
+  if (!paymentsEnabled() || typeof id !== 'string' || !/^[\w-]{10,60}$/.test(id)) return;
+  try { await syncPayment(id); } catch (e) { console.error('Уведомление ЮKassa:', e.message); }
+});
+
+// The customer's own order: pay it (again) online
+app.post('/api/orders/:id/pay', requireUser, async (req, res) => {
+  if (!paymentsEnabled()) return res.status(400).json({ error: 'Онлайн-оплата сейчас недоступна' });
+  const order = readStore().orders.find(o => o.id === req.params.id && o.userId === req.session.userId);
+  if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+  if (order.paidAt) return res.status(400).json({ error: 'Заказ уже оплачен' });
+  if (order.status === 'cancelled' || order.total <= 0) return res.status(400).json({ error: 'Этот заказ нельзя оплатить' });
+  try { res.json({ url: await startPayment(order.id) }); }
+  catch (e) { console.error('Оплата заказа:', e.message); res.status(502).json({ error: 'Не удалось перейти к оплате. Попробуйте ещё раз или позвоните нам.' }); }
+});
+
+// Back from YooKassa's page: check right away instead of waiting for the notification
+app.get('/api/orders/:id/payment', requireUser, async (req, res) => {
+  const order = readStore().orders.find(o => o.id === req.params.id && o.userId === req.session.userId);
+  if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+  if (paymentsEnabled() && order.payment && order.payment.id && !order.paidAt) {
+    try { await syncPayment(order.payment.id); } catch (e) { console.error('Проверка оплаты:', e.message); }
+  }
+  const fresh = readStore().orders.find(o => o.id === req.params.id);
+  res.json({ paid: !!fresh.paidAt, status: fresh.payment ? fresh.payment.status : null, order: customerOrder(fresh) });
 });
 
 app.post('/api/gift/check', promoLimiter, (req, res) => {
@@ -2684,7 +2794,7 @@ app.get('/admin/orders/:id/print', requireAdmin, (req, res) => {
 <table class="info">
 ${row('Покупатель', o.name)}${row('Телефон', o.phone)}${row('Email', o.email || (user && user.email))}
 ${row('Доставка', o.delivery ? deliveryLabel(o) + (o.deliveryPrice ? ' · ' + o.deliveryPrice : '') : '')}${row('Адрес', where)}
-${row('Трек-номер', o.trackNumber)}${row('Комментарий покупателя', o.customerComment)}${row('Заметка менеджера', o.comment)}
+${row('Оплата', o.paidAt ? `оплачен онлайн ${money(o.paidAmount)}` : o.payment && o.payment.method === 'online' ? 'выбрана онлайн-оплата — ещё не оплачен' : 'при получении / переводом')}${row('Трек-номер', o.trackNumber)}${row('Комментарий покупателя', o.customerComment)}${row('Заметка менеджера', o.comment)}
 </table>
 <table class="items"><thead><tr><th>#</th><th>Товар</th><th>Размер</th><th class="r">Кол-во</th><th class="r">Цена</th><th class="r">Сумма</th></tr></thead><tbody>
 ${o.items.map((it, i) => `<tr><td>${i + 1}</td><td>${escHtml(it.name)}</td><td>${escHtml(it.size || '—')}</td><td class="r">${it.qty}</td><td class="r">${money(it.price)}</td><td class="r">${money(it.price * it.qty)}</td></tr>`).join('')}

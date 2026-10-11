@@ -611,6 +611,7 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   .co-note{margin:-4px 0 10px;}
   .co-map{display:inline-block;font-size:.85rem;font-weight:600;color:var(--accent);margin:-2px 0 10px;text-decoration:underline;}
   .order-track{margin-top:8px;font-size:.88rem;}
+  .order-paid{margin-top:8px;font-size:.88rem;font-weight:700;color:#1c7a3a;}
   .order-track a{color:var(--accent);text-decoration:underline;}
   .co-field{margin-bottom:10px;}
   .co-field input,.co-field textarea{
@@ -863,6 +864,7 @@ let CATEGORIES = {};
 let PRODUCTS = [];
 let ARTICLES = []; // published: {slug, title, description, cover, date}
 let DELIVERY = []; // enabled delivery methods, set up by the owner in the admin
+let PAYMENTS_ONLINE = false; // the shop takes online payment (YooKassa is set up)
 let CATEGORY_CONTENT = {}; // {cat: {html, faq: [{q, a}]}} — text and FAQ under a category's products
 
 async function loadData(){
@@ -873,6 +875,7 @@ async function loadData(){
   ARTICLES = data.articles || [];
   DELIVERY = data.deliveryMethods || [];
   CATEGORY_CONTENT = data.categoryContent || {};
+  PAYMENTS_ONLINE = !!(data.payments && data.payments.online);
   document.getElementById('navBlog').hidden = !ARTICLES.length;
   document.getElementById('footerBlog').hidden = !ARTICLES.length;
   renderFooterCatalogLinks();
@@ -1252,6 +1255,15 @@ function afterSignIn(user, message){
 }
 
 let APPLIED_GIFT = null; // {code, balance}
+function paymentChoiceHtml(){
+  if(!PAYMENTS_ONLINE) return '';
+  const online = CHECKOUT.pay !== 'later';
+  return `<div class="co-title" style="margin-top:4px;">Оплата</div>
+    <div class="co-methods" style="grid-template-columns:1fr;">
+      <label class="co-method"><input type="radio" name="co-pay" value="online" ${online ? 'checked' : ''}><span><span class="co-name">Онлайн сейчас</span><span class="co-price">картой или по СБП — безопасно, через ЮKassa</span></span></label>
+      <label class="co-method"><input type="radio" name="co-pay" value="later" ${online ? '' : 'checked'}><span><span class="co-name">После звонка менеджера</span><span class="co-price">переводом или при получении</span></span></label>
+    </div>`;
+}
 function checkoutFormHtml(subtotal, discount){
   const c = CHECKOUT;
   const giftOnly = cart.every(isGiftLine);
@@ -1265,9 +1277,10 @@ function checkoutFormHtml(subtotal, discount){
     <form id="checkoutForm">
       <div class="promo-note hint" style="margin:0 0 12px;">Сертификат электронный: после подтверждения оплаты код придёт на ${escText(CURRENT_USER.email)} и появится в личном кабинете.</div>
       <div class="co-field"><textarea id="co-comment" placeholder="Комментарий: кому подарок, пожелания (необязательно)" maxlength="1000">${c.comment.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</textarea></div>
+      ${paymentChoiceHtml()}
       <div class="row"><span>Итого</span><span class="price">${fmt(subtotal)} ₽</span></div>
       ${CURRENT_USER && !CURRENT_USER.consentAt ? consentField('cart-consent') : ''}
-      <button type="submit" class="btn btn-primary btn-block">Подтвердить заказ</button>
+      <button type="submit" class="btn btn-primary btn-block">${PAYMENTS_ONLINE && CHECKOUT.pay !== 'later' ? 'Перейти к оплате' : 'Подтвердить заказ'}</button>
       <button type="button" class="co-back" id="checkoutBack">← Назад к корзине</button>
     </form>`;
   const hint = { point: 'Адрес пункта выдачи', address: m && m.carrier === 'post' ? 'Адрес с индексом' : 'Улица, дом, квартира', courier: 'Улица, дом, квартира' };
@@ -1290,9 +1303,10 @@ function checkoutFormHtml(subtotal, discount){
       ${discount ? `<div class="row promo"><span>Промокод ${APPLIED_PROMO.code}</span><span>−${fmt(discount)} ₽</span></div>` : ''}
       ${certs ? `<div class="row"><span>Сертификаты</span><span>${fmt(certs)} ₽</span></div>` : ''}
       ${m ? `<div class="row"><span>Доставка</span><span>${quote.cost ? fmt(quote.cost) + ' ₽' : escText(quote.text)}</span></div>` : ''}
+      ${goods + certs + quote.cost - giftPay > 0 ? paymentChoiceHtml() : ''}
       <div class="row"><span>Итого</span><span class="price">${fmt(goods + certs + quote.cost - giftPay)} ₽</span></div>
       ${CURRENT_USER && !CURRENT_USER.consentAt ? consentField('cart-consent') : ''}
-      <button type="submit" class="btn btn-primary btn-block">Подтвердить заказ</button>
+      <button type="submit" class="btn btn-primary btn-block">${PAYMENTS_ONLINE && CHECKOUT.pay !== 'later' && goods + certs + quote.cost - giftPay > 0 ? 'Перейти к оплате' : 'Подтвердить заказ'}</button>
       <button type="button" class="co-back" id="checkoutBack">← Назад к корзине</button>
     </form>`;
 }
@@ -1372,6 +1386,7 @@ document.getElementById('cartFoot').addEventListener('click', e => {
 document.getElementById('cartFoot').addEventListener('input', e => {
   if(!CHECKOUT) return;
   if(e.target.name === 'co-delivery'){ CHECKOUT.delivery = e.target.value; updateCartUI(); return; }
+  if(e.target.name === 'co-pay'){ CHECKOUT.pay = e.target.value; updateCartUI(); return; }
   const field = { 'co-city': 'city', 'co-address': 'address', 'co-comment': 'comment' }[e.target.id];
   if(field) CHECKOUT[field] = e.target.value;
   const mapLink = document.querySelector('#cartFoot .co-map');
@@ -1393,6 +1408,7 @@ document.getElementById('cartFoot').addEventListener('submit', async e => {
         // below the promo's minimum the code gives nothing — don't send it, or the server rejects the order
         promoCode: APPLIED_PROMO && promoDiscount(cartGoodsTotal()) ? APPLIED_PROMO.code : undefined,
         giftCode: APPLIED_GIFT && !cart.every(isGiftLine) ? APPLIED_GIFT.code : undefined,
+        payOnline: PAYMENTS_ONLINE && CHECKOUT.pay !== 'later',
         delivery: CHECKOUT.delivery, city: CHECKOUT.city, address: CHECKOUT.address, comment: CHECKOUT.comment,
       })
     });
@@ -1411,7 +1427,10 @@ document.getElementById('cartFoot').addEventListener('submit', async e => {
     closeCart();
     trackGoal('order');
     trackPurchase(data.order);
-    showToast(`Заказ №${data.order.number} оформлен — в ближайшее время с вами свяжется менеджер`);
+    if(data.paymentUrl){ trackGoal('payment_start'); location.href = data.paymentUrl; return; }
+    showToast(data.paymentError
+      ? `Заказ №${data.order.number} оформлен, но перейти к оплате не получилось — оплатите его из личного кабинета или дождитесь звонка менеджера`
+      : `Заказ №${data.order.number} оформлен — в ближайшее время с вами свяжется менеджер`);
     navigate('/account');
   }catch(err){ showToast(err.message); btn.disabled = false; }
 });
@@ -2025,7 +2044,7 @@ function pageDelivery(){
   <section class="block" style="padding-top:44px;">
     <div class="wrap doc-page">
       <h1>Доставка и оплата</h1>
-      <p>Заказ на сайте — это заявка. После оформления менеджер свяжется с вами, уточнит наличие, способ доставки и итоговую стоимость. Онлайн-оплата на сайте не принимается.</p>
+      <p>Заказ на сайте — это заявка. После оформления менеджер свяжется с вами, уточнит наличие, способ доставки и итоговую стоимость.${PAYMENTS_ONLINE ? ' Оплатить заказ можно сразу онлайн или после звонка менеджера.' : ''}</p>
 
       <h2>Доставка</h2>
       ${DELIVERY.length ? `<ul>${DELIVERY.map(m => {
@@ -2038,6 +2057,7 @@ function pageDelivery(){
 
       <h2>Оплата</h2>
       <ul>
+        ${PAYMENTS_ONLINE ? '<li><b>Онлайн при оформлении заказа</b> — картой или по СБП через ЮKassa. Данные карты вводятся на защищённой странице ЮKassa, магазин их не видит.</li>' : ''}
         <li><b>Переводом на карту или по СБП</b> — после подтверждения заказа менеджером, реквизиты он пришлёт сам.</li>
         <li><b>При получении</b> — наложенным платежом в СДЭК или на Почте (служба доставки может взять комиссию за перевод денег) либо курьеру.</li>
         <li><b>Наличными при самовывозе.</b></li>
@@ -2249,6 +2269,9 @@ function renderOrders(orders){
       ${o.promo ? `<div class="order-line"><span>Промокод ${o.promo.code}</span><span>−${fmt(o.promo.discount)} ₽</span></div>` : ''}
       ${o.delivery ? `<div class="order-line" style="color:var(--ink-soft);"><span>Доставка: ${escText(deliveryLabel(o))}${[o.city, o.address].filter(Boolean).length ? ' — ' + escText([o.city, o.address].filter(Boolean).join(', ')) : ''}</span><span>${o.deliveryCost ? fmt(o.deliveryCost) + ' ₽' : o.deliveryPrice ? escText(o.deliveryPrice) : ''}</span></div>` : ''}
       ${o.giftCard ? `<div class="order-line"><span>Сертификат ${escText(o.giftCard.code)}</span><span>−${fmt(o.giftCard.amount)} ₽</span></div>` : ''}
+      ${o.paidAt ? `<div class="order-paid">✓ Оплачен онлайн</div>`
+        : o.payment && o.payment.method === 'online' && o.status !== 'cancelled' && o.total > 0 && PAYMENTS_ONLINE
+          ? `<button class="btn btn-primary btn-sm" style="margin-top:10px;" data-pay-order="${o.id}">Оплатить онлайн ${fmt(o.total)} ₽</button>` : ''}
       ${o.giftCodes ? `<div class="gift-codes"><b>Ваши подарочные сертификаты:</b>${o.giftCodes.map(g => `<div><code>${escText(g.code)}</code> — ${fmt(g.amount)} ₽, до ${g.expiresAt.split('-').reverse().join('.')}</div>`).join('')}</div>`
         : o.items.some(it => it.gift) && o.status !== 'cancelled' ? `<div class="promo-note hint" style="margin-top:8px;">Код сертификата появится здесь и придёт на почту после подтверждения оплаты.</div>` : ''}
       ${o.trackNumber ? `<div class="order-track">Трек-номер: <b>${escText(o.trackNumber)}</b>${o.trackUrl ? ` · <a href="${escText(o.trackUrl)}" target="_blank" rel="noopener">Отследить посылку</a>` : ''}</div>` : ''}
@@ -2257,6 +2280,17 @@ function renderOrders(orders){
     </div>
   `).join('');
 
+  wrap.querySelectorAll('[data-pay-order]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try{
+        const res = await fetch(`/api/orders/${btn.getAttribute('data-pay-order')}/pay`, { method:'POST' });
+        const data = await res.json();
+        if(!res.ok) throw new Error(data.error || 'Не удалось перейти к оплате');
+        location.href = data.url;
+      }catch(e){ showToast(e.message); btn.disabled = false; }
+    });
+  });
   wrap.querySelectorAll('[data-cancel-order]').forEach(btn => {
     btn.addEventListener('click', async () => {
       if(!confirm('Отменить этот заказ?')) return;
@@ -2681,6 +2715,15 @@ function bindPageEvents(path, params){
       });
     } else {
       loadOrders();
+      const paidId = params && params.get('paid');
+      if(paidId){
+        history.replaceState(null, '', '/account');
+        fetch('/api/orders/' + encodeURIComponent(paidId) + '/payment').then(r => r.json()).then(d => {
+          if(d.paid){ trackGoal('payment_done'); showToast('Оплата прошла — спасибо! Менеджер скоро свяжется с вами.'); }
+          else showToast('Оплата не завершена. Оплатить заказ можно кнопкой в списке заказов.');
+          loadOrders();
+        }).catch(() => {});
+      }
       document.getElementById('accountLogoutBtn').addEventListener('click', async () => {
         await fetch('/api/logout', { method:'POST' });
         CURRENT_USER = null;

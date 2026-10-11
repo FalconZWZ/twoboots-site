@@ -132,3 +132,20 @@ bash /opt/twoboots/deploy/install.sh ssl dmitry-sokol@mail.ru
 `X-Webhook-Token`). Для этого в Railway у сервиса бота должна быть переменная
 `SITE_ORDERS_URL=https://www.two-boots.ru/api/bot/orders`, а `WEBHOOK_SECRET` бота должен
 совпадать с `BOTORDER_SECRET` в `/etc/twoboots.env`.
+
+## Онлайн-оплата (ЮKassa)
+
+1. Зарегистрируйтесь в [ЮKassa](https://yookassa.ru) (подходит и самозанятым) и дождитесь проверки магазина.
+2. В личном кабинете ЮKassa → **Интеграция → Ключи API** скопируйте **shopId** и **секретный ключ**.
+3. Там же, **Интеграция → HTTP-уведомления**: адрес `https://www.two-boots.ru/api/payments/yookassa`,
+   события `payment.succeeded` и `payment.canceled`.
+4. На сервере: `nano /etc/twoboots.env`, добавьте строки
+   ```
+   YOOKASSA_SHOP_ID="ваш shopId"
+   YOOKASSA_SECRET_KEY="ваш секретный ключ"
+   ```
+   и выполните `systemctl restart twoboots`.
+
+После этого при оформлении заказа появится выбор «Онлайн сейчас» / «После звонка менеджера».
+Оплаченный заказ сам переходит в «В обработке», купленные сертификаты выпускаются автоматически.
+Самозанятым чеки в «Мой налог» ЮKassa отправляет сама.

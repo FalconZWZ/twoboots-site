@@ -14,6 +14,28 @@ let server;
 let dataDir;
 const BOT_SECRET = 'test-bot-secret-0123456789';
 
+// A stand-in for the YooKassa API: creates payments and reports whatever status the test sets.
+const http = require('node:http');
+const fakeYk = { payments: {}, requests: [], port: 0 };
+const ykServer = http.createServer((req, res) => {
+  let body = '';
+  req.on('data', c => { body += c; });
+  req.on('end', () => {
+    fakeYk.requests.push({ method: req.method, url: req.url, auth: req.headers.authorization, key: req.headers['idempotence-key'], body });
+    const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+    if (req.headers.authorization !== 'Basic ' + Buffer.from('shop-1:secret-1').toString('base64')) return send(401, { description: 'bad auth' });
+    if (req.method === 'POST' && req.url === '/payments') {
+      const b = JSON.parse(body);
+      const id = 'pay-' + String(Object.keys(fakeYk.payments).length + 1).padStart(4, '0') + '-abcdef';
+      fakeYk.payments[id] = { id, status: 'pending', amount: b.amount, metadata: b.metadata, confirmation: { type: 'redirect', confirmation_url: 'https://yoomoney.example/checkout?id=' + id } };
+      return send(200, fakeYk.payments[id]);
+    }
+    const m = req.url.match(/^\/payments\/(.+)$/);
+    if (req.method === 'GET' && m && fakeYk.payments[m[1]]) return send(200, fakeYk.payments[m[1]]);
+    send(404, { description: 'not found' });
+  });
+});
+
 // Minimal cookie-keeping client: one per "browser".
 function client() {
   let cookie = '';
@@ -48,10 +70,13 @@ async function adminClient() {
 }
 
 before(async () => {
+  await new Promise(r => ykServer.listen(0, '127.0.0.1', r));
+  fakeYk.port = ykServer.address().port;
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'twoboots-test-'));
   const env = { ...process.env, PORT: String(PORT), DATA_DIR: dataDir, SESSION_SECRET: 'test-secret', BOTORDER_SECRET: BOT_SECRET, NODE_ENV: 'test',
     // every test order comes from 127.0.0.1; the per-customer limit is still the real one
-    ORDERS_PER_IP_15MIN: '1000' };
+    ORDERS_PER_IP_15MIN: '1000',
+    YOOKASSA_SHOP_ID: 'shop-1', YOOKASSA_SECRET_KEY: 'secret-1', YOOKASSA_API_URL: `http://127.0.0.1:${fakeYk.port}` };
   for (const k of ['SMTP_HOST', 'BOTORDER_URL', 'TELEGRAM_BOT_TOKEN', 'WHATSAPP_CALLMEBOT_APIKEY']) delete env[k];
   server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = '';
@@ -72,6 +97,7 @@ after(async () => {
     await exited;
   }
   fs.rmSync(dataDir, { recursive: true, force: true });
+  ykServer.close();
 });
 
 test('inline scripts in the pages parse', () => {
@@ -479,6 +505,46 @@ test('category texts and FAQ: shown, pre-rendered with FAQPage markup, editable'
   assert.equal(saved.data.content.faq.length, 1, 'empty questions are dropped');
   const ropes = (await client()('/api/data')).data.categoryContent.ropes;
   assert.match(ropes.html, /Новый текст &lt;script&gt;/);
+});
+
+test('online payment: redirect to YooKassa, paid only when YooKassa says so, certificates issued', async () => {
+  assert.equal((await client()('/api/data')).data.payments.online, true);
+  const buyer = client();
+  await buyer('/api/register', { method: 'POST', body: { name: 'Оплата', email: 'pay@test.ru', password: 'secret1', phone: '+7 906 000-00-16', consent: true } });
+  const placed = await buyer('/api/orders', { method: 'POST', body: { items: [{ id: 'dry-glide', qty: 1 }], delivery: 'pickup', payOnline: true } });
+  assert.equal(placed.status, 200, JSON.stringify(placed.data));
+  assert.match(placed.data.paymentUrl, /^https:\/\/yoomoney\.example\/checkout/);
+  const created = fakeYk.requests.find(r => r.method === 'POST');
+  assert.ok(created.key, 'idempotence key sent');
+  assert.equal(JSON.parse(created.body).amount.value, '1490.00');
+  const id = placed.data.order.id;
+  const payId = Object.values(fakeYk.payments).find(p => p.metadata.orderId === id).id;
+
+  const hook = paymentId => fetch(BASE + '/api/payments/yookassa', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ event: 'payment.succeeded', object: { id: paymentId, status: 'succeeded' } }) });
+  const state = async () => (await buyer('/api/orders/' + id + '/payment')).data;
+  // a notification is only a hint: YooKassa still says "pending", so nothing is paid
+  assert.equal((await hook(payId)).status, 200);
+  assert.equal((await hook('forged-payment-0001')).status, 200);
+  assert.equal((await state()).paid, false);
+
+  fakeYk.payments[payId].status = 'succeeded';
+  await hook(payId);
+  let paid = false;
+  for (let i = 0; i < 20 && !paid; i++) { await new Promise(r => setTimeout(r, 50)); paid = (await buyer('/api/orders')).data.orders.find(o => o.id === id).paidAt !== undefined; }
+  assert.ok(paid, 'the webhook marked it paid');
+  const s = await state();
+  assert.equal(s.order.status, 'processing');
+  assert.equal(s.order.paidAmount, 1490);
+  assert.equal((await buyer(`/api/orders/${id}/cancel`, { method: 'PATCH' })).status, 400, 'a paid order is cancelled by the manager');
+  assert.equal((await buyer(`/api/orders/${id}/pay`, { method: 'POST' })).status, 400, 'already paid');
+
+  // a certificate paid online is issued without the admin
+  const gift = await buyer('/api/orders', { method: 'POST', body: { items: [{ id: 'gift-2000', qty: 1 }], payOnline: true } });
+  const giftPay = Object.values(fakeYk.payments).find(p => p.metadata.orderId === gift.data.order.id);
+  giftPay.status = 'succeeded';
+  const after = await buyer('/api/orders/' + gift.data.order.id + '/payment');
+  assert.equal(after.data.paid, true, 'checked on return from YooKassa');
+  assert.equal(after.data.order.giftCodes.length, 1);
 });
 
 test('admin: auth, promo code, stock, review moderation', async () => {
