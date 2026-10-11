@@ -1233,6 +1233,161 @@ app.get('/api/admin/stats', requireAdmin, (req, res) => {
   });
 });
 
+/* ===== Visitor counter =====
+   The site's own count for the admin: unique visitors and page views per (Moscow) day, pages,
+   traffic sources, devices and who is on the site right now. The storefront sends a beacon per
+   page shown and a ping every minute while the tab is open. No cookies and no IPs on disk:
+   a visitor is a hash of IP + browser with a salt that changes every day, so nobody can be
+   followed from one day to the next. Kept in DATA_DIR/visits.json, saved once a minute. */
+const VISITS_FILE = path.join(DATA_DIR, 'visits.json');
+const VISIT_DAYS_KEPT = 400;
+const ONLINE_WINDOW_MS = 5 * 60 * 1000;
+const BOT_UA = /bot|crawl|spider|slurp|headless|lighthouse|preview|monitor|curl|wget|python|java\//i;
+const MOBILE_UA = /mobi|android|iphone|ipad|ipod/i;
+
+function loadVisits() {
+  try {
+    const v = JSON.parse(fs.readFileSync(VISITS_FILE, 'utf8'));
+    if (v && v.days && v.today) return v;
+  } catch (e) { /* first start or unreadable — start empty */ }
+  return { days: {}, today: { day: '', salt: '', seen: [] } };
+}
+const visits = loadVisits();
+let visitorsSeenToday = new Set(visits.today.seen);
+const onlineNow = new Map(); // visitor hash → last activity, ms
+let visitsDirty = false;
+
+function saveVisits() {
+  if (!visitsDirty) return;
+  visits.today.seen = [...visitorsSeenToday];
+  const tmp = VISITS_FILE + '.tmp';
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(visits));
+    fs.renameSync(tmp, VISITS_FILE);
+    visitsDirty = false;
+  } catch (e) { console.error('Не удалось сохранить счётчик посетителей:', e.message); }
+}
+setInterval(saveVisits, 60 * 1000).unref();
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.once(signal, () => { saveVisits(); process.exit(0); });
+}
+
+function visitDay() {
+  const day = moscowDay(new Date().toISOString());
+  if (visits.today.day !== day) {
+    visits.today = { day, salt: crypto.randomBytes(16).toString('hex'), seen: [] };
+    visitorsSeenToday = new Set();
+    const oldest = new Date(Date.now() - VISIT_DAYS_KEPT * 86400000).toISOString().slice(0, 10);
+    for (const d of Object.keys(visits.days)) if (d < oldest) delete visits.days[d];
+  }
+  return visits.days[day] || (visits.days[day] = { views: 0, visitors: 0, pages: {}, sources: {}, devices: {} });
+}
+
+// Where a visitor came from, by the referring site's host
+function visitSource(ref) {
+  let host = '';
+  try { host = new URL(String(ref)).hostname.replace(/^www\./, ''); } catch (e) { return 'direct'; }
+  if (!host || host.endsWith('two-boots.ru')) return 'direct';
+  if (/(^|\.)yandex\.|(^|\.)ya\.ru$/.test(host)) return 'yandex';
+  if (/(^|\.)google\./.test(host)) return 'google';
+  if (/(^|\.)(vk\.com|vk\.ru|vkontakte\.ru)$/.test(host)) return 'vk';
+  if (/(^|\.)(t\.me|telegram\.org|web\.telegram\.org)$/.test(host)) return 'telegram';
+  if (/(^|\.)(avito\.ru)$/.test(host)) return 'avito';
+  return host.slice(0, 60);
+}
+
+// Page key: the path, plus the category for catalog pages; search text is never stored
+function visitPage(raw) {
+  let u;
+  try { u = new URL(String(raw || '/'), 'https://www.two-boots.ru'); } catch (e) { return null; }
+  if (u.origin !== 'https://www.two-boots.ru' || u.pathname.startsWith('/admin') || u.pathname.startsWith('/api/')) return null;
+  const cat = u.pathname === '/catalog' && u.searchParams.get('cat');
+  return (u.pathname + (cat ? '?cat=' + cat : '')).slice(0, 120);
+}
+
+const hitLimiter = limiter(120, 1, 'Слишком много запросов');
+app.post('/api/hit', hitLimiter, (req, res) => {
+  res.status(204).end();
+  const ua = String(req.get('user-agent') || '');
+  if (!ua || BOT_UA.test(ua) || (req.session && req.session.isAdmin)) return;
+  const body = req.body || {};
+  const stats = visitDay();
+  const visitor = crypto.createHash('sha256').update(visits.today.salt + '|' + req.ip + '|' + ua).digest('hex').slice(0, 20);
+  onlineNow.set(visitor, Date.now());
+  if (body.ping) return;
+  const page = visitPage(body.path);
+  if (!page) return;
+  stats.views++;
+  stats.pages[page] = (stats.pages[page] || 0) + 1;
+  if (!visitorsSeenToday.has(visitor)) {
+    visitorsSeenToday.add(visitor);
+    stats.visitors++;
+    const device = MOBILE_UA.test(ua) ? 'mobile' : 'desktop';
+    stats.devices[device] = (stats.devices[device] || 0) + 1;
+    const source = visitSource(body.ref);
+    stats.sources[source] = (stats.sources[source] || 0) + 1;
+  }
+  visitsDirty = true;
+});
+
+function visitorsOnline() {
+  const cutoff = Date.now() - ONLINE_WINDOW_MS;
+  for (const [k, t] of onlineNow) if (t < cutoff) onlineNow.delete(k);
+  return onlineNow.size;
+}
+
+// Human names for page keys in the admin: products and articles by title
+function visitPageLabel(key, store) {
+  const titles = { '/': 'Главная', '/catalog': 'Каталог', '/about': 'О нас', '/contact': 'Контакты', '/delivery': 'Доставка и оплата',
+    '/privacy': 'Политика конфиденциальности', '/consent': 'Согласие на обработку данных', '/blog': 'Статьи', '/cart': 'Корзина', '/account': 'Личный кабинет' };
+  if (titles[key]) return titles[key];
+  const [p, q] = key.split('?cat=');
+  if (p === '/catalog' && q) return 'Каталог: ' + (store.categories[q] || q);
+  const product = p.startsWith('/product/') && store.products.find(x => x.id === decodeURIComponent(p.slice(9)));
+  if (product) return product.name;
+  const article = p.startsWith('/blog/') && (store.articles || []).find(a => a.slug === decodeURIComponent(p.slice(6)));
+  if (article) return article.title;
+  return key;
+}
+
+app.get('/api/admin/visitors-now', requireAdmin, (req, res) => {
+  const today = visits.days[moscowDay(new Date().toISOString())] || { views: 0, visitors: 0 };
+  res.json({ online: visitorsOnline(), today: { visitors: today.visitors, views: today.views } });
+});
+
+app.get('/api/admin/visits', requireAdmin, (req, res) => {
+  const days = [7, 30, 90, 365].includes(Number(req.query.days)) ? Number(req.query.days) : 30;
+  const store = readStore();
+  const today = moscowDay(new Date().toISOString());
+  const dayList = [];
+  for (let i = 2 * days - 1; i >= 0; i--) {
+    const d = new Date(today + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() - i);
+    dayList.push(d.toISOString().slice(0, 10));
+  }
+  const prevDays = dayList.slice(0, days), curDays = dayList.slice(days);
+  const sum = (list, key) => list.reduce((s, d) => s + ((visits.days[d] || {})[key] || 0), 0);
+  const merge = key => {
+    const acc = {};
+    curDays.forEach(d => Object.entries((visits.days[d] || {})[key] || {}).forEach(([k, n]) => { acc[k] = (acc[k] || 0) + n; }));
+    return acc;
+  };
+  const orders = store.orders.filter(o => o.status !== 'cancelled' && moscowDay(o.createdAt) >= curDays[0]).length;
+  const visitors = sum(curDays, 'visitors');
+  res.json({
+    days,
+    online: visitorsOnline(),
+    since: Object.keys(visits.days).sort()[0] || null,
+    current: { visitors, views: sum(curDays, 'views'), orders, conversion: visitors ? orders / visitors : 0 },
+    previous: { visitors: sum(prevDays, 'visitors'), views: sum(prevDays, 'views') },
+    byDay: curDays.map(d => ({ date: d, visitors: (visits.days[d] || {}).visitors || 0, views: (visits.days[d] || {}).views || 0 })),
+    pages: Object.entries(merge('pages')).sort((a, b) => b[1] - a[1]).slice(0, 10)
+      .map(([key, views]) => ({ key, label: visitPageLabel(key, store), views })),
+    sources: Object.entries(merge('sources')).sort((a, b) => b[1] - a[1]).map(([source, visitors]) => ({ source, visitors })),
+    devices: merge('devices'),
+  });
+});
+
 /* ===== Admin: articles ===== */
 function parseArticleBody(body) {
   return {

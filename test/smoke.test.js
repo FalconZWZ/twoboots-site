@@ -62,8 +62,13 @@ before(async () => {
   throw new Error('Server did not start:\n' + log);
 });
 
-after(() => {
-  if (server) server.kill();
+after(async () => {
+  if (server && server.exitCode === null) {
+    // the server saves its visitor counter on shutdown — let it finish before removing the dir
+    const exited = new Promise(r => server.once('exit', r));
+    server.kill();
+    await exited;
+  }
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
@@ -204,6 +209,32 @@ test('admin: the factory password must be changed before anything else', async (
   assert.equal((await admin('/api/admin/admins/admin/password', { method: 'PUT', body: { password: ADMIN_PASSWORD } })).status, 200);
   assert.equal((await admin('/api/admin/orders')).status, 200);
   assert.equal((await client()('/admin/login', { method: 'POST', body: { username: 'admin', password: 'changeme123' } })).status, 401);
+});
+
+test('visitor counter: counts people and pages, skips bots and admins, keeps no search text', async () => {
+  const hit = (body, headers = {}) => fetch(BASE + '/api/hit', { method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 (iPhone) Test', ...headers }, body: JSON.stringify(body) });
+  assert.equal((await hit({ path: '/', ref: 'https://yandex.ru/search/?text=чехлы' })).status, 204);
+  await hit({ path: '/catalog?cat=bags&q=секрет' });
+  await hit({ ping: true });
+  await hit({ path: '/' }, { 'User-Agent': 'Mozilla/5.0 (compatible; YandexBot/3.0)' });
+  await hit({ path: '/admin' });
+
+  const admin = await adminClient();
+  // the admin's own browsing is not counted
+  assert.equal((await admin('/api/hit', { method: 'POST', body: { path: '/about' } })).status, 204);
+
+  const v = (await admin('/api/admin/visits?days=7')).data;
+  assert.equal(v.current.visitors, 1);
+  assert.equal(v.current.views, 2);
+  assert.deepEqual(v.sources, [{ source: 'yandex', visitors: 1 }]);
+  assert.deepEqual(v.devices, { mobile: 1 });
+  assert.ok(v.pages.some(p => p.key === '/catalog?cat=bags' && /^Каталог: /.test(p.label)));
+  assert.ok(!JSON.stringify(v).includes('секрет'));
+  assert.ok(v.online >= 1);
+  assert.equal(v.byDay.length, 7);
+  const now = (await admin('/api/admin/visitors-now')).data;
+  assert.deepEqual(now.today, { visitors: 1, views: 2 });
+  assert.equal((await client()('/api/admin/visits')).status, 401);
 });
 
 test('admin: auth, promo code, stock, review moderation', async () => {
