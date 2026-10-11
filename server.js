@@ -548,6 +548,15 @@ app.get('/unsubscribe', (req, res) => {
 });
 
 /* ===== Public data API ===== */
+// The shop window never shows exact stock — only «осталось N» when 5 or fewer are left.
+const publicProduct = ratings => p => {
+  const { quantity, lowStockAlerted, ...rest } = p;
+  return {
+    ...rest,
+    ...(ratings[p.id] ? { rating: ratings[p.id] } : {}),
+    ...(quantity !== undefined && quantity <= 5 && p.stock !== 'order' ? { left: quantity } : {}),
+  };
+};
 app.get('/api/data', (req, res) => {
   const { categories, products, reviews, articles, deliveryMethods } = readStore();
   const ratings = productRatings(reviews);
@@ -555,7 +564,7 @@ app.get('/api/data', (req, res) => {
     categories,
     deliveryMethods: deliveryMethods.filter(m => m.enabled).map(publicDeliveryMethod),
     articles: publishedArticles(articles).map(articleSummary),
-    products: products.filter(p => !p.hidden).map(p => (ratings[p.id] ? { ...p, rating: ratings[p.id] } : p)),
+    products: products.filter(p => !p.hidden).map(publicProduct(ratings)),
   });
 });
 
@@ -711,6 +720,52 @@ function unitPrice(product) {
   return product.discountPercent
     ? Math.round(product.price * (1 - product.discountPercent / 100))
     : product.price;
+}
+
+/* ===== Stock quantity =====
+   A product may have quantity — how many are on the shelf (absent = not counted). A counted
+   product is «в наличии» while quantity > 0 and «нет в наличии» at 0, unless it is sold
+   «под заказ». Orders take from it, cancelling gives it back; when it drops to LOW_STOCK
+   or less, the owner gets one email until it is topped up again. */
+const LOW_STOCK = Math.max(0, Number(process.env.LOW_STOCK) || 2);
+function normQuantity(v) {
+  if (v === undefined || v === null || String(v).trim() === '') return undefined;
+  const n = Math.round(Number(String(v).replace(',', '.')));
+  return Number.isFinite(n) && n >= 0 ? Math.min(n, 1e6) : NaN;
+}
+function syncStockWithQuantity(p) {
+  if (p.quantity === undefined || p.stock === 'order') return;
+  if (p.quantity > 0) delete p.stock; else p.stock = 'out';
+  if (p.quantity > LOW_STOCK) delete p.lowStockAlerted;
+}
+// direction -1 takes an order's items from the shelf, +1 puts them back
+function moveStock(store, items, direction) {
+  const low = [];
+  for (const it of items) {
+    const p = store.products.find(x => x.id === it.id);
+    if (!p || p.quantity === undefined) continue;
+    p.quantity = Math.max(0, p.quantity + direction * it.qty);
+    syncStockWithQuantity(p);
+    if (direction < 0 && p.quantity <= LOW_STOCK && !p.lowStockAlerted) { p.lowStockAlerted = true; low.push(p); }
+  }
+  return low;
+}
+function notifyLowStock(products) {
+  if (!products.length || !mailTransport) return;
+  const text = products.map(p => `${p.name} — осталось ${p.quantity} шт.`).join('\n');
+  mailTransport.sendMail({
+    from: MAIL_FROM, to: OWNER_EMAIL,
+    subject: `Заканчивается: ${products.map(p => p.name).join(', ')} — Two Boots`,
+    text: `Товар заканчивается на складе:\n\n${text}\n\nПополнить остаток: ${SITE_ORIGIN}/admin#products`,
+  }).catch(err => console.error('Не удалось отправить уведомление об остатке:', err.message));
+}
+// Order statuses that hold stock: everything except a cancelled order. Orders placed before
+// stock was counted have no stockTaken flag and never move it.
+function setOrderStatusStock(store, order, newStatus) {
+  if (order.stockTaken === undefined) return [];
+  if (!order.stockTaken && newStatus !== 'cancelled') { order.stockTaken = true; return moveStock(store, order.items, -1); }
+  if (order.stockTaken && newStatus === 'cancelled') { order.stockTaken = false; moveStock(store, order.items, +1); }
+  return [];
 }
 
 // For uptime monitoring: 200 only if the data store (Railway volume) is readable and sane.
@@ -1070,7 +1125,21 @@ function priceItems(store, items) {
     lines.push({ id: product.id, name: product.name, size, price, qty });
     subtotal += price * qty;
   }
+  const short = stockShortage(store, lines);
+  if (short) return { error: short };
   return { lines, subtotal };
+}
+// '' if the shelf has enough of every counted product for these lines, else what is missing
+function stockShortage(store, lines) {
+  const wanted = {};
+  lines.forEach(l => { wanted[l.id] = (wanted[l.id] || 0) + l.qty; });
+  for (const [id, qty] of Object.entries(wanted)) {
+    const p = store.products.find(x => x.id === id);
+    if (p && p.quantity !== undefined && p.stock !== 'order' && qty > p.quantity) {
+      return p.quantity > 0 ? `«${p.name}» осталось только ${p.quantity} шт. — уменьшите количество` : `«${p.name}» закончился — уберите его из корзины`;
+    }
+  }
+  return '';
 }
 
 const PROMO_TYPES = ['percent', 'fixed'];
@@ -1190,7 +1259,10 @@ app.post('/api/orders', orderLimiter, customerOrderLimiter, requireUser, (req, r
   };
   store.orders.push(order);
   delete user.cart;
+  order.stockTaken = false;
+  const low = setOrderStatusStock(store, order, order.status);
   writeStore(store);
+  notifyLowStock(low);
   sendOrderConfirmationEmail(order, user);
   notifyOwnerNewOrder(order);
   res.json({ order });
@@ -1206,6 +1278,7 @@ app.patch('/api/orders/:id/cancel', requireUser, (req, res) => {
     return res.status(400).json({ error: 'Этот заказ уже нельзя отменить' });
   }
   order.status = 'cancelled';
+  setOrderStatusStock(store, order, 'cancelled');
   writeStore(store);
   notifyOwnerCancelled(order);
   res.json({ order: customerOrder(order) });
@@ -1225,6 +1298,8 @@ app.post('/api/quick-order', orderLimiter, customerOrderLimiter, (req, res) => {
   if (size === false) return res.status(400).json({ error: 'Выберите размер' });
 
   const qtyNum = Math.max(1, Math.min(99, Number(qty) || 1));
+  const short = stockShortage(store, [{ id: product.id, qty: qtyNum }]);
+  if (short) return res.status(400).json({ error: short });
   const price = unitPrice(product);
   const subtotal = price * qtyNum;
   const { promo, discount = 0, error: promoError } = applyPromo(store, req.body.promoCode, subtotal);
@@ -1247,7 +1322,10 @@ app.post('/api/quick-order', orderLimiter, customerOrderLimiter, (req, res) => {
     createdAt: new Date().toISOString(),
   };
   store.orders.push(order);
+  order.stockTaken = false;
+  const low = setOrderStatusStock(store, order, order.status);
   writeStore(store);
+  notifyLowStock(low);
   notifyOwnerNewOrder(order);
   res.json({ order });
 });
@@ -1337,7 +1415,8 @@ app.patch('/api/admin/orders/:id', requireAdmin, (req, res) => {
   const order = store.orders.find(o => o.id === req.params.id);
   if (!order) return res.status(404).json({ error: 'Заказ не найден' });
   let changed = status !== undefined && order.status !== status;
-  if (status !== undefined) order.status = status;
+  let low = [];
+  if (status !== undefined) { low = setOrderStatusStock(store, order, status); order.status = status; }
   // A new tracking number marks the order as shipped and tells the customer (with the number).
   if (trackNumber !== undefined) {
     const number = String(trackNumber).replace(/\s+/g, '').slice(0, 60);
@@ -1361,6 +1440,7 @@ app.patch('/api/admin/orders/:id', requireAdmin, (req, res) => {
     order[order.status + 'At'] = new Date().toISOString();
   }
   writeStore(store);
+  notifyLowStock(low);
   if (changed) {
     const user = order.userId && store.users.find(u => u.id === order.userId);
     sendOrderStatusEmail(order, (user && user.email) || order.email);
@@ -2034,6 +2114,7 @@ function parseProductBody(body) {
     specs,
     discountPercent: discountPercent || undefined,
     stock: normStock(body.stock),
+    quantity: normQuantity(body.quantity),
     sizes: parseSizes(body.sizes).length ? parseSizes(body.sizes) : undefined,
     related: parseRelated(body.related),
     hidden: body.hidden === 'true' || body.hidden === true || undefined,
@@ -2129,7 +2210,7 @@ app.post('/api/admin/products', requireAdmin, productUpload, async (req, res) =>
   const store = readStore();
   const data = parseProductBody(req.body);
   const invalid = !data.cat || !store.categories[data.cat] ? 'Укажите существующую категорию'
-    : !data.name ? 'Название обязательно' : null;
+    : !data.name ? 'Название обязательно' : Number.isNaN(data.quantity) ? 'Остаток — целое число от 0' : null;
   if (invalid) { uploads.discard(); return res.status(400).json({ error: invalid }); }
 
   let id = slugify(data.name);
@@ -2140,6 +2221,8 @@ app.post('/api/admin/products', requireAdmin, productUpload, async (req, res) =>
   const product = { id, ...data };
   if (!product.color) delete product.color;
   if (!product.size) delete product.size;
+  if (product.quantity === undefined) delete product.quantity;
+  syncStockWithQuantity(product);
   if (uploads.main) product.img = uploads.main;
   if (uploads.extras.length) product.images = uploads.extras;
 
@@ -2155,6 +2238,7 @@ app.put('/api/admin/products/:id', requireAdmin, productUpload, async (req, res)
   if (idx === -1) { uploads.discard(); return res.status(404).json({ error: 'Товар не найден' }); }
   const data = parseProductBody(req.body);
   if (!data.cat || !store.categories[data.cat]) { uploads.discard(); return res.status(400).json({ error: 'Укажите существующую категорию' }); }
+  if (Number.isNaN(data.quantity)) { uploads.discard(); return res.status(400).json({ error: 'Остаток — целое число от 0' }); }
 
   const existing = store.products[idx];
   if (data.related) data.related = data.related.filter(r => r !== existing.id && store.products.some(p => p.id === r));
@@ -2162,6 +2246,8 @@ app.put('/api/admin/products/:id', requireAdmin, productUpload, async (req, res)
   const updated = { ...existing, ...data };
   if (!data.color) delete updated.color;
   if (!data.size) delete updated.size;
+  if (data.quantity === undefined) { delete updated.quantity; delete updated.lowStockAlerted; }
+  syncStockWithQuantity(updated);
 
   if (uploads.main) {
     removeUpload(existing.img);
@@ -2193,8 +2279,13 @@ app.patch('/api/admin/products/:id', requireAdmin, (req, res) => {
   const store = readStore();
   const idx = store.products.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Товар не найден' });
-  const { hidden, discountPercent, stock } = req.body || {};
+  const { hidden, discountPercent, stock, quantity } = req.body || {};
   const before = { ...store.products[idx] };
+  if (quantity !== undefined) {
+    const q = normQuantity(quantity);
+    if (Number.isNaN(q)) return res.status(400).json({ error: 'Остаток — целое число от 0' });
+    if (q === undefined) { delete store.products[idx].quantity; delete store.products[idx].lowStockAlerted; } else store.products[idx].quantity = q;
+  }
   if (hidden !== undefined) {
     if (hidden) store.products[idx].hidden = true;
     else delete store.products[idx].hidden;
@@ -2208,6 +2299,7 @@ app.patch('/api/admin/products/:id', requireAdmin, (req, res) => {
     if (pct > 0) store.products[idx].discountPercent = pct;
     else delete store.products[idx].discountPercent;
   }
+  syncStockWithQuantity(store.products[idx]);
   const restockDue = takeRestockSubs(store, [[before, store.products[idx]]]);
   writeStore(store);
   sendRestockEmails(restockDue);
@@ -2242,6 +2334,164 @@ app.post('/api/admin/products/bulk', requireAdmin, (req, res) => {
   writeStore(store);
   sendRestockEmails(restockDue);
   res.json({ ok: true, count });
+});
+
+/* ===== Catalog in Excel: export and import =====
+   CSV with «;» and a UTF-8 BOM, so Russian Excel opens it straight away with columns and
+   Cyrillic intact. Import only updates products that already exist (matched by ID): price,
+   discount, stock quantity, availability, visibility and size options. Excel may save the
+   file back in Windows-1251 and with «,» or tabs — both are understood. */
+const STOCK_WORDS = { '': 'в наличии', order: 'под заказ', out: 'нет в наличии' };
+const CATALOG_COLUMNS = ['ID', 'Название', 'Категория', 'Цена', 'Скидка, %', 'Остаток', 'Наличие', 'Скрыт', 'Размеры'];
+function csvCell(v) {
+  let str = String(v == null ? '' : v);
+  if (/^[=+\-@\t\r]/.test(str)) str = "'" + str;
+  return '"' + str.replace(/"/g, '""') + '"';
+}
+app.get('/api/admin/products/export.csv', requireAdmin, (req, res) => {
+  const store = readStore();
+  const rows = store.products.map(p => [
+    p.id, p.name, store.categories[p.cat] || p.cat, p.price, p.discountPercent || 0,
+    p.quantity === undefined ? '' : p.quantity, STOCK_WORDS[p.stock || ''], p.hidden ? 'да' : 'нет', (p.sizes || []).join(', '),
+  ]);
+  const csv = '\ufeff' + [CATALOG_COLUMNS, ...rows].map(r => r.map(csvCell).join(';')).join('\r\n');
+  res.attachment(`two-boots-catalog-${new Date().toISOString().slice(0, 10)}.csv`);
+  res.type('text/csv; charset=utf-8').send(csv);
+});
+
+function decodeSpreadsheet(buf) {
+  let text = buf.toString('utf8');
+  if (text.includes('\ufffd')) text = new TextDecoder('windows-1251').decode(buf);
+  return text.replace(/^\ufeff/, '');
+}
+function parseCsv(text) {
+  const firstLine = text.split(/\r?\n/, 1)[0];
+  const delim = [';', '\t', ','].sort((a, b) => firstLine.split(b).length - firstLine.split(a).length)[0];
+  const rows = [];
+  let row = [], cell = '', quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+      else if (ch === '"') quoted = false;
+      else cell += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === delim) { row.push(cell); cell = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      row.push(cell); rows.push(row); row = []; cell = '';
+    } else cell += ch;
+  }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+  return rows.filter(r => r.some(c => c.trim()));
+}
+const yes = v => /^(да|yes|1|true|скрыт)$/i.test(String(v).trim());
+const catalogUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
+
+app.post('/api/admin/products/import', requireAdmin, catalogUpload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Выберите файл .csv' });
+  const rows = parseCsv(decodeSpreadsheet(req.file.buffer));
+  if (rows.length < 2) return res.status(400).json({ error: 'В файле нет строк с товарами' });
+  // headers are matched loosely: «Скидка, %», «скидка %» and «Скидка» are the same column
+  const key = h => String(h).toLowerCase().replace(/[^a-zа-яё0-9]/g, '');
+  const head = rows[0].map(key);
+  const col = name => head.indexOf(key(name));
+  if (col('ID') === -1) return res.status(400).json({ error: 'Нет столбца «ID» — выгрузите каталог кнопкой «Скачать» и правьте этот файл' });
+  const dryRun = req.query.dryRun === '1';
+  const store = readStore();
+  const changes = [], errors = [], pairs = [];
+  rows.slice(1).forEach((r, i) => {
+    const line = i + 2;
+    const get = name => { const c = col(name); return c === -1 ? undefined : String(r[c] == null ? '' : r[c]).trim().replace(/^'/, ''); };
+    const id = get('ID');
+    const p = store.products.find(x => x.id === id);
+    if (!p) { errors.push(`Строка ${line}: товар с ID «${id}» не найден`); return; }
+    const before = { ...p };
+    const diff = [];
+    const num = v => Number(String(v).replace(/\s/g, '').replace(',', '.'));
+    const price = get('Цена');
+    if (price !== undefined && price !== '') {
+      const n = Math.round(num(price));
+      if (!(n >= 0)) { errors.push(`Строка ${line}: цена «${price}» — не число`); return; }
+      if (n !== p.price) { diff.push(`цена ${p.price} → ${n}`); p.price = n; }
+    }
+    const disc = get('Скидка, %');
+    if (disc !== undefined) {
+      const n = disc === '' ? 0 : Math.round(num(disc));
+      if (!(n >= 0 && n <= 95)) { errors.push(`Строка ${line}: скидка «${disc}» — от 0 до 95`); return; }
+      if (n !== (p.discountPercent || 0)) { diff.push(`скидка ${p.discountPercent || 0}% → ${n}%`); if (n) p.discountPercent = n; else delete p.discountPercent; }
+    }
+    const stockWord = get('Наличие');
+    if (stockWord !== undefined) {
+      const key = Object.keys(STOCK_WORDS).find(k => STOCK_WORDS[k] === stockWord.toLowerCase()) ?? (stockWord === '' ? '' : null);
+      if (key === null) { errors.push(`Строка ${line}: наличие «${stockWord}» — пишите «в наличии», «под заказ» или «нет в наличии»`); return; }
+      if (key !== (p.stock || '')) { diff.push(`наличие: ${STOCK_WORDS[key]}`); if (key) p.stock = key; else delete p.stock; }
+    }
+    const qty = get('Остаток');
+    if (qty !== undefined) {
+      const q = normQuantity(qty);
+      if (Number.isNaN(q)) { errors.push(`Строка ${line}: остаток «${qty}» — целое число от 0 или пусто`); return; }
+      if (q !== p.quantity) { diff.push(`остаток ${p.quantity ?? '—'} → ${q ?? '—'}`); if (q === undefined) { delete p.quantity; delete p.lowStockAlerted; } else p.quantity = q; }
+    }
+    const hidden = get('Скрыт');
+    if (hidden !== undefined && yes(hidden) !== !!p.hidden) { diff.push(yes(hidden) ? 'скрыт' : 'показан'); if (yes(hidden)) p.hidden = true; else delete p.hidden; }
+    const sizes = get('Размеры');
+    if (sizes !== undefined) {
+      const list = parseSizes(sizes);
+      if (list.join('|') !== (p.sizes || []).join('|')) { diff.push(`размеры: ${list.join(', ') || 'нет'}`); if (list.length) p.sizes = list; else delete p.sizes; }
+    }
+    syncStockWithQuantity(p);
+    if (diff.length) { changes.push({ id, name: p.name, changes: diff }); pairs.push([before, p]); }
+  });
+  if (!dryRun && changes.length) {
+    const restockDue = takeRestockSubs(store, pairs);
+    writeStore(store);
+    sendRestockEmails(restockDue);
+  }
+  res.json({ dryRun, changes, errors, products: store.products.length });
+});
+
+/* ===== Printable order ===== */
+app.get('/admin/orders/:id/print', requireAdmin, (req, res) => {
+  const store = readStore();
+  const o = store.orders.find(x => x.id === req.params.id);
+  if (!o) return res.status(404).send('Заказ не найден');
+  const user = o.userId && store.users.find(u => u.id === o.userId);
+  const money = n => (n || 0).toLocaleString('ru-RU') + ' ₽';
+  const date = new Date(o.createdAt).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const where = [o.city, o.address].filter(Boolean).join(', ');
+  const row = (k, v) => v ? `<tr><th>${k}</th><td>${escHtml(v)}</td></tr>` : '';
+  res.set('Cache-Control', 'no-store').type('html').send(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Заказ №${o.number} — Two Boots</title>
+<style>
+  body{font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#111;margin:28px;font-size:14px;}
+  h1{font-size:22px;margin:0 0 4px;} .muted{color:#555;}
+  .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:10px;margin-bottom:16px;}
+  table{border-collapse:collapse;width:100%;margin-bottom:16px;}
+  .info th{text-align:left;width:150px;font-weight:600;color:#444;vertical-align:top;padding:3px 8px 3px 0;}
+  .info td{padding:3px 0;}
+  .items th,.items td{border:1px solid #999;padding:6px 8px;text-align:left;}
+  .items th{background:#eee;} .r{text-align:right!important;white-space:nowrap;}
+  .total td{font-weight:700;font-size:16px;}
+  .checks{display:flex;gap:28px;margin-top:22px;font-size:15px;} .checks span::before{content:'';display:inline-block;width:14px;height:14px;border:1.5px solid #111;margin-right:8px;vertical-align:-2px;}
+  .no-print{margin-bottom:16px;} @media print{.no-print{display:none;} body{margin:12mm;}}
+</style></head><body>
+<div class="no-print"><button onclick="print()">Печать</button></div>
+<div class="head"><div><h1>Заказ №${o.number}</h1><div class="muted">${date}${o.quick ? ' · заказ в 1 клик' : ''}</div></div>
+<div style="text-align:right;"><b>Two Boots</b><br>www.two-boots.ru<br>+7 (926) 349-75-86</div></div>
+<table class="info">
+${row('Покупатель', o.name)}${row('Телефон', o.phone)}${row('Email', o.email || (user && user.email))}
+${row('Доставка', o.delivery ? deliveryLabel(o) + (o.deliveryPrice ? ' · ' + o.deliveryPrice : '') : '')}${row('Адрес', where)}
+${row('Трек-номер', o.trackNumber)}${row('Комментарий покупателя', o.customerComment)}${row('Заметка менеджера', o.comment)}
+</table>
+<table class="items"><thead><tr><th>#</th><th>Товар</th><th>Размер</th><th class="r">Кол-во</th><th class="r">Цена</th><th class="r">Сумма</th></tr></thead><tbody>
+${o.items.map((it, i) => `<tr><td>${i + 1}</td><td>${escHtml(it.name)}</td><td>${escHtml(it.size || '—')}</td><td class="r">${it.qty}</td><td class="r">${money(it.price)}</td><td class="r">${money(it.price * it.qty)}</td></tr>`).join('')}
+${o.promo ? `<tr><td colspan="5">Промокод ${escHtml(o.promo.code)}</td><td class="r">−${money(o.promo.discount)}</td></tr>` : ''}
+${o.deliveryCost ? `<tr><td colspan="5">Доставка</td><td class="r">${money(o.deliveryCost)}</td></tr>` : ''}
+<tr class="total"><td colspan="5">Итого</td><td class="r">${money(o.total)}</td></tr>
+</tbody></table>
+<div class="checks"><span>Собран</span><span>Проверен</span><span>Упакован</span><span>Отправлен</span></div>
+<script>window.addEventListener('load', () => setTimeout(() => print(), 300));</script>
+</body></html>`);
 });
 
 app.delete('/api/admin/products/:id', requireAdmin, (req, res) => {

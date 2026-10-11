@@ -363,6 +363,67 @@ test('review request after shipping or completion, once; partner code report and
   assert.equal(p.toPay, 0);
 });
 
+test('stock quantity: limits orders, goes out at 0, comes back on cancel; catalog CSV round trip; print', async () => {
+  const admin = await adminClient();
+  const ID = 'speedjump-orange';
+  const pub = async () => (await client()('/api/data')).data.products.find(p => p.id === ID);
+  assert.equal((await admin('/api/admin/products/' + ID, { method: 'PATCH', body: { quantity: 'много' } })).status, 400);
+  assert.equal((await admin('/api/admin/products/' + ID, { method: 'PATCH', body: { quantity: 3 } })).status, 200);
+  assert.equal((await pub()).left, 3);
+  assert.ok(!('quantity' in await pub()), 'exact stock stays private');
+
+  const quick = (qty, phone) => client()('/api/quick-order', { method: 'POST', body: { productId: ID, qty, name: 'Склад', phone, consent: true } });
+  const tooMany = await quick(4, '+7 904 000-00-10');
+  assert.equal(tooMany.status, 400);
+  assert.match(tooMany.data.error, /осталось только 3/);
+  const first = await quick(2, '+7 904 000-00-11');
+  assert.equal(first.status, 200);
+  assert.equal((await pub()).left, 1);
+  assert.equal((await quick(1, '+7 904 000-00-12')).status, 200);
+  assert.equal((await pub()).stock, 'out', 'sold out at 0');
+  assert.equal((await quick(1, '+7 904 000-00-13')).status, 400);
+
+  assert.equal((await admin('/api/admin/orders/' + first.data.order.id, { method: 'PATCH', body: { status: 'cancelled' } })).status, 200);
+  const back = await pub();
+  assert.equal(back.left, 2, 'a cancelled order gives its items back');
+  assert.ok(!back.stock);
+
+  // export → edit in "Excel" (Windows-1251, commas) → check → apply
+  const csv = await fetch(BASE + '/api/admin/products/export.csv', { headers: { cookie: '' } });
+  assert.equal(csv.status, 401);
+  const exp = await admin('/api/admin/products/export.csv');
+  assert.match(exp.headers.get('content-type'), /text\/csv/);
+  assert.ok(exp.data.startsWith('"ID";"Название";"Категория";"Цена"'), exp.data.slice(0, 60)); // fetch's text() drops the BOM
+  const cp1251 = str => Buffer.from([...str].map(ch => {
+    const c = ch.charCodeAt(0);
+    if (c < 128) return c;
+    if (c >= 0x410 && c <= 0x44f) return c - 0x410 + 0xc0;
+    return c === 0x401 ? 0xa8 : c === 0x451 ? 0xb8 : 0x3f;
+  }));
+  const file = cp1251(`ID,Название,Цена,"Скидка, %",Остаток,Наличие,Скрыт\r\n${ID},Скакалка,999,"10",5,в наличии,нет\r\nno-such-id,Что-то,1,0,,в наличии,нет\r\n`);
+  const upload = async dry => {
+    const fd = new FormData();
+    fd.append('file', new Blob([file], { type: 'text/csv' }), 'catalog.csv');
+    return admin('/api/admin/products/import' + (dry ? '?dryRun=1' : ''), { method: 'POST', form: fd });
+  };
+  const check = await upload(true);
+  assert.equal(check.status, 200, JSON.stringify(check.data));
+  assert.equal(check.data.changes.length, 1);
+  assert.match(check.data.changes[0].changes.join('; '), /цена \d+ → 999/);
+  assert.equal(check.data.errors.length, 1, 'unknown ID is reported, not created');
+  assert.notEqual((await pub()).price, 999, 'a check changes nothing');
+  assert.equal((await upload(false)).status, 200);
+  const after = await pub();
+  assert.equal(after.price, 999);
+  assert.equal(after.discountPercent, 10);
+  assert.equal(after.left, 5);
+
+  const print = await admin('/admin/orders/' + first.data.order.id + '/print');
+  assert.equal(print.status, 200);
+  assert.match(print.data, /Заказ №\d+/);
+  assert.match(print.data, /Склад/);
+});
+
 test('admin: auth, promo code, stock, review moderation', async () => {
   const anon = client();
   assert.equal((await anon('/api/admin/orders')).status, 401);

@@ -326,6 +326,18 @@
     </div>
   </div>
 
+  <div class="card" data-tab="products">
+    <h2>Каталог в Excel</h2>
+    <p style="color:var(--ink-soft);font-size:.85rem;margin:-6px 0 12px;">Скачайте каталог, поменяйте в Excel цены, скидки, остатки, наличие, «Скрыт» (да/нет) или размеры и загрузите файл обратно. Сначала нажмите «Проверить» — покажем, что изменится, — потом «Применить». Новые товары так не добавляются, а столбцы ID, «Название» и «Категория» при загрузке не меняются. Сохраняйте файл как CSV.</p>
+    <div class="row" style="align-items:flex-end;flex-wrap:wrap;">
+      <div class="field" style="flex:none;"><a class="btn-ghost" href="/api/admin/products/export.csv" style="display:inline-block;padding:9px 18px;border:1px solid var(--border);border-radius:999px;text-decoration:none;color:inherit;font-weight:600;">Скачать каталог (.csv)</a></div>
+      <div class="field"><input id="catalogFile" type="file" accept=".csv,text/csv"></div>
+      <div class="field" style="flex:none;"><button type="button" class="btn-ghost" id="catalogCheckBtn">Проверить</button></div>
+      <div class="field" style="flex:none;"><button type="button" class="btn-primary" id="catalogApplyBtn" disabled>Применить</button></div>
+    </div>
+    <div id="catalogResult" style="font-size:.85rem;"></div>
+  </div>
+
   <div class="card" data-tab="products" id="productFormCard">
     <h2 id="formTitle">Добавить товар</h2>
     <form id="productForm">
@@ -346,6 +358,7 @@
       </div>
       <div class="row">
         <div class="field" style="flex:none;width:160px;"><label>Скидка, % (0 — нет)</label><input id="pDiscount" type="number" min="0" max="95" value="0"></div>
+        <div class="field" style="flex:none;width:170px;"><label>Остаток, шт.</label><input id="pQuantity" type="number" min="0" placeholder="не считать" title="Сколько штук на складе. Заказы уменьшают остаток, отмена возвращает; на 0 товар станет «Нет в наличии». Пусто — не считать."></div>
         <div class="field" style="flex:none;width:180px;"><label>Наличие</label><select id="pStock">
           <option value="">В наличии</option><option value="order">Под заказ</option><option value="out">Нет в наличии</option>
         </select></div>
@@ -954,6 +967,28 @@ async function loadPromos(){
   await loadPartners();
 }
 
+/* ===== Catalog import ===== */
+async function importCatalog(dryRun){
+  const file = el('catalogFile').files[0];
+  if(!file){ el('catalogResult').innerHTML = '<div class="msg error">Выберите файл .csv</div>'; return; }
+  const fd = new FormData(); fd.append('file', file);
+  try{
+    const r = await api('/api/admin/products/import' + (dryRun ? '?dryRun=1' : ''), { method:'POST', body: fd });
+    const list = r.changes.map(c => `<li><b>${escHtml(c.name)}</b>: ${escHtml(c.changes.join('; '))}</li>`).join('');
+    const errs = r.errors.map(e => `<li>${escHtml(e)}</li>`).join('');
+    el('catalogResult').innerHTML = `
+      ${r.errors.length ? `<div class="msg error"><b>Строки с ошибками пропущены (${r.errors.length}):</b><ul style="margin:6px 0 0;padding-left:18px;">${errs}</ul></div>` : ''}
+      <div class="msg ${r.changes.length ? 'ok' : ''}" style="${r.changes.length ? '' : 'background:#f4f6f8;'}">
+        ${r.changes.length ? `<b>${dryRun ? 'Будет изменено' : 'Изменено'} товаров: ${r.changes.length}</b><ul style="margin:6px 0 0;padding-left:18px;">${list}</ul>` : 'Изменений нет — в файле всё как на сайте.'}
+      </div>`;
+    el('catalogApplyBtn').disabled = !dryRun || !r.changes.length;
+    if(!dryRun){ el('catalogFile').value = ''; await loadAll(); }
+  }catch(e){ el('catalogResult').innerHTML = `<div class="msg error">${escHtml(e.message)}</div>`; }
+}
+el('catalogCheckBtn').addEventListener('click', () => importCatalog(true));
+el('catalogApplyBtn').addEventListener('click', () => importCatalog(false));
+el('catalogFile').addEventListener('change', () => { el('catalogApplyBtn').disabled = true; el('catalogResult').innerHTML = ''; });
+
 /* ===== Partners (coaches) ===== */
 async function loadPartners(){
   const { partners } = await api('/api/admin/partners');
@@ -1127,7 +1162,8 @@ function renderOrders(orders){
         ${o.quick ? '' : `<div style="margin-top:6px;font-size:.8rem;">${o.trackNumber ? `Трек: ${o.trackUrl ? `<a href="${escHtml(o.trackUrl)}" target="_blank" rel="noopener">${escHtml(o.trackNumber)}</a>` : `<b>${escHtml(o.trackNumber)}</b>`}<br>` : ''}<button type="button" class="btn-ghost btn-sm" data-order-track="${o.id}" style="margin-top:2px;">${o.trackNumber ? 'Изменить трек' : 'Трек-номер'}</button></div>`}
       </td>
       <td style="max-width:220px;">${o.comment ? `<div style="white-space:pre-wrap;font-size:.82rem;">${escHtml(o.comment)}</div>` : ''}<button type="button" class="btn-ghost btn-sm" data-order-comment="${o.id}" style="margin-top:4px;">${o.comment ? 'Изменить' : 'Добавить'}</button></td>
-      <td>${IS_SUPER ? `<button class="btn-ghost btn-sm" data-delete-order="${o.id}">Удалить</button>` : ''}</td>
+      <td style="white-space:nowrap;"><a class="btn-ghost btn-sm" href="/admin/orders/${o.id}/print" target="_blank" rel="noopener" style="display:inline-block;border:1px solid var(--border);border-radius:999px;text-decoration:none;color:inherit;font-weight:600;">Печать</a>
+        ${IS_SUPER ? `<button class="btn-ghost btn-sm" data-delete-order="${o.id}">Удалить</button>` : ''}</td>
     </tr>
   `).join('') || `<tr><td colspan="8" style="color:var(--ink-soft)">${ALL_ORDERS.length ? 'Ничего не найдено.' : 'Заказов пока нет.'}</td></tr>`;
 
@@ -1318,7 +1354,7 @@ function renderProducts(){
       <td>${STATE.categories[p.cat] || p.cat}</td>
       <td>${p.discountPercent ? `<span class="price-old-admin" style="color:var(--ink-soft);text-decoration:line-through;">${p.price.toLocaleString('ru-RU')} ₽</span> ${Math.round(p.price*(1-p.discountPercent/100)).toLocaleString('ru-RU')} ₽` : p.price.toLocaleString('ru-RU') + ' ₽'}</td>
       <td>${p.discountPercent ? '−' + p.discountPercent + '%' : '—'}</td>
-      <td>${p.hidden ? '<span style="color:#e0433a;">Скрыт</span>' : 'Виден'}${p.stock === 'out' ? `<br><span style="color:#e0433a;">Нет в наличии</span>${(STATE.restockCounts || {})[p.id] ? `<br><small style="color:var(--ink-soft);">ждут поступления: ${STATE.restockCounts[p.id]}</small>` : ''}` : p.stock === 'order' ? '<br><span style="color:var(--ink-soft);">Под заказ</span>' : ''}</td>
+      <td>${p.hidden ? '<span style="color:#e0433a;">Скрыт</span>' : 'Виден'}${p.quantity !== undefined ? `<br><small style="${p.quantity <= 2 ? 'color:#e0433a;font-weight:700;' : 'color:var(--ink-soft);'}">Остаток: ${p.quantity} шт.</small>` : ''}${p.stock === 'out' ? `<br><span style="color:#e0433a;">Нет в наличии</span>${(STATE.restockCounts || {})[p.id] ? `<br><small style="color:var(--ink-soft);">ждут поступления: ${STATE.restockCounts[p.id]}</small>` : ''}` : p.stock === 'order' ? '<br><span style="color:var(--ink-soft);">Под заказ</span>' : ''}</td>
       <td style="white-space:nowrap;">
         <button type="button" class="btn-ghost btn-sm" data-toggle-hidden="${p.id}" data-hidden="${p.hidden ? '1' : '0'}">${p.hidden ? 'Показать' : 'Скрыть'}</button>
         <button type="button" class="btn-ghost btn-sm" data-edit="${p.id}">Изменить</button>
@@ -1451,6 +1487,7 @@ function startEdit(id){
   el('pDiscount').value = p.discountPercent || 0;
   el('pHidden').checked = !!p.hidden;
   el('pStock').value = p.stock || '';
+  el('pQuantity').value = p.quantity === undefined ? '' : p.quantity;
   el('specsList').innerHTML = '';
   (p.specs || []).forEach(([k,v]) => el('specsList').appendChild(specRow(k,v)));
   if(p.img){ el('currentImg').src = p.img; el('currentImgWrap').hidden = false; } else { el('currentImgWrap').hidden = true; }
@@ -1481,6 +1518,7 @@ el('productForm').addEventListener('submit', async (e) => {
   fd.append('discountPercent', el('pDiscount').value || '0');
   fd.append('hidden', el('pHidden').checked ? 'true' : 'false');
   fd.append('stock', el('pStock').value);
+  fd.append('quantity', el('pQuantity').value);
   if(el('pImage').files[0]) fd.append('image', el('pImage').files[0]);
   const newExtras = Array.from(el('pImages').files);
   if(EDIT_EXTRAS.length + newExtras.length > 10){
