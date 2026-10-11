@@ -49,7 +49,7 @@ async function adminClient() {
 
 before(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'twoboots-test-'));
-  const env = { ...process.env, PORT: String(PORT), DATA_DIR: dataDir, SESSION_SECRET: 'test-secret', BOTORDER_SECRET: BOT_SECRET };
+  const env = { ...process.env, PORT: String(PORT), DATA_DIR: dataDir, SESSION_SECRET: 'test-secret', BOTORDER_SECRET: BOT_SECRET, NODE_ENV: 'test' };
   for (const k of ['SMTP_HOST', 'BOTORDER_URL', 'TELEGRAM_BOT_TOKEN', 'WHATSAPP_CALLMEBOT_APIKEY']) delete env[k];
   server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = '';
@@ -291,6 +291,41 @@ test('delivery: methods from the admin, price in the total, free threshold, trac
 
   const stats = (await admin('/api/admin/stats?days=7')).data;
   assert.ok(stats.delivery['Курьер по Москве'] >= 2, 'statistics count by method name');
+});
+
+test('account cart and favorites; cart reminder only with consent, once, with a working unsubscribe link', async () => {
+  const crypto = require('node:crypto');
+  const optIn = client(), optOut = client();
+  const reg = await optIn('/api/register', { method: 'POST', body: { name: 'Корзина', email: 'cart@test.ru', password: 'secret1', phone: '+7 902 000-00-07', consent: true, marketing: true } });
+  assert.equal(reg.data.user.marketing, true);
+  await optOut('/api/register', { method: 'POST', body: { name: 'Без писем', email: 'nomail@test.ru', password: 'secret1', phone: '+7 902 000-00-08', consent: true } });
+
+  for (const c of [optIn, optOut]) {
+    assert.equal((await c('/api/cart', { method: 'PUT', body: { items: [{ id: 'dry-glide', qty: 2 }, { id: 'street-guard', qty: 1, size: 'M' }] } })).status, 200);
+  }
+  assert.equal((await client()('/api/cart', { method: 'PUT', body: { items: [] } })).status, 401);
+  assert.deepEqual((await optIn('/api/me')).data.user.cart, [{ id: 'dry-glide', qty: 2, size: null }, { id: 'street-guard', qty: 1, size: 'M' }]);
+
+  const fav = await optIn('/api/favorites', { method: 'PUT', body: { ids: ['dry-glide', 'no-such-product', 'dry-glide'] } });
+  assert.deepEqual(fav.data.favorites, ['dry-glide'], 'unknown and repeated ids are dropped');
+
+  const run = shiftMs => fetch(BASE + '/api/test/run-reminders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shiftMs }) }).then(r => r.json());
+  assert.equal((await run(0)).cart, 0, 'not before 3 hours');
+  assert.equal((await run(4 * 3600 * 1000)).cart, 1, 'only the customer who agreed to reminders');
+  assert.equal((await run(5 * 3600 * 1000)).cart, 0, 'never twice for the same cart');
+
+  const me = (await optIn('/api/me')).data.user;
+  const bad = await fetch(`${BASE}/unsubscribe?u=${me.id}&t=0000`);
+  assert.match(await bad.text(), /недействительна/);
+  const token = crypto.createHmac('sha256', 'test-secret').update('unsubscribe:' + me.id).digest('hex').slice(0, 32);
+  assert.match(await (await fetch(`${BASE}/unsubscribe?u=${me.id}&t=${token}`)).text(), /Вы отписались/);
+  assert.equal((await optIn('/api/me')).data.user.marketing, false);
+
+  // a placed order clears the saved cart
+  const placed = await optOut('/api/orders', { method: 'POST', body: { items: [{ id: 'dry-glide', qty: 1 }], delivery: 'pickup' } });
+  assert.equal(placed.status, 200, JSON.stringify(placed.data));
+  assert.deepEqual((await optOut('/api/me')).data.user.cart, []);
+  assert.equal((await client()('/favorites')).status, 200);
 });
 
 test('admin: auth, promo code, stock, review moderation', async () => {
