@@ -138,9 +138,9 @@ test('catalog API lists visible products', async () => {
 
 test('customer: register, order with delivery, see it, cancel it', async () => {
   const req = client();
-  const noConsent = await req('/api/register', { method: 'POST', body: { name: 'Тест', email: 'buyer@test.ru', password: 'secret1', phone: '+7900' } });
+  const noConsent = await req('/api/register', { method: 'POST', body: { name: 'Тест', email: 'buyer@test.ru', password: 'secret1', phone: '+7 900 000-00-01' } });
   assert.equal(noConsent.status, 400);
-  const reg = await req('/api/register', { method: 'POST', body: { name: 'Тест', email: 'buyer@test.ru', password: 'secret1', phone: '+7900', consent: true } });
+  const reg = await req('/api/register', { method: 'POST', body: { name: 'Тест', email: 'buyer@test.ru', password: 'secret1', phone: '+7 900 000-00-01', consent: true } });
   assert.equal(reg.status, 200);
 
   const noSize = await req('/api/orders', { method: 'POST', body: { items: [{ id: 'street-guard', qty: 1 }], delivery: 'pickup' } });
@@ -171,8 +171,8 @@ test('customer: register, order with delivery, see it, cancel it', async () => {
 
 test('quick order needs consent and gets the next number', async () => {
   const req = client();
-  assert.equal((await req('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'Катя', phone: '+7911' } })).status, 400);
-  const r = await req('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'Катя', phone: '+7911', consent: true, qty: 3 } });
+  assert.equal((await req('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'Катя', phone: '+7 911 000-00-02' } })).status, 400);
+  const r = await req('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'Катя', phone: '+7 911 000-00-02', consent: true, qty: 3 } });
   assert.equal(r.status, 200);
   assert.equal(r.data.order.total, 390 * 3);
   assert.equal(r.data.order.quick, true);
@@ -185,7 +185,7 @@ test('the order bot pulls new orders with its secret, and nothing without it', a
 
   const start = await (await pull('', BOT_SECRET)).json();
   assert.deepEqual(start.orders, [], 'a fresh bot only learns the latest number');
-  const r = await client()('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'Бот', phone: '+7900', consent: true } });
+  const r = await client()('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'Бот', phone: '+7 900 000-00-03', consent: true } });
   assert.equal(r.status, 200);
 
   const next = await (await pull(`?after=${start.latest}`, BOT_SECRET)).json();
@@ -251,7 +251,7 @@ test('delivery: methods from the admin, price in the total, free threshold, trac
   assert.ok(!(await client()('/api/data')).data.deliveryMethods.some(m => m.id === 'wb'), 'disabled methods are not offered');
 
   const req = client();
-  await req('/api/register', { method: 'POST', body: { name: 'Доставка', email: 'ship@test.ru', password: 'secret1', phone: '+7901', consent: true } });
+  await req('/api/register', { method: 'POST', body: { name: 'Доставка', email: 'ship@test.ru', password: 'secret1', phone: '+7 901 000-00-04', consent: true } });
   const order = body => req('/api/orders', { method: 'POST', body: { items: [{ id: 'dry-glide', qty: 1 }], ...body } });
   assert.equal((await order({ delivery: 'wb', city: 'Казань', address: 'ПВЗ' })).status, 400, 'disabled method');
   assert.equal((await order({ delivery: 'ozon', city: 'Казань' })).data.error, 'Укажите адрес пункта выдачи');
@@ -265,19 +265,28 @@ test('delivery: methods from the admin, price in the total, free threshold, trac
   const freeCourier = await req('/api/orders', { method: 'POST', body: { items: [{ id: 'dry-glide', qty: 4 }], delivery: 'courier', address: 'Тверская 1' } });
   assert.equal(freeCourier.data.order.total, 1490 * 4, 'free from 5000 ₽');
   assert.equal(freeCourier.data.order.deliveryPrice, 'бесплатно');
-  const avito = await order({ delivery: 'avito', city: 'Пермь', address: 'ignored' });
+  const third = await order({ delivery: 'pickup' });
+  assert.equal(third.status, 429, 'no more than 2 orders an hour per customer');
+  assert.match(third.data.error, /не больше 2 заказов в час/);
+  // the same phone can't get round it with a one-click order
+  assert.equal((await req('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'Д', phone: '8 (901) 000-00-04', consent: true } })).status, 429);
+
+  const req2 = client();
+  await req2('/api/register', { method: 'POST', body: { name: 'Доставка 2', email: 'ship2@test.ru', password: 'secret1', phone: '+7 901 000-00-05', consent: true } });
+  const order2 = body => req2('/api/orders', { method: 'POST', body: { items: [{ id: 'dry-glide', qty: 1 }], ...body } });
+  const avito = await order2({ delivery: 'avito', city: 'Пермь', address: 'ignored' });
   assert.equal(avito.status, 200);
   assert.equal(avito.data.order.address, '', 'manager-arranged delivery keeps only the city');
   assert.match(avito.data.order.deliveryPrice, /при получении/);
 
-  const cdek = await order({ delivery: 'cdek', city: 'Казань', address: 'ПВЗ на Баумана' });
+  const cdek = await order2({ delivery: 'cdek', city: 'Казань', address: 'ПВЗ на Баумана' });
   const id = cdek.data.order.id;
   assert.equal((await admin('/api/admin/orders/' + id, { method: 'PATCH', body: { trackNumber: 'bad track!' } })).status, 400);
   const tracked = await admin('/api/admin/orders/' + id, { method: 'PATCH', body: { trackNumber: ' 1234 5678 ' } });
   assert.equal(tracked.status, 200);
   assert.equal(tracked.data.order.status, 'shipped', 'a tracking number marks the order shipped');
   assert.equal(tracked.data.order.trackUrl, 'https://www.cdek.ru/ru/tracking/?order_id=12345678');
-  const mine = (await req('/api/orders')).data.orders.find(o => o.id === id);
+  const mine = (await req2('/api/orders')).data.orders.find(o => o.id === id);
   assert.equal(mine.trackNumber, '12345678');
 
   const stats = (await admin('/api/admin/stats?days=7')).data;
@@ -298,12 +307,12 @@ test('admin: auth, promo code, stock, review moderation', async () => {
   const check = await shopper('/api/promo/check', { method: 'POST', body: { code: 'TEST10', items: [{ id: 'grip-lace', qty: 1 }] } });
   assert.equal(check.status, 200);
   assert.equal(check.data.discount, 39);
-  const quick = await shopper('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'П', phone: '1', consent: true, promoCode: 'test10' } });
+  const quick = await shopper('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'П', phone: '+7 999 000-00-06', consent: true, promoCode: 'test10' } });
   assert.equal(quick.data.order.total, 351);
 
   // out of stock can't be ordered
   assert.equal((await admin('/api/admin/products/warm-leg', { method: 'PATCH', body: { stock: 'out' } })).status, 200);
-  assert.equal((await shopper('/api/quick-order', { method: 'POST', body: { productId: 'warm-leg', name: 'П', phone: '1', consent: true } })).status, 400);
+  assert.equal((await shopper('/api/quick-order', { method: 'POST', body: { productId: 'warm-leg', name: 'П', phone: '+7 999 000-00-06', consent: true } })).status, 400);
   assert.equal((await shopper('/api/restock', { method: 'POST', body: { productId: 'warm-leg', email: 'wait@test.ru', consent: true } })).status, 200);
 
   // review is hidden until approved

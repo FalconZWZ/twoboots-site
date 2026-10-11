@@ -7,7 +7,7 @@ const session = require('express-session');
 const FileStore = require('session-file-store')(session);
 const multer = require('multer');
 const nodemailer = require('nodemailer');
-const { rateLimit } = require('express-rate-limit');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const archiver = require('archiver');
 const AdmZip = require('adm-zip');
 // Optional: if the native image library fails to load, uploads are simply kept as they are.
@@ -438,6 +438,23 @@ const loginLimiter = limiter(10, 15, 'Слишком много неудачны
 const registerLimiter = limiter(10, 60, 'Слишком много регистраций с вашего адреса. Попробуйте позже.', { skipFailedRequests: true });
 // Only placed orders count: a customer fixing a form mistake (no address, no size) is never locked out.
 const orderLimiter = limiter(10, 15, 'Слишком много заявок подряд. Попробуйте через несколько минут или позвоните нам.', { skipFailedRequests: true });
+// And per customer: at most ORDERS_PER_HOUR placed orders an hour, cart and one-click together.
+// Counted by phone number (from the profile for cart orders, from the form for one-click ones),
+// not by IP — mobile carriers put thousands of people behind one address.
+const ORDERS_PER_HOUR = Math.max(1, Number(process.env.ORDERS_PER_HOUR) || 2);
+const customerOrderLimiter = limiter(ORDERS_PER_HOUR, 60,
+  `Можно оформить не больше ${ORDERS_PER_HOUR} ${ORDERS_PER_HOUR === 1 ? 'заказа' : 'заказов'} в час. Если нужно срочно — позвоните нам: +7 926 349-75-86.`, {
+    skipFailedRequests: true,
+    keyGenerator: req => {
+      let phone = (req.body || {}).phone;
+      if (req.path === '/api/orders') {
+        const user = req.session && req.session.userId && readStore().users.find(u => u.id === req.session.userId);
+        phone = user && user.phone;
+      }
+      const digits = String(phone || '').replace(/\D/g, '').slice(-10);
+      return digits.length >= 5 ? 'phone:' + digits : 'ip:' + ipKeyGenerator(req.ip);
+    },
+  });
 const contactLimiter = limiter(5, 15, 'Слишком много сообщений подряд. Попробуйте через несколько минут.');
 // Generous for real shoppers, but stops anyone from guessing codes by brute force.
 const promoLimiter = limiter(20, 15, 'Слишком много попыток ввода промокода. Попробуйте позже.');
@@ -1044,7 +1061,7 @@ app.get('/api/orders', requireUser, (req, res) => {
   res.json({ orders });
 });
 
-app.post('/api/orders', orderLimiter, requireUser, (req, res) => {
+app.post('/api/orders', orderLimiter, customerOrderLimiter, requireUser, (req, res) => {
   const { items } = req.body || {};
   if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'Корзина пуста' });
   const store = readStore();
@@ -1127,7 +1144,7 @@ app.patch('/api/orders/:id/cancel', requireUser, (req, res) => {
 });
 
 /* ===== Quick order (buy in one click, no account needed) ===== */
-app.post('/api/quick-order', orderLimiter, (req, res) => {
+app.post('/api/quick-order', orderLimiter, customerOrderLimiter, (req, res) => {
   const { productId, qty, name, phone, size: requestedSize } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Укажите имя' });
   if (!phone || !phone.trim()) return res.status(400).json({ error: 'Укажите номер телефона' });
