@@ -140,7 +140,8 @@ function orderDeliveryLines(order) {
 }
 
 function orderPromoLine(order) {
-  return order.promo ? `Промокод ${order.promo.code}: −${order.promo.discount.toLocaleString('ru-RU')} ₽\n` : '';
+  return (order.promo ? `Промокод ${order.promo.code}: −${order.promo.discount.toLocaleString('ru-RU')} ₽\n` : '')
+    + (order.giftCard ? `Подарочный сертификат ${order.giftCard.code}: −${order.giftCard.amount.toLocaleString('ru-RU')} ₽\n` : '');
 }
 
 function sendOrderConfirmationEmail(order, user) {
@@ -184,6 +185,7 @@ function botOrderFields(order) {
     'Итого': `${order.total.toLocaleString('ru-RU')} ₽`,
     ...(order.promo ? { 'Промокод': `${order.promo.code} (−${order.promo.discount.toLocaleString('ru-RU')} ₽)` } : {}),
     ...(order.delivery ? { 'Доставка': `${deliveryLabel(order)}${[order.city, order.address].filter(Boolean).length ? ' — ' + [order.city, order.address].filter(Boolean).join(', ') : ''}${order.deliveryPrice ? ' · ' + order.deliveryPrice : ''}` } : {}),
+    ...(order.giftCard ? { 'Сертификат': `${order.giftCard.code} (−${order.giftCard.amount.toLocaleString('ru-RU')} ₽)` } : {}),
     ...(order.customerComment ? { 'Комментарий': order.customerComment } : {}),
   };
 }
@@ -360,6 +362,7 @@ function normalizeStore(store) {
   if (!store.promos) { store.promos = []; changed = true; }
   if (!store.reviews) { store.reviews = []; changed = true; }
   if (!store.restockSubs) { store.restockSubs = []; changed = true; }
+  if (!Array.isArray(store.giftCards)) { store.giftCards = []; changed = true; }
   if (!Array.isArray(store.deliveryMethods)) { store.deliveryMethods = DEFAULT_DELIVERY_METHODS.map(cleanDeliveryMethod); changed = true; }
   // Starter articles arrive as drafts: the owner reads them and publishes from the admin.
   if (!store.articles) {
@@ -782,7 +785,7 @@ app.get('/health', (req, res) => {
 
 app.get('/sitemap.xml', (req, res) => {
   const { categories, products } = readStore();
-  const staticUrls = ['/', '/catalog', '/about', '/contact', '/delivery', '/privacy'];
+  const staticUrls = ['/', '/catalog', '/gift', '/about', '/contact', '/delivery', '/privacy'];
   const articleUrls = publishedArticles(readStore().articles).map(a => `/blog/${a.slug}`);
   if (articleUrls.length) staticUrls.push('/blog', ...articleUrls);
   const catalogUrls = Object.keys(categories).map(cat => `/catalog?cat=${cat}`);
@@ -1113,8 +1116,15 @@ function orderSize(product, requested) {
 // Server-side prices for a cart: client prices are never trusted.
 function priceItems(store, items) {
   const lines = [];
-  let subtotal = 0;
+  let subtotal = 0, giftSubtotal = 0;
   for (const item of Array.isArray(items) ? items : []) {
+    const gift = giftAmount(item.id);
+    if (gift) {
+      const qty = Math.max(1, Math.min(10, Number(item.qty) || 1));
+      lines.push({ id: `gift-${gift}`, name: `Подарочный сертификат на ${gift.toLocaleString('ru-RU')} ₽`, size: null, price: gift, qty, gift: true });
+      subtotal += gift * qty; giftSubtotal += gift * qty;
+      continue;
+    }
     const product = store.products.find(p => p.id === item.id && !p.hidden);
     if (!product) continue;
     if (product.stock === 'out') return { error: `«${product.name}» сейчас нет в наличии — уберите его из корзины` };
@@ -1127,7 +1137,91 @@ function priceItems(store, items) {
   }
   const short = stockShortage(store, lines);
   if (short) return { error: short };
-  return { lines, subtotal };
+  return { lines, subtotal, giftSubtotal };
+}
+
+/* ===== Gift certificates =====
+   Bought like goods (cart items gift-1000 … gift-10000, no delivery needed when the cart holds
+   only certificates). The codes are issued once payment is confirmed — by the admin's button
+   or by online payment — and emailed to the buyer. A certificate pays for goods and delivery
+   (not for other certificates), can be spent in parts, lasts a year, and a cancelled order
+   gives back what it took from it. */
+const GIFT_AMOUNTS = [1000, 2000, 3000, 5000, 10000];
+const GIFT_VALID_DAYS = 365;
+function giftAmount(id) {
+  const m = /^gift-(\d+)$/.exec(String(id || ''));
+  const n = m ? Number(m[1]) : 0;
+  return GIFT_AMOUNTS.includes(n) ? n : 0;
+}
+// «TB-ABCD-EFGH», «tb abcd efgh» and «ABCDEFGH» are the same code
+const normGiftCode = c => { const n = String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); return n.length === 8 ? 'TB' + n : n; };
+function newGiftCode(store) {
+  const abc = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  for (;;) {
+    const raw = Array.from(crypto.randomBytes(8), b => abc[b % abc.length]).join('');
+    const code = `TB-${raw.slice(0, 4)}-${raw.slice(4)}`;
+    if (!store.giftCards.some(g => g.code === code)) return code;
+  }
+}
+function createGiftCard(store, amount, extra = {}) {
+  const now = new Date();
+  const card = {
+    code: newGiftCode(store), initial: amount, balance: amount, active: true,
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + GIFT_VALID_DAYS * 86400000).toISOString().slice(0, 10),
+    history: [], ...extra,
+  };
+  store.giftCards.push(card);
+  return card;
+}
+function findGiftCard(store, raw) {
+  const wanted = normGiftCode(raw);
+  if (!wanted) return {};
+  const card = store.giftCards.find(g => normGiftCode(g.code) === wanted);
+  if (!card) return { error: 'Сертификат с таким кодом не найден' };
+  if (!card.active) return { error: 'Этот сертификат отключён' };
+  if (card.expiresAt < moscowDay(new Date().toISOString())) return { error: 'Срок действия сертификата истёк' };
+  if (card.balance <= 0) return { error: 'На сертификате не осталось денег' };
+  return { card };
+}
+// Cancelling an order returns what it took from a certificate; reviving it takes it again.
+function setOrderGiftHold(store, order, newStatus) {
+  if (!order.giftCard) return;
+  const card = store.giftCards.find(g => g.code === order.giftCard.code);
+  if (!card) return;
+  if (order.giftHeld && newStatus === 'cancelled') {
+    card.balance += order.giftCard.amount;
+    card.history.push({ orderNumber: order.number, amount: order.giftCard.amount, at: new Date().toISOString(), refund: true });
+    order.giftHeld = false;
+  } else if (!order.giftHeld && newStatus !== 'cancelled') {
+    const amount = Math.min(card.balance, order.giftCard.amount);
+    card.balance -= amount;
+    card.history.push({ orderNumber: order.number, amount: -amount, at: new Date().toISOString() });
+    order.total += order.giftCard.amount - amount;
+    order.giftCard.amount = amount;
+    order.giftHeld = true;
+  }
+}
+// Issue the certificates an order paid for (once) and email the codes to the buyer.
+function issueGiftCards(store, order) {
+  if (order.giftCodes || !order.items.some(it => it.gift)) return null;
+  order.giftCodes = [];
+  for (const it of order.items.filter(i => i.gift)) {
+    for (let i = 0; i < it.qty; i++) {
+      const card = createGiftCard(store, it.price, { orderNumber: order.number });
+      order.giftCodes.push({ code: card.code, amount: card.initial, expiresAt: card.expiresAt });
+    }
+  }
+  return order.giftCodes;
+}
+function sendGiftCodesEmail(order, email) {
+  if (!mailTransport || !email || !order.giftCodes) return;
+  const list = order.giftCodes.map(g => `${g.code} — ${g.amount.toLocaleString('ru-RU')} ₽ (действует до ${g.expiresAt.split('-').reverse().join('.')})`).join('\n');
+  mailTransport.sendMail({
+    from: MAIL_FROM, to: email, replyTo: OWNER_EMAIL,
+    subject: `Подарочный сертификат Two Boots — заказ №${order.number}`,
+    text: `Здравствуйте${order.name ? ', ' + order.name : ''}!\n\nСпасибо за покупку! Ваши подарочные сертификаты:\n\n${list}\n\nКак использовать: при оформлении заказа на ${SITE_ORIGIN} введите код в поле «Подарочный сертификат». Сертификатом можно оплатить товары и доставку, тратить его можно частями.\n\nКоды также есть в личном кабинете: ${SITE_ORIGIN}/account`,
+  }).catch(err => console.error('Не удалось отправить сертификаты:', err.message));
 }
 // '' if the shelf has enough of every counted product for these lines, else what is missing
 function stockShortage(store, lines) {
@@ -1173,8 +1267,9 @@ function promoSummary(promo) {
 app.post('/api/promo/check', promoLimiter, (req, res) => {
   const { code, items } = req.body || {};
   const store = readStore();
-  const { subtotal, error: itemsError } = priceItems(store, items);
+  const { subtotal: all, giftSubtotal, error: itemsError } = priceItems(store, items);
   if (itemsError) return res.status(400).json({ error: itemsError });
+  const subtotal = all - giftSubtotal; // certificates are never discounted
   const { promo, discount, error } = applyPromo(store, code, subtotal);
   if (error) return res.status(400).json({ error });
   if (!promo) return res.status(400).json({ error: 'Введите промокод' });
@@ -1212,12 +1307,17 @@ app.post('/api/orders', orderLimiter, customerOrderLimiter, requireUser, (req, r
     user.consentAt = new Date().toISOString();
   }
 
-  const { lines, subtotal, error: itemsError } = priceItems(store, items);
+  const { lines, subtotal, giftSubtotal, error: itemsError } = priceItems(store, items);
   if (itemsError) return res.status(400).json({ error: itemsError });
   if (lines.length === 0) return res.status(400).json({ error: 'Товары не найдены' });
+  // only certificates: nothing to deliver, the codes go by email
+  const giftOnly = lines.every(l => l.gift);
+  const goodsSubtotal = subtotal - giftSubtotal;
 
-  const delivery = String(req.body.delivery || '');
-  const method = store.deliveryMethods.find(m => m.id === delivery && m.enabled);
+  const delivery = giftOnly ? '' : String(req.body.delivery || '');
+  const method = giftOnly
+    ? { id: '', name: 'Электронный сертификат — на email', kind: 'pickup', carrier: 'other', pricing: 'free' }
+    : store.deliveryMethods.find(m => m.id === delivery && m.enabled);
   if (!method) return res.status(400).json({ error: 'Выберите способ доставки' });
   const kind = method.kind;
   const city = kind === 'pickup' ? '' : kind === 'courier' ? 'Москва' : String(req.body.city || '').trim().slice(0, 100);
@@ -1231,10 +1331,21 @@ app.post('/api/orders', orderLimiter, customerOrderLimiter, requireUser, (req, r
     if (!user.city) user.city = city;
     if (!user.address) user.address = address;
   }
-  const { promo, discount = 0, error: promoError } = applyPromo(store, req.body.promoCode, subtotal);
+  // promo codes discount goods only, never certificates
+  if (giftOnly && req.body.promoCode) return res.status(400).json({ error: 'Промокоды не действуют на подарочные сертификаты' });
+  const { promo, discount = 0, error: promoError } = applyPromo(store, req.body.promoCode, goodsSubtotal);
   if (promoError) return res.status(400).json({ error: promoError });
+  const quote = giftOnly ? { cost: 0, text: '' } : deliveryQuote(method, goodsSubtotal - discount);
+  // a certificate pays for goods and delivery, not for other certificates
+  let giftCard = null;
+  if (req.body.giftCode) {
+    const { card, error } = findGiftCard(store, req.body.giftCode);
+    if (error) return res.status(400).json({ error });
+    const amount = Math.min(card.balance, goodsSubtotal - discount + quote.cost);
+    if (amount <= 0) return res.status(400).json({ error: 'Сертификатом нельзя оплатить другие сертификаты' });
+    giftCard = { card, amount };
+  }
   if (promo) promo.uses = (promo.uses || 0) + 1;
-  const quote = deliveryQuote(method, subtotal - discount);
 
   store.orderSeq = (store.orderSeq || 0) + 1;
   const order = {
@@ -1244,7 +1355,8 @@ app.post('/api/orders', orderLimiter, customerOrderLimiter, requireUser, (req, r
     items: lines,
     subtotal,
     ...(promo ? { promo: { code: promo.code, discount } } : {}),
-    total: subtotal - discount + quote.cost,
+    ...(giftCard ? { giftCard: { code: giftCard.card.code, amount: giftCard.amount } } : {}),
+    total: subtotal - discount + quote.cost - (giftCard ? giftCard.amount : 0),
     status: 'new',
     name: user.name, phone: user.phone, email: user.email,
     delivery,
@@ -1261,6 +1373,7 @@ app.post('/api/orders', orderLimiter, customerOrderLimiter, requireUser, (req, r
   delete user.cart;
   order.stockTaken = false;
   const low = setOrderStatusStock(store, order, order.status);
+  if (giftCard) { order.giftHeld = false; setOrderGiftHold(store, order, order.status); }
   writeStore(store);
   notifyLowStock(low);
   sendOrderConfirmationEmail(order, user);
@@ -1279,6 +1392,7 @@ app.patch('/api/orders/:id/cancel', requireUser, (req, res) => {
   }
   order.status = 'cancelled';
   setOrderStatusStock(store, order, 'cancelled');
+  setOrderGiftHold(store, order, 'cancelled');
   writeStore(store);
   notifyOwnerCancelled(order);
   res.json({ order: customerOrder(order) });
@@ -1394,6 +1508,48 @@ app.put('/api/admin/delivery-methods', requireAdmin, (req, res) => {
   res.json({ methods });
 });
 
+app.post('/api/gift/check', promoLimiter, (req, res) => {
+  const { card, error } = findGiftCard(readStore(), (req.body || {}).code);
+  if (error) return res.status(400).json({ error });
+  if (!card) return res.status(400).json({ error: 'Введите код сертификата' });
+  res.json({ code: card.code, balance: card.balance, expiresAt: card.expiresAt });
+});
+
+app.post('/api/admin/orders/:id/issue-gifts', requireAdmin, (req, res) => {
+  const store = readStore();
+  const order = store.orders.find(o => o.id === req.params.id);
+  if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+  if (order.status === 'cancelled') return res.status(400).json({ error: 'Заказ отменён' });
+  if (order.giftCodes) return res.status(400).json({ error: 'Сертификаты по этому заказу уже выпущены' });
+  if (!issueGiftCards(store, order)) return res.status(400).json({ error: 'В заказе нет сертификатов' });
+  writeStore(store);
+  const user = order.userId && store.users.find(u => u.id === order.userId);
+  sendGiftCodesEmail(order, (user && user.email) || order.email);
+  res.json({ order });
+});
+
+app.get('/api/admin/gift-cards', requireAdmin, (req, res) => {
+  res.json({ giftCards: [...readStore().giftCards].sort((a, b) => b.createdAt.localeCompare(a.createdAt)) });
+});
+
+app.post('/api/admin/gift-cards', requireAdmin, (req, res) => {
+  const amount = Math.round(Number((req.body || {}).amount));
+  if (!(amount >= 100 && amount <= 100000)) return res.status(400).json({ error: 'Номинал — от 100 до 100 000 ₽' });
+  const store = readStore();
+  const card = createGiftCard(store, amount, { note: String(req.body.note || '').trim().slice(0, 200) || undefined });
+  writeStore(store);
+  res.json({ giftCard: card });
+});
+
+app.patch('/api/admin/gift-cards/:code', requireAdmin, (req, res) => {
+  const store = readStore();
+  const card = store.giftCards.find(g => g.code === req.params.code);
+  if (!card) return res.status(404).json({ error: 'Сертификат не найден' });
+  if (typeof (req.body || {}).active === 'boolean') card.active = req.body.active;
+  writeStore(store);
+  res.json({ giftCard: card });
+});
+
 /* ===== Admin: orders ===== */
 const ORDER_STATUSES = ['new', 'processing', 'shipped', 'completed', 'cancelled'];
 
@@ -1416,7 +1572,7 @@ app.patch('/api/admin/orders/:id', requireAdmin, (req, res) => {
   if (!order) return res.status(404).json({ error: 'Заказ не найден' });
   let changed = status !== undefined && order.status !== status;
   let low = [];
-  if (status !== undefined) { low = setOrderStatusStock(store, order, status); order.status = status; }
+  if (status !== undefined) { low = setOrderStatusStock(store, order, status); setOrderGiftHold(store, order, status); order.status = status; }
   // A new tracking number marks the order as shipped and tells the customer (with the number).
   if (trackNumber !== undefined) {
     const number = String(trackNumber).replace(/\s+/g, '').slice(0, 60);
@@ -2593,6 +2749,8 @@ function pageSeo(pathname, query) {
   };
   if (staticTitles[pathname]) return { title: staticTitles[pathname], url };
   if (pathname === '/favorites') return { title: 'Избранное — Two Boots', url, noindex: true };
+  if (pathname === '/gift') return { title: 'Подарочный сертификат — Two Boots', url,
+    description: 'Подарочный сертификат Two Boots на 1 000–10 000 ₽ — подарок фигуристу, который сам выберет чехлы, сумку, скакалку или аксессуары. Действует год, можно тратить частями.' };
   if (pathname === '/blog') {
     const list = publishedArticles(store.articles);
     if (!list.length) return { status: 404, title: 'Страница не найдена — Two Boots', url };

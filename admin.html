@@ -268,6 +268,20 @@
   </div>
 
   <div class="card" data-tab="promos">
+    <h2>Подарочные сертификаты</h2>
+    <p style="color:var(--ink-soft);font-size:.85rem;margin:-6px 0 12px;">Купленные на сайте сертификаты выпускаются кнопкой «Выпустить сертификаты» в заказе, когда оплата получена. Здесь можно выпустить сертификат вручную — например, в подарок или для розыгрыша — и посмотреть остатки.</p>
+    <form id="giftForm" class="row" style="align-items:flex-end;">
+      <div class="field" style="flex:none;width:160px;"><label>Номинал, ₽</label><input id="giftAmount" type="number" min="100" max="100000" required placeholder="3000"></div>
+      <div class="field"><label>Для кого / заметка (необязательно)</label><input id="giftNote" maxlength="200" placeholder="например: розыгрыш в Telegram"></div>
+      <div class="field" style="flex:none;"><button class="btn-primary" type="submit">Выпустить</button></div>
+    </form>
+    <div style="overflow-x:auto;"><table>
+      <thead><tr><th>Код</th><th class="num">Номинал</th><th class="num">Остаток</th><th>Действует до</th><th>Откуда</th><th>Статус</th><th></th></tr></thead>
+      <tbody id="giftCardsBody"></tbody>
+    </table></div>
+  </div>
+
+  <div class="card" data-tab="promos">
     <h2>Партнёры — тренеры и школы</h2>
     <p style="color:var(--ink-soft);font-size:.85rem;margin:-6px 0 12px;">Партнёр — это промокод с указанным партнёром. Дайте тренеру его ссылку: по ней скидка подставится покупателю сама. «Заработано» — процент с выполненных заказов, «ожидается» — с заказов, которые ещё в работе. Суммы считаются по товарам после скидки, без доставки; отменённые заказы не учитываются.</p>
     <div style="overflow-x:auto;"><table>
@@ -965,6 +979,7 @@ async function loadPromos(){
   const { promos } = await api('/api/admin/promos');
   renderPromos(promos);
   await loadPartners();
+  await loadGiftCards();
 }
 
 /* ===== Catalog import ===== */
@@ -988,6 +1003,46 @@ async function importCatalog(dryRun){
 el('catalogCheckBtn').addEventListener('click', () => importCatalog(true));
 el('catalogApplyBtn').addEventListener('click', () => importCatalog(false));
 el('catalogFile').addEventListener('change', () => { el('catalogApplyBtn').disabled = true; el('catalogResult').innerHTML = ''; });
+
+/* ===== Gift cards ===== */
+async function loadGiftCards(){
+  const { giftCards } = await api('/api/admin/gift-cards');
+  const today = new Date().toISOString().slice(0, 10);
+  el('giftCardsBody').innerHTML = giftCards.map(g => {
+    const status = !g.active ? '<span style="color:var(--ink-soft);">Выключен</span>'
+      : g.expiresAt < today ? '<span style="color:#e0433a;">Истёк</span>'
+      : g.balance <= 0 ? '<span style="color:var(--ink-soft);">Использован</span>'
+      : '<span style="color:#1c5e26;">Действует</span>';
+    return `<tr>
+      <td style="font-family:monospace;font-weight:700;">${escHtml(g.code)}</td>
+      <td class="num">${g.initial.toLocaleString('ru-RU')} ₽</td>
+      <td class="num">${g.balance.toLocaleString('ru-RU')} ₽</td>
+      <td>${g.expiresAt.split('-').reverse().join('.')}</td>
+      <td>${g.orderNumber ? 'заказ №' + g.orderNumber : escHtml(g.note || 'вручную')}</td>
+      <td>${status}</td>
+      <td><button type="button" class="btn-ghost btn-sm" data-gift-toggle="${escHtml(g.code)}" data-active="${g.active ? '1' : '0'}">${g.active ? 'Выключить' : 'Включить'}</button></td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="7" style="color:var(--ink-soft)">Сертификатов пока нет.</td></tr>';
+}
+el('giftForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  try{
+    const { giftCard } = await api('/api/admin/gift-cards', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ amount: el('giftAmount').value, note: el('giftNote').value }) });
+    el('giftForm').reset();
+    showMsg(el('globalMsg'), `Сертификат выпущен: <b style="font-family:monospace;">${escHtml(giftCard.code)}</b> на ${giftCard.initial.toLocaleString('ru-RU')} ₽`, 'ok');
+    loadGiftCards();
+  }catch(err){ showMsg(el('globalMsg'), err.message, 'error'); }
+});
+el('giftCardsBody').addEventListener('click', async e => {
+  const b = e.target.closest('[data-gift-toggle]');
+  if(!b) return;
+  try{
+    await api('/api/admin/gift-cards/' + encodeURIComponent(b.getAttribute('data-gift-toggle')), { method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ active: b.getAttribute('data-active') !== '1' }) });
+    loadGiftCards();
+  }catch(err){ showMsg(el('globalMsg'), err.message, 'error'); }
+});
 
 /* ===== Partners (coaches) ===== */
 async function loadPartners(){
@@ -1154,7 +1209,9 @@ function renderOrders(orders){
       <td style="white-space:nowrap;">${new Date(o.createdAt).toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
       <td>${o.quick ? '<span style="display:inline-block;font-size:.72rem;font-weight:700;color:#1c5e26;background:#dff3e0;padding:2px 8px;border-radius:999px;margin-bottom:4px;">В 1 клик</span><br>' : ''}${escHtml(o.name)}<br><small style="color:var(--ink-soft);">${escHtml(o.email)}${o.phone ? ' · ' + escHtml(o.phone) : ''}</small>${o.delivery ? `<br><small><b>${escHtml(deliveryLabel(o))}</b>${o.deliveryPrice ? ' · ' + escHtml(o.deliveryCost ? o.deliveryCost.toLocaleString('ru-RU') + ' ₽' : o.deliveryPrice) : ''}</small>` : ''}${o.city || o.address ? `<br><small style="color:var(--ink-soft);">${escHtml([o.city, o.address].filter(Boolean).join(', '))}</small>` : ''}${o.customerComment ? `<br><small style="color:var(--ink-soft);font-style:italic;">«${escHtml(o.customerComment)}»</small>` : ''}</td>
       <td>${o.items.map(it => `${escHtml(it.name)}${it.size ? ' · ' + escHtml(it.size) : ''} × ${it.qty}`).join('<br>')}</td>
-      <td style="white-space:nowrap;">${o.total.toLocaleString('ru-RU')} ₽${o.promo ? `<br><small style="color:var(--ink-soft);">${o.promo.code}: −${o.promo.discount.toLocaleString('ru-RU')} ₽</small>` : ''}</td>
+      <td style="white-space:nowrap;">${o.total.toLocaleString('ru-RU')} ₽${o.promo ? `<br><small style="color:var(--ink-soft);">${o.promo.code}: −${o.promo.discount.toLocaleString('ru-RU')} ₽</small>` : ''}${o.giftCard ? `<br><small style="color:var(--ink-soft);">сертификат ${escHtml(o.giftCard.code)}: −${o.giftCard.amount.toLocaleString('ru-RU')} ₽</small>` : ''}
+        ${o.giftCodes ? `<br><small style="color:#1c5e26;">Выпущены: ${o.giftCodes.map(g => escHtml(g.code)).join(', ')}</small>`
+          : o.items.some(it => it.gift) && o.status !== 'cancelled' ? `<br><button type="button" class="btn-primary btn-sm" data-issue-gifts="${o.id}" style="margin-top:4px;">Выпустить сертификаты</button>` : ''}</td>
       <td>
         <select data-order-status="${o.id}">
           ${Object.entries(ORDER_STATUS_LABELS).map(([val,label]) => `<option value="${val}" ${val===o.status?'selected':''}>${label}</option>`).join('')}
@@ -1179,6 +1236,17 @@ function renderOrders(orders){
           body: JSON.stringify({ comment: text })
         });
         loadOrders();
+      }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+    });
+  });
+
+  el('ordersBody').querySelectorAll('[data-issue-gifts]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if(!confirm('Оплата за сертификаты получена? Покупателю придут коды на почту — отменить выпуск будет нельзя (только выключить сертификат).')) return;
+      try{
+        const { order } = await api('/api/admin/orders/' + btn.getAttribute('data-issue-gifts') + '/issue-gifts', { method:'POST' });
+        showMsg(el('globalMsg'), 'Сертификаты выпущены и отправлены покупателю: ' + order.giftCodes.map(g => g.code).join(', '), 'ok');
+        loadOrders(); loadGiftCards();
       }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
     });
   });
