@@ -579,7 +579,14 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   .co-methods{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;}
   .co-method{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--border);border-radius:12px;font-size:.88rem;cursor:pointer;background:var(--surface);}
   .co-method:has(input:checked){border-color:var(--ink);box-shadow:inset 0 0 0 1px var(--ink);}
-  .co-method input{accent-color:var(--accent);margin:0;}
+  .co-method input{accent-color:var(--accent);margin:0;flex:none;}
+  .co-method > span{display:flex;flex-direction:column;gap:2px;min-width:0;}
+  .co-name{font-weight:600;line-height:1.25;}
+  .co-price{font-size:.76rem;color:var(--ink-soft);line-height:1.25;}
+  .co-note{margin:-4px 0 10px;}
+  .co-map{display:inline-block;font-size:.85rem;font-weight:600;color:var(--accent);margin:-2px 0 10px;text-decoration:underline;}
+  .order-track{margin-top:8px;font-size:.88rem;}
+  .order-track a{color:var(--accent);text-decoration:underline;}
   .co-field{margin-bottom:10px;}
   .co-field input,.co-field textarea{
     width:100%;padding:10px 14px;border-radius:12px;border:1px solid var(--border);
@@ -818,6 +825,7 @@ document.getElementById('brandMarkSlot2').innerHTML = brandMark(34);
 let CATEGORIES = {};
 let PRODUCTS = [];
 let ARTICLES = []; // published: {slug, title, description, cover, date}
+let DELIVERY = []; // enabled delivery methods, set up by the owner in the admin
 
 async function loadData(){
   const res = await fetch('/api/data');
@@ -825,6 +833,7 @@ async function loadData(){
   CATEGORIES = data.categories;
   PRODUCTS = data.products;
   ARTICLES = data.articles || [];
+  DELIVERY = data.deliveryMethods || [];
   document.getElementById('navBlog').hidden = !ARTICLES.length;
   document.getElementById('footerBlog').hidden = !ARTICLES.length;
   renderFooterCatalogLinks();
@@ -997,8 +1006,19 @@ function updateCartUI(){
 }
 
 /* checkout step: shown in the cart footer after "Оформить заказ"; the draft survives re-renders */
-const DELIVERY_METHODS = { cdek: 'СДЭК', post: 'Почта России', courier: 'Курьер по Москве', pickup: 'Самовывоз' };
-const ADDRESS_HINT = { cdek: 'Адрес или пункт выдачи СДЭК', post: 'Адрес с индексом', courier: 'Улица, дом, квартира' };
+// Names of the methods orders were placed with before the owner could edit them
+const LEGACY_DELIVERY_NAMES = { cdek: 'СДЭК', post: 'Почта России', courier: 'Курьер по Москве', pickup: 'Самовывоз' };
+const deliveryLabel = o => o.deliveryName || LEGACY_DELIVERY_NAMES[o.delivery] || o.delivery;
+const deliveryMethod = id => DELIVERY.find(m => m.id === id);
+// Same rule as the server: what delivery adds to the total and how to say it
+function deliveryQuote(m, goodsTotal){
+  if(m.pricing === 'free' || (m.freeFrom > 0 && goodsTotal >= m.freeFrom)) return { cost: 0, text: 'бесплатно' };
+  if(m.pricing === 'fixed') return { cost: m.price, text: fmt(m.price) + ' ₽' };
+  if(m.pricing === 'onDelivery') return { cost: 0, text: 'по тарифу, при получении' + (m.estimate ? ` (${m.estimate})` : '') };
+  return { cost: 0, text: 'сообщит менеджер' };
+}
+// A Yandex Maps search for this carrier's pickup points in the customer's city
+const pointsMapUrl = (m, city) => 'https://yandex.ru/maps/?text=' + encodeURIComponent([m.mapQuery || m.name, city].filter(Boolean).join(' '));
 let CHECKOUT = null; // null = cart view, else {delivery, city, address, comment}
 let RESUME_CHECKOUT = false; // came to /account from "Оформить заказ" while logged out
 
@@ -1021,18 +1041,26 @@ function afterSignIn(user, message){
 
 function checkoutFormHtml(subtotal, discount){
   const c = CHECKOUT;
+  const goods = subtotal - discount;
+  const m = deliveryMethod(c.delivery) || DELIVERY[0];
+  const quote = m ? deliveryQuote(m, goods) : { cost: 0, text: '' };
+  const hint = { point: 'Адрес пункта выдачи', address: m && m.carrier === 'post' ? 'Адрес с индексом' : 'Улица, дом, квартира', courier: 'Улица, дом, квартира' };
   return `
     <form id="checkoutForm">
       <div class="co-title">Способ доставки</div>
       <div class="co-methods">
-        ${Object.entries(DELIVERY_METHODS).map(([k, label]) => `<label class="co-method"><input type="radio" name="co-delivery" value="${k}" ${c.delivery === k ? 'checked' : ''}> ${label}</label>`).join('')}
+        ${DELIVERY.map(d => `<label class="co-method"><input type="radio" name="co-delivery" value="${escAttr(d.id)}" ${m && m.id === d.id ? 'checked' : ''}>
+          <span><span class="co-name">${escText(d.name)}</span><span class="co-price">${escText(deliveryQuote(d, goods).text)}</span></span></label>`).join('')}
       </div>
-      ${c.delivery === 'cdek' || c.delivery === 'post' ? `<div class="co-field"><input id="co-city" placeholder="Город" value="${escAttr(c.city)}" required maxlength="100"></div>` : ''}
-      ${c.delivery !== 'pickup' ? `<div class="co-field"><input id="co-address" placeholder="${ADDRESS_HINT[c.delivery]}" value="${escAttr(c.address)}" required maxlength="300"></div>`
-        : `<div class="promo-note hint" style="margin:0 0 10px;">Самовывоз в Москве — адрес и время сообщит менеджер.</div>`}
+      ${m && m.note ? `<div class="promo-note hint co-note">${escText(m.note)}${m.freeFrom > 0 && goods < m.freeFrom ? ` Бесплатно от ${fmt(m.freeFrom)} ₽.` : ''}</div>`
+        : m && m.freeFrom > 0 && goods < m.freeFrom ? `<div class="promo-note hint co-note">Бесплатно от ${fmt(m.freeFrom)} ₽.</div>` : ''}
+      ${m && ['point', 'address', 'manager'].includes(m.kind) ? `<div class="co-field"><input id="co-city" placeholder="Город" value="${escText(c.city)}" required maxlength="100"></div>` : ''}
+      ${m && m.kind === 'point' ? `<a class="co-map" href="${escText(pointsMapUrl(m, c.city))}" target="_blank" rel="noopener">📍 Найти пункт выдачи на карте</a>` : ''}
+      ${m && hint[m.kind] ? `<div class="co-field"><input id="co-address" placeholder="${hint[m.kind]}" value="${escText(c.address)}" required maxlength="300"></div>` : ''}
       <div class="co-field"><textarea id="co-comment" placeholder="Комментарий к заказу (необязательно)" maxlength="1000">${c.comment.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</textarea></div>
       ${discount ? `<div class="row promo"><span>Промокод ${APPLIED_PROMO.code}</span><span>−${fmt(discount)} ₽</span></div>` : ''}
-      <div class="row"><span>Итого</span><span class="price">${fmt(subtotal - discount)} ₽</span></div>
+      ${m ? `<div class="row"><span>Доставка</span><span>${quote.cost ? fmt(quote.cost) + ' ₽' : escText(quote.text)}</span></div>` : ''}
+      <div class="row"><span>Итого</span><span class="price">${fmt(goods + quote.cost)} ₽</span></div>
       ${CURRENT_USER && !CURRENT_USER.consentAt ? consentField('cart-consent') : ''}
       <button type="submit" class="btn btn-primary btn-block">Подтвердить заказ</button>
       <button type="button" class="co-back" id="checkoutBack">← Назад к корзине</button>
@@ -1093,7 +1121,7 @@ document.getElementById('cartFoot').addEventListener('click', e => {
     navigate('/account?tab=profile');
     return;
   }
-  CHECKOUT = { delivery: 'cdek', city: CURRENT_USER.city || '', address: CURRENT_USER.address || '', comment: '' };
+  CHECKOUT = { delivery: DELIVERY.length ? DELIVERY[0].id : '', city: CURRENT_USER.city || '', address: CURRENT_USER.address || '', comment: '' };
   updateCartUI();
 });
 // keep the checkout draft in sync so re-renders (removing an item, switching method) don't lose it
@@ -1102,6 +1130,8 @@ document.getElementById('cartFoot').addEventListener('input', e => {
   if(e.target.name === 'co-delivery'){ CHECKOUT.delivery = e.target.value; updateCartUI(); return; }
   const field = { 'co-city': 'city', 'co-address': 'address', 'co-comment': 'comment' }[e.target.id];
   if(field) CHECKOUT[field] = e.target.value;
+  const mapLink = document.querySelector('#cartFoot .co-map');
+  if(field === 'city' && mapLink) mapLink.href = pointsMapUrl(deliveryMethod(CHECKOUT.delivery), CHECKOUT.city);
 });
 document.getElementById('cartFoot').addEventListener('submit', async e => {
   if(e.target.id !== 'checkoutForm') return;
@@ -1124,7 +1154,7 @@ document.getElementById('cartFoot').addEventListener('submit', async e => {
     const data = await res.json();
     if(!res.ok) throw new Error(data.error || 'Не удалось оформить заказ');
     if(consentBox) CURRENT_USER.consentAt = new Date().toISOString();
-    if(CHECKOUT.delivery !== 'pickup'){
+    if(['address', 'courier'].includes((deliveryMethod(CHECKOUT.delivery) || {}).kind)){
       CURRENT_USER.city = CURRENT_USER.city || data.order.city;
       CURRENT_USER.address = CURRENT_USER.address || data.order.address;
     }
@@ -1738,12 +1768,13 @@ function pageDelivery(){
       <p>Заказ на сайте — это заявка. После оформления менеджер свяжется с вами, уточнит наличие, способ доставки и итоговую стоимость. Онлайн-оплата на сайте не принимается.</p>
 
       <h2>Доставка</h2>
-      <ul>
-        <li><b>СДЭК</b> — до пункта выдачи или курьером до двери, по всей России. Стоимость и срок — по тарифам СДЭК, обычно 2–7 дней.</li>
-        <li><b>Почта России</b> — в любой населённый пункт. Стоимость — по тарифам Почты, срок обычно 5–14 дней.</li>
-        <li><b>Курьер по Москве</b> — 1–2 дня, стоимость согласуем при подтверждении заказа.</li>
-        <li><b>Самовывоз</b> — Москва, по предварительной договорённости, бесплатно. Адрес сообщит менеджер.</li>
-      </ul>
+      ${DELIVERY.length ? `<ul>${DELIVERY.map(m => {
+        const price = m.pricing === 'fixed' ? fmt(m.price) + ' ₽' : m.pricing === 'free' ? 'бесплатно'
+          : m.pricing === 'onDelivery' ? 'по тарифу перевозчика, оплата при получении' + (m.estimate ? ` (${m.estimate})` : '') : 'стоимость сообщит менеджер';
+        return `<li><b>${escText(m.name)}</b> — ${escText(price)}${m.freeFrom > 0 && m.pricing !== 'free' ? `, бесплатно от ${fmt(m.freeFrom)} ₽` : ''}.${m.note ? ' ' + escText(m.note) : ''}</li>`;
+      }).join('')}</ul>
+      <p>Пункт выдачи выбираете сами: при оформлении заказа есть ссылка на карту с пунктами в вашем городе. Когда посылка уйдёт, в личном кабинете появится трек-номер, а на почту придёт письмо.</p>`
+      : `<p>СДЭК, Почта России, курьер по Москве и самовывоз — подробности уточнит менеджер.</p>`}
 
       <h2>Оплата</h2>
       <ul>
@@ -1952,7 +1983,8 @@ function renderOrders(orders){
       </div>
       ${o.items.map(it => `<div class="order-line"><span>${it.name}${it.size?' · '+it.size:''} × ${it.qty}</span><span>${fmt(it.price*it.qty)} ₽</span></div>`).join('')}
       ${o.promo ? `<div class="order-line"><span>Промокод ${o.promo.code}</span><span>−${fmt(o.promo.discount)} ₽</span></div>` : ''}
-      ${o.delivery ? `<div class="order-line" style="color:var(--ink-soft);"><span>Доставка: ${DELIVERY_METHODS[o.delivery] || o.delivery}${[o.city, o.address].filter(Boolean).length ? ' — ' + escAttr([o.city, o.address].filter(Boolean).join(', ')).replace(/</g, '&lt;') : ''}</span></div>` : ''}
+      ${o.delivery ? `<div class="order-line" style="color:var(--ink-soft);"><span>Доставка: ${escText(deliveryLabel(o))}${[o.city, o.address].filter(Boolean).length ? ' — ' + escText([o.city, o.address].filter(Boolean).join(', ')) : ''}</span><span>${o.deliveryCost ? fmt(o.deliveryCost) + ' ₽' : o.deliveryPrice ? escText(o.deliveryPrice) : ''}</span></div>` : ''}
+      ${o.trackNumber ? `<div class="order-track">Трек-номер: <b>${escText(o.trackNumber)}</b>${o.trackUrl ? ` · <a href="${escText(o.trackUrl)}" target="_blank" rel="noopener">Отследить посылку</a>` : ''}</div>` : ''}
       <div class="order-total"><span>Итого</span><span>${fmt(o.total)} ₽</span></div>
       ${['new','processing'].includes(o.status) ? `<button class="btn btn-ghost btn-sm" style="margin-top:12px;" data-cancel-order="${o.id}">Отменить заказ</button>` : ''}
     </div>

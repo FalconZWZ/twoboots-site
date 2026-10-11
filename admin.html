@@ -82,6 +82,15 @@
   .cat-tabs button{border:1px solid var(--border);background:#fff;color:var(--ink);padding:6px 14px;font-size:.85rem;}
   .cat-tabs button.on{background:var(--accent);border-color:var(--accent);color:#fff;}
   .cat-tabs small{opacity:.7;font-weight:500;margin-left:2px;}
+  .dm{border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;}
+  .dm.off{opacity:.55;}
+  .dm-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;}
+  .dm-head input[type=checkbox]{width:auto;}
+  .dm-head .dm-name{flex:1;min-width:180px;font-weight:600;}
+  .dm-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px 10px;}
+  .dm-grid .wide{grid-column:span 2;}
+  .dm-grid label{margin-bottom:3px;font-size:.75rem;}
+  @media (max-width:640px){ .dm-grid{grid-template-columns:1fr 1fr;} }
   .cat-pill{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:999px;padding:4px 6px 4px 14px;margin:0 8px 8px 0;font-size:.85rem;}
 </style>
 </head>
@@ -121,6 +130,7 @@
     <button type="button" role="tab" data-tab-btn="orders">Заказы <span class="tab-badge" id="tabBadgeOrders" hidden></span></button>
     <button type="button" role="tab" data-tab-btn="products">Товары</button>
     <button type="button" role="tab" data-tab-btn="reviews">Отзывы <span class="tab-badge" id="tabBadgeReviews" hidden></span></button>
+    <button type="button" role="tab" data-tab-btn="delivery">Доставка</button>
     <button type="button" role="tab" data-tab-btn="promos">Промокоды</button>
     <button type="button" role="tab" data-tab-btn="articles">Статьи</button>
     <button type="button" role="tab" data-tab-btn="stats">Статистика</button>
@@ -219,6 +229,17 @@
   <div class="card" data-tab="reviews">
     <h2>Отзывы <span id="pendingReviewsBadge" style="font-size:.8rem;font-weight:700;color:#fff;background:var(--accent);border-radius:999px;padding:2px 10px;vertical-align:middle;" hidden></span></h2>
     <div id="reviewsAdminList"></div>
+  </div>
+
+  <div class="card" data-tab="delivery">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+      <h2 style="margin:0;">Способы доставки</h2>
+      <button type="button" class="btn-ghost btn-sm" id="addDeliveryBtn">+ Добавить способ</button>
+    </div>
+    <p style="color:var(--ink-soft);font-size:.85rem;margin:8px 0 14px;">Покупатель видит включённые способы при оформлении заказа в том же порядке, что здесь, и на странице «Доставка и оплата». Для пунктов выдачи у него будет ссылка «Найти на карте» — Яндекс Карты с поиском по тексту из поля «Поиск на карте» в его городе. «Фиксированная» стоимость добавляется к сумме заказа, «по тарифу» — покупатель платит перевозчику при получении.</p>
+    <div id="deliveryList"></div>
+    <button type="button" class="btn-primary" id="saveDeliveryBtn" style="margin-top:6px;">Сохранить способы доставки</button>
+    <span id="deliveryMsg" style="margin-left:10px;font-size:.85rem;"></span>
   </div>
 
   <div class="card" data-tab="promos">
@@ -362,7 +383,7 @@ function showMsg(target, text, type){
 }
 
 /* ===== Tabs: one section of the admin at a time; the open tab is kept in the address (#orders) ===== */
-const TAB_NAMES = ['orders','products','reviews','promos','articles','stats','settings'];
+const TAB_NAMES = ['orders','products','reviews','delivery','promos','articles','stats','settings'];
 function showTab(name){
   if(!TAB_NAMES.includes(name)) name = 'orders';
   document.querySelectorAll('#adminScreen [data-tab]').forEach(card => card.classList.toggle('tab-off', card.dataset.tab !== name));
@@ -466,6 +487,7 @@ async function loadAll(){
   await loadOrders();
   await loadStats();
   await loadVisits();
+  await loadDeliveryMethods();
   loadVisitorsNow();
   await loadPromos();
   await loadAdminReviews();
@@ -614,6 +636,78 @@ el('statsTableToggle').addEventListener('click', () => {
   el('statsTable').hidden = !show;
   el('statsChart').hidden = show;
   el('statsTableToggle').textContent = show ? 'Показать графиком' : 'Показать таблицей';
+});
+
+/* ===== Delivery methods ===== */
+let DELIVERY_EDIT = [], DELIVERY_KINDS = {}, DELIVERY_CARRIERS = {};
+const DELIVERY_PRICING_LABELS = { fixed: 'Фиксированная', onDelivery: 'По тарифу, при получении', agree: 'Сообщит менеджер', free: 'Бесплатно' };
+async function loadDeliveryMethods(){
+  const d = await api('/api/admin/delivery-methods');
+  DELIVERY_EDIT = d.methods; DELIVERY_KINDS = d.kinds; DELIVERY_CARRIERS = d.carriers;
+  renderDeliveryMethods();
+}
+function renderDeliveryMethods(){
+  const opts = (map, cur) => Object.entries(map).map(([k, l]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${escHtml(l)}</option>`).join('');
+  el('deliveryList').innerHTML = DELIVERY_EDIT.map((m, i) => `
+    <div class="dm ${m.enabled ? '' : 'off'}" data-dm="${i}">
+      <div class="dm-head">
+        <label style="display:flex;gap:6px;align-items:center;margin:0;font-size:.85rem;color:var(--ink);"><input type="checkbox" data-f="enabled" ${m.enabled ? 'checked' : ''}> Включён</label>
+        <input class="dm-name" data-f="name" value="${escHtml(m.name)}" maxlength="80" placeholder="Название для покупателя">
+        <button type="button" class="btn-ghost btn-sm" data-dm-move="-1" ${i === 0 ? 'disabled' : ''} title="Выше">↑</button>
+        <button type="button" class="btn-ghost btn-sm" data-dm-move="1" ${i === DELIVERY_EDIT.length - 1 ? 'disabled' : ''} title="Ниже">↓</button>
+        <button type="button" class="btn-danger btn-sm" data-dm-del>Удалить</button>
+      </div>
+      <div class="dm-grid">
+        <div><label title="Пункт выдачи — город и адрес пункта; До адреса — город и адрес; Курьер по Москве — адрес; Через менеджера — только город; Самовывоз — ничего">Тип доставки</label><select data-f="kind">${opts(DELIVERY_KINDS, m.kind)}</select></div>
+        <div><label>Перевозчик (для трек-номера)</label><select data-f="carrier">${opts(DELIVERY_CARRIERS, m.carrier)}</select></div>
+        <div><label>Стоимость</label><select data-f="pricing">${opts(DELIVERY_PRICING_LABELS, m.pricing)}</select></div>
+        <div><label>Цена, ₽ (для фиксированной)</label><input type="number" min="0" data-f="price" value="${m.price || ''}" ${m.pricing === 'fixed' ? '' : 'disabled'}></div>
+        <div><label>Бесплатно от суммы, ₽</label><input type="number" min="0" data-f="freeFrom" value="${m.freeFrom || ''}" placeholder="не бесплатно"></div>
+        <div><label>Примерная цена (для «по тарифу»)</label><input data-f="estimate" value="${escHtml(m.estimate)}" maxlength="60" placeholder="например: 300–500 ₽"></div>
+        <div class="wide"><label>Поиск на карте (для пунктов выдачи)</label><input data-f="mapQuery" value="${escHtml(m.mapQuery)}" maxlength="80" placeholder="например: СДЭК пункт выдачи"></div>
+        <div class="wide" style="grid-column:1/-1;"><label>Пояснение для покупателя</label><input data-f="note" value="${escHtml(m.note)}" maxlength="300" placeholder="Сроки, условия"></div>
+        <div><label>ID</label><input data-f="id" value="${escHtml(m.id)}" maxlength="30" ${m.isNew ? '' : 'readonly'} style="${m.isNew ? '' : 'background:#f4f6f8;'}"></div>
+      </div>
+    </div>`).join('');
+}
+el('deliveryList').addEventListener('input', e => {
+  const box = e.target.closest('[data-dm]'); const f = e.target.getAttribute('data-f');
+  if(!box || !f) return;
+  const m = DELIVERY_EDIT[Number(box.getAttribute('data-dm'))];
+  m[f] = e.target.type === 'checkbox' ? e.target.checked : e.target.type === 'number' ? Number(e.target.value) || 0 : e.target.value;
+  if(f === 'enabled' || f === 'pricing') renderDeliveryMethods();
+});
+el('deliveryList').addEventListener('click', e => {
+  const box = e.target.closest('[data-dm]');
+  if(!box) return;
+  const i = Number(box.getAttribute('data-dm'));
+  if(e.target.hasAttribute('data-dm-del')){
+    if(!confirm(`Удалить способ «${DELIVERY_EDIT[i].name}»? Старые заказы с ним сохранятся.`)) return;
+    DELIVERY_EDIT.splice(i, 1); renderDeliveryMethods();
+  }
+  const move = e.target.getAttribute('data-dm-move');
+  if(move){
+    const j = i + Number(move);
+    [DELIVERY_EDIT[i], DELIVERY_EDIT[j]] = [DELIVERY_EDIT[j], DELIVERY_EDIT[i]];
+    renderDeliveryMethods();
+  }
+});
+el('addDeliveryBtn').addEventListener('click', () => {
+  let n = 1; while(DELIVERY_EDIT.some(m => m.id === 'method-' + n)) n++;
+  DELIVERY_EDIT.push({ id: 'method-' + n, name: 'Новый способ', kind: 'point', carrier: 'other', pricing: 'onDelivery', price: 0, freeFrom: 0, estimate: '', note: '', mapQuery: '', enabled: true, isNew: true });
+  renderDeliveryMethods();
+  el('deliveryList').lastElementChild.querySelector('.dm-name').select();
+});
+el('saveDeliveryBtn').addEventListener('click', async () => {
+  try{
+    const { methods } = await api('/api/admin/delivery-methods', {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ methods: DELIVERY_EDIT })
+    });
+    DELIVERY_EDIT = methods;
+    renderDeliveryMethods();
+    el('deliveryMsg').innerHTML = '<span style="color:#1c5e26;">Сохранено — уже на сайте</span>';
+  }catch(e){ el('deliveryMsg').innerHTML = `<span style="color:#8a2418;">${escHtml(e.message)}</span>`; }
 });
 
 /* ===== Visitors ===== */
@@ -861,7 +955,9 @@ el('promoForm').addEventListener('submit', async e => {
   }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
 });
 
-const DELIVERY_LABELS = { cdek: 'СДЭК', post: 'Почта России', courier: 'Курьер по Москве', pickup: 'Самовывоз' };
+// Names of the methods orders were placed with before methods became editable
+const LEGACY_DELIVERY_NAMES = { cdek: 'СДЭК', post: 'Почта России', courier: 'Курьер по Москве', pickup: 'Самовывоз' };
+const deliveryLabel = o => o.deliveryName || LEGACY_DELIVERY_NAMES[o.delivery] || o.delivery || '';
 const ORDER_STATUS_LABELS = { new:'Новый', processing:'В обработке', shipped:'Отправлен', completed:'Выполнен', cancelled:'Отменён' };
 
 async function loadOrders(){
@@ -885,13 +981,13 @@ function csvCell(v){
 el('exportOrdersBtn').addEventListener('click', () => {
   const list = filteredOrders();
   if(!list.length){ showMsg(el('globalMsg'), 'Нет заказов для выгрузки', 'error'); return; }
-  const header = ['Номер','Дата','Статус','Тип','Имя','Телефон','Email','Доставка','Город','Адрес','Комментарий клиента','Товары','Сумма товаров','Промокод','Скидка','Итого','Комментарий менеджера'];
+  const header = ['Номер','Дата','Статус','Тип','Имя','Телефон','Email','Доставка','Город','Адрес','Стоимость доставки','Трек-номер','Комментарий клиента','Товары','Сумма товаров','Промокод','Скидка','Итого','Комментарий менеджера'];
   const rows = list.map(o => [
     o.number,
     new Date(o.createdAt).toLocaleString('ru-RU'),
     ORDER_STATUS_LABELS[o.status] || o.status,
     o.quick ? 'В 1 клик' : 'Корзина',
-    o.name, o.phone, o.email, DELIVERY_LABELS[o.delivery] || '', o.city, o.address, o.customerComment,
+    o.name, o.phone, o.email, deliveryLabel(o), o.city, o.address, o.deliveryCost ? o.deliveryCost : (o.deliveryPrice || ''), o.trackNumber || '', o.customerComment,
     o.items.map(it => `${it.name}${it.size ? ' (' + it.size + ')' : ''} × ${it.qty}`).join('; '),
     o.subtotal != null ? o.subtotal : o.total,
     o.promo ? o.promo.code : '',
@@ -960,13 +1056,14 @@ function renderOrders(orders){
     <tr>
       <td style="white-space:nowrap;font-weight:700;">№${o.number || o.id.slice(0,8)}</td>
       <td style="white-space:nowrap;">${new Date(o.createdAt).toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
-      <td>${o.quick ? '<span style="display:inline-block;font-size:.72rem;font-weight:700;color:#1c5e26;background:#dff3e0;padding:2px 8px;border-radius:999px;margin-bottom:4px;">В 1 клик</span><br>' : ''}${escHtml(o.name)}<br><small style="color:var(--ink-soft);">${escHtml(o.email)}${o.phone ? ' · ' + escHtml(o.phone) : ''}</small>${o.delivery ? `<br><small><b>${DELIVERY_LABELS[o.delivery] || o.delivery}</b></small>` : ''}${o.city || o.address ? `<br><small style="color:var(--ink-soft);">${escHtml([o.city, o.address].filter(Boolean).join(', '))}</small>` : ''}${o.customerComment ? `<br><small style="color:var(--ink-soft);font-style:italic;">«${escHtml(o.customerComment)}»</small>` : ''}</td>
+      <td>${o.quick ? '<span style="display:inline-block;font-size:.72rem;font-weight:700;color:#1c5e26;background:#dff3e0;padding:2px 8px;border-radius:999px;margin-bottom:4px;">В 1 клик</span><br>' : ''}${escHtml(o.name)}<br><small style="color:var(--ink-soft);">${escHtml(o.email)}${o.phone ? ' · ' + escHtml(o.phone) : ''}</small>${o.delivery ? `<br><small><b>${escHtml(deliveryLabel(o))}</b>${o.deliveryPrice ? ' · ' + escHtml(o.deliveryCost ? o.deliveryCost.toLocaleString('ru-RU') + ' ₽' : o.deliveryPrice) : ''}</small>` : ''}${o.city || o.address ? `<br><small style="color:var(--ink-soft);">${escHtml([o.city, o.address].filter(Boolean).join(', '))}</small>` : ''}${o.customerComment ? `<br><small style="color:var(--ink-soft);font-style:italic;">«${escHtml(o.customerComment)}»</small>` : ''}</td>
       <td>${o.items.map(it => `${escHtml(it.name)}${it.size ? ' · ' + escHtml(it.size) : ''} × ${it.qty}`).join('<br>')}</td>
       <td style="white-space:nowrap;">${o.total.toLocaleString('ru-RU')} ₽${o.promo ? `<br><small style="color:var(--ink-soft);">${o.promo.code}: −${o.promo.discount.toLocaleString('ru-RU')} ₽</small>` : ''}</td>
       <td>
         <select data-order-status="${o.id}">
           ${Object.entries(ORDER_STATUS_LABELS).map(([val,label]) => `<option value="${val}" ${val===o.status?'selected':''}>${label}</option>`).join('')}
         </select>
+        ${o.quick ? '' : `<div style="margin-top:6px;font-size:.8rem;">${o.trackNumber ? `Трек: ${o.trackUrl ? `<a href="${escHtml(o.trackUrl)}" target="_blank" rel="noopener">${escHtml(o.trackNumber)}</a>` : `<b>${escHtml(o.trackNumber)}</b>`}<br>` : ''}<button type="button" class="btn-ghost btn-sm" data-order-track="${o.id}" style="margin-top:2px;">${o.trackNumber ? 'Изменить трек' : 'Трек-номер'}</button></div>`}
       </td>
       <td style="max-width:220px;">${o.comment ? `<div style="white-space:pre-wrap;font-size:.82rem;">${escHtml(o.comment)}</div>` : ''}<button type="button" class="btn-ghost btn-sm" data-order-comment="${o.id}" style="margin-top:4px;">${o.comment ? 'Изменить' : 'Добавить'}</button></td>
       <td>${IS_SUPER ? `<button class="btn-ghost btn-sm" data-delete-order="${o.id}">Удалить</button>` : ''}</td>
@@ -984,6 +1081,23 @@ function renderOrders(orders){
           method:'PATCH', headers:{'Content-Type':'application/json'},
           body: JSON.stringify({ comment: text })
         });
+        loadOrders();
+      }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+    });
+  });
+
+  el('ordersBody').querySelectorAll('[data-order-track]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-order-track');
+      const order = ALL_ORDERS.find(o => o.id === id);
+      const number = prompt('Трек-номер посылки. Заказ станет «Отправлен», покупатель получит письмо с номером и увидит его в личном кабинете. Пусто — убрать номер.', order.trackNumber || '');
+      if(number === null) return;
+      try{
+        await api('/api/admin/orders/' + id, {
+          method:'PATCH', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ trackNumber: number })
+        });
+        showMsg(el('globalMsg'), number.trim() ? 'Трек-номер сохранён, покупателю отправлено письмо' : 'Трек-номер убран', 'ok');
         loadOrders();
       }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
     });
