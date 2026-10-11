@@ -371,6 +371,12 @@ function normalizeStore(store) {
       .map(a => ({ id: crypto.randomUUID(), ...a, cover: null, published: false, createdAt: now, updatedAt: now }));
     changed = true;
   }
+  // Starter texts and FAQ for the category pages; the owner edits them in the admin.
+  if (!store.categoryContent) {
+    const starter = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'category-content.json'), 'utf8'));
+    store.categoryContent = Object.fromEntries(Object.entries(starter).filter(([cat]) => store.categories && store.categories[cat]));
+    changed = true;
+  }
   if (!store.orderSeq) {
     store.orderSeq = store.orders.reduce((max, o) => Math.max(max, o.number || 0), 0);
     changed = true;
@@ -550,6 +556,46 @@ app.get('/unsubscribe', (req, res) => {
 <p><a href="/" style="color:#FF4B2B;">Вернуться в магазин</a></p></body>`);
 });
 
+/* ===== Category texts and FAQ ===== */
+// Shown under the products of a category page and pre-rendered for search engines, with
+// FAQPage markup so Yandex can show the answers right in the results.
+function publicCategoryContent(categories, content) {
+  return Object.fromEntries(Object.entries(content || {})
+    .filter(([cat, c]) => categories[cat] && ((c.text || '').trim() || (c.faq || []).length))
+    .map(([cat, c]) => [cat, { html: renderArticleBody(c.text || ''), faq: c.faq || [] }]));
+}
+function categoryPageExtras(store, cat) {
+  const c = (store.categoryContent || {})[cat];
+  if (!c) return {};
+  const plain = String(c.text || '').replace(/\*\*|##+\s?|\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/\s+/g, ' ').trim();
+  const faq = (c.faq || []).filter(f => f.q && f.a);
+  return {
+    description: plain ? plain.slice(0, 157).replace(/\s+\S*$/, '') + '…' : undefined,
+    bodyHtml: `<section class="block"><div class="wrap doc-page"><h1>${escHtml(store.categories[cat])}</h1>${renderArticleBody(c.text || '')}`
+      + (faq.length ? `<h2>Вопросы и ответы</h2>${faq.map(f => `<h3>${escHtml(f.q)}</h3><p>${escHtml(f.a)}</p>`).join('')}` : '') + '</div></section>',
+    faqLd: faq.length ? { '@context': 'https://schema.org', '@type': 'FAQPage',
+      mainEntity: faq.map(f => ({ '@type': 'Question', name: f.q, acceptedAnswer: { '@type': 'Answer', text: f.a } })) } : null,
+  };
+}
+
+app.get('/api/admin/category-content', requireAdmin, (req, res) => {
+  const store = readStore();
+  res.json({ content: store.categoryContent || {}, categories: store.categories });
+});
+
+app.put('/api/admin/category-content/:cat', requireAdmin, (req, res) => {
+  const store = readStore();
+  if (!store.categories[req.params.cat]) return res.status(404).json({ error: 'Категория не найдена' });
+  const body = req.body || {};
+  const faq = (Array.isArray(body.faq) ? body.faq : []).slice(0, 15)
+    .map(f => ({ q: String((f && f.q) || '').trim().slice(0, 200), a: String((f && f.a) || '').trim().slice(0, 1500) }))
+    .filter(f => f.q && f.a);
+  store.categoryContent = store.categoryContent || {};
+  store.categoryContent[req.params.cat] = { text: String(body.text || '').slice(0, 10000), faq };
+  writeStore(store);
+  res.json({ content: store.categoryContent[req.params.cat], html: renderArticleBody(store.categoryContent[req.params.cat].text) });
+});
+
 /* ===== Public data API ===== */
 // The shop window never shows exact stock — only «осталось N» when 5 or fewer are left.
 const publicProduct = ratings => p => {
@@ -561,10 +607,11 @@ const publicProduct = ratings => p => {
   };
 };
 app.get('/api/data', (req, res) => {
-  const { categories, products, reviews, articles, deliveryMethods } = readStore();
+  const { categories, products, reviews, articles, deliveryMethods, categoryContent } = readStore();
   const ratings = productRatings(reviews);
   res.json({
     categories,
+    categoryContent: publicCategoryContent(categories, categoryContent),
     deliveryMethods: deliveryMethods.filter(m => m.enabled).map(publicDeliveryMethod),
     articles: publishedArticles(articles).map(articleSummary),
     products: products.filter(p => !p.hidden).map(publicProduct(ratings)),
@@ -2708,10 +2755,13 @@ function pageSeo(pathname, query) {
   if (pathname === '/catalog') {
     const cat = typeof query.cat === 'string' && categories[query.cat] ? query.cat : null;
     if (!cat) return { title: 'Каталог — Two Boots', description: CATALOG_DESCRIPTION, url };
+    const extras = categoryPageExtras(store, cat);
     return {
-      title: `${categories[cat]} — Two Boots`,
-      description: `${categories[cat]} для фигурного катания — каталог Two Boots.`,
+      title: `${categories[cat]} для фигурного катания — купить в Two Boots`,
+      description: extras.description || `${categories[cat]} для фигурного катания — каталог Two Boots.`,
       url: `${url}?cat=${encodeURIComponent(cat)}`,
+      ...(extras.bodyHtml ? { bodyHtml: extras.bodyHtml } : {}),
+      ...(extras.faqLd ? { jsonLd: [extras.faqLd] } : {}),
     };
   }
   const productMatch = pathname.match(/^\/product\/([^/]+)$/);
