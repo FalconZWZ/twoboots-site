@@ -199,6 +199,13 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   .fav-btn.on svg,.fav-inline.on svg{fill:var(--accent);stroke:var(--accent);}
   .fav-btn:hover{border-color:var(--ink-soft);}
   .fav-inline{display:inline-flex;align-items:center;gap:8px;}
+  .cat-content{margin-top:48px;padding-top:32px;border-top:1px solid var(--border);max-width:760px;}
+  .faq-list details{border:1px solid var(--border);border-radius:12px;padding:12px 16px;margin-bottom:8px;background:var(--surface);}
+  .faq-list summary{font-weight:700;cursor:pointer;list-style:none;}
+  .faq-list summary::-webkit-details-marker{display:none;}
+  .faq-list summary::after{content:'+';float:right;color:var(--accent);font-weight:800;}
+  .faq-list details[open] summary::after{content:'−';}
+  .faq-list p{margin:10px 0 0;color:var(--ink-soft);}
   .gift-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;}
   .gift-card{border-radius:var(--radius-m);padding:22px 18px;background:linear-gradient(135deg,var(--ink) 0%,#2a3540 100%);color:#fff;display:flex;flex-direction:column;gap:6px;min-height:170px;}
   .gift-amount{font-size:1.9rem;font-weight:800;letter-spacing:-.01em;}
@@ -856,6 +863,7 @@ let CATEGORIES = {};
 let PRODUCTS = [];
 let ARTICLES = []; // published: {slug, title, description, cover, date}
 let DELIVERY = []; // enabled delivery methods, set up by the owner in the admin
+let CATEGORY_CONTENT = {}; // {cat: {html, faq: [{q, a}]}} — text and FAQ under a category's products
 
 async function loadData(){
   const res = await fetch('/api/data');
@@ -864,6 +872,7 @@ async function loadData(){
   PRODUCTS = data.products;
   ARTICLES = data.articles || [];
   DELIVERY = data.deliveryMethods || [];
+  CATEGORY_CONTENT = data.categoryContent || {};
   document.getElementById('navBlog').hidden = !ARTICLES.length;
   document.getElementById('footerBlog').hidden = !ARTICLES.length;
   renderFooterCatalogLinks();
@@ -1678,9 +1687,18 @@ function pageCatalog(params){
         <div class="catalog-count" id="catalogCount">${catalogCountText(list.length, q)}</div>
       </div>
       <div class="product-grid" id="catalogGrid">${catalogGridHtml(list)}</div>
+      ${categoryContentHtml(activeCat)}
     </div>
   </section>
   `;
+}
+function categoryContentHtml(cat){
+  const c = CATEGORY_CONTENT[cat];
+  if(!c) return '';
+  return `<div class="cat-content doc-page">
+    ${c.html}
+    ${c.faq.length ? `<h2>Вопросы и ответы</h2><div class="faq-list">${c.faq.map(f => `<details><summary>${escText(f.q)}</summary><p>${escText(f.a)}</p></details>`).join('')}</div>` : ''}
+  </div>`;
 }
 
 // Colour/size variants (separate products, e.g. suitcases M/XL) link to each other;

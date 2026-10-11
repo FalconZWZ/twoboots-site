@@ -412,6 +412,25 @@
     </form>
   </div>
 
+  <div class="card" data-tab="products">
+    <h2>Тексты категорий и вопросы-ответы</h2>
+    <p style="color:var(--ink-soft);font-size:.85rem;margin:-6px 0 12px;">Текст и вопросы-ответы показываются на странице категории под товарами. Они помогают покупателям с выбором, а Яндексу — понять, о чём страница, и показать ответы прямо в поиске. Пишите своими словами и по делу: Яндекс не любит тексты, набитые ключевыми словами.</p>
+    <div class="row" style="align-items:flex-end;">
+      <div class="field" style="flex:none;width:260px;"><label>Категория</label><select id="ccCat"></select></div>
+      <div class="field" style="flex:none;"><a id="ccView" target="_blank" rel="noopener" class="btn-ghost btn-sm" style="display:inline-block;border:1px solid var(--border);border-radius:999px;text-decoration:none;color:inherit;font-weight:600;padding:7px 14px;">Открыть на сайте</a></div>
+    </div>
+    <div class="field">
+      <label>Текст</label>
+      <textarea id="ccText" style="min-height:200px;"></textarea>
+      <small style="color:var(--ink-soft);font-size:.78rem;display:block;margin-top:4px;">Абзацы — через пустую строку, <code>**жирный**</code>, <code>## Подзаголовок</code>, строки с <code>- </code> — список, ссылка — <code>[текст](/delivery)</code>.</small>
+    </div>
+    <label>Вопросы и ответы</label>
+    <div id="ccFaq"></div>
+    <button type="button" class="btn-ghost btn-sm" id="ccAddFaq" style="margin-bottom:12px;">+ вопрос</button><br>
+    <button type="button" class="btn-primary" id="ccSave">Сохранить</button>
+    <span id="ccMsg" style="margin-left:10px;font-size:.85rem;"></span>
+  </div>
+
 </div>
 
 <script>
@@ -528,6 +547,7 @@ async function loadAll(){
   await loadStats();
   await loadVisits();
   await loadDeliveryMethods();
+  await loadCategoryContent();
   loadVisitorsNow();
   await loadPromos();
   await loadAdminReviews();
@@ -982,6 +1002,48 @@ async function loadPromos(){
   await loadGiftCards();
 }
 
+/* ===== Category texts and FAQ ===== */
+let CC = { content: {}, categories: {} };
+async function loadCategoryContent(){
+  CC = await api('/api/admin/category-content');
+  const current = el('ccCat').value;
+  el('ccCat').innerHTML = Object.entries(CC.categories).map(([id, label]) => `<option value="${escHtml(id)}">${escHtml(label)}</option>`).join('');
+  if(CC.categories[current]) el('ccCat').value = current;
+  showCategoryContent();
+}
+function faqRow(q, a){
+  const row = document.createElement('div');
+  row.className = 'cc-faq';
+  row.style.cssText = 'border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:8px;';
+  row.innerHTML = `<input class="cc-q" maxlength="200" placeholder="Вопрос" style="margin-bottom:6px;font-weight:600;">
+    <textarea class="cc-a" maxlength="1500" placeholder="Ответ" style="min-height:54px;"></textarea>
+    <button type="button" class="btn-ghost btn-sm cc-del" style="margin-top:6px;">Удалить вопрос</button>`;
+  row.querySelector('.cc-q').value = q || '';
+  row.querySelector('.cc-a').value = a || '';
+  row.querySelector('.cc-del').addEventListener('click', () => row.remove());
+  return row;
+}
+function showCategoryContent(){
+  const cat = el('ccCat').value;
+  const c = CC.content[cat] || { text: '', faq: [] };
+  el('ccText').value = c.text || '';
+  el('ccFaq').innerHTML = '';
+  (c.faq || []).forEach(f => el('ccFaq').appendChild(faqRow(f.q, f.a)));
+  el('ccView').href = '/catalog?cat=' + encodeURIComponent(cat);
+  el('ccMsg').textContent = '';
+}
+el('ccCat').addEventListener('change', showCategoryContent);
+el('ccAddFaq').addEventListener('click', () => { const r = faqRow(); el('ccFaq').appendChild(r); r.querySelector('.cc-q').focus(); });
+el('ccSave').addEventListener('click', async () => {
+  const cat = el('ccCat').value;
+  const faq = Array.from(el('ccFaq').querySelectorAll('.cc-faq')).map(r => ({ q: r.querySelector('.cc-q').value, a: r.querySelector('.cc-a').value }));
+  try{
+    const { content } = await api('/api/admin/category-content/' + encodeURIComponent(cat), { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text: el('ccText').value, faq }) });
+    CC.content[cat] = content;
+    el('ccMsg').innerHTML = '<span style="color:#1c5e26;">Сохранено — уже на сайте</span>';
+  }catch(e){ el('ccMsg').innerHTML = `<span style="color:#8a2418;">${escHtml(e.message)}</span>`; }
+});
+
 /* ===== Catalog import ===== */
 async function importCatalog(dryRun){
   const file = el('catalogFile').files[0];
@@ -1369,7 +1431,7 @@ function renderCategories(){
       try{
         STATE = await api('/api/admin/categories/' + btn.getAttribute('data-del-cat'), { method:'DELETE' });
         showMsg(el('globalMsg'), 'Категория удалена', 'ok');
-        renderCategories(); renderCatSelect(); renderProducts();
+        renderCategories(); renderCatSelect(); renderProducts(); loadCategoryContent();
       }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
     });
   });
@@ -1388,7 +1450,7 @@ el('catForm').addEventListener('submit', async (e) => {
     });
     el('catForm').reset();
     showMsg(el('globalMsg'), 'Категория добавлена', 'ok');
-    renderCategories(); renderCatSelect(); renderProducts();
+    renderCategories(); renderCatSelect(); renderProducts(); loadCategoryContent();
   }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
 });
 

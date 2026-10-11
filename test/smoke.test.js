@@ -463,6 +463,24 @@ test('gift certificates: buy without delivery, issue once, pay in parts, refund 
   assert.equal((await client()('/gift')).status, 200);
 });
 
+test('category texts and FAQ: shown, pre-rendered with FAQPage markup, editable', async () => {
+  const data = (await client()('/api/data')).data;
+  assert.match(data.categoryContent.blades.html, /<b>Жёсткие/);
+  assert.ok(data.categoryContent.blades.faq.length >= 3);
+  const page = await client()('/catalog?cat=blades');
+  assert.match(page.data, /"@type":"FAQPage"/);
+  assert.match(page.data, /<main id="app"><section class="block"><div class="wrap doc-page"><h1>Чехлы для лезвий<\/h1>/);
+  assert.match(page.data, /<meta name="description" content="Чехлы для лезвий фигурных коньков нужны двух видов/);
+
+  const admin = await adminClient();
+  assert.equal((await admin('/api/admin/category-content/nope', { method: 'PUT', body: { text: 'x' } })).status, 404);
+  const saved = await admin('/api/admin/category-content/ropes', { method: 'PUT', body: { text: 'Новый текст <script>', faq: [{ q: 'Вопрос?', a: 'Ответ.' }, { q: '', a: 'без вопроса' }] } });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.data.content.faq.length, 1, 'empty questions are dropped');
+  const ropes = (await client()('/api/data')).data.categoryContent.ropes;
+  assert.match(ropes.html, /Новый текст &lt;script&gt;/);
+});
+
 test('admin: auth, promo code, stock, review moderation', async () => {
   const anon = client();
   assert.equal((await anon('/api/admin/orders')).status, 401);
