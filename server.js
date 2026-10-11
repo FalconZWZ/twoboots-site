@@ -437,7 +437,7 @@ const loginLimiter = limiter(10, 15, 'Слишком много неудачны
 // Only successful sign-ups count: a form mistake (no consent tick, taken email) never locks anyone out.
 const registerLimiter = limiter(10, 60, 'Слишком много регистраций с вашего адреса. Попробуйте позже.', { skipFailedRequests: true });
 // Only placed orders count: a customer fixing a form mistake (no address, no size) is never locked out.
-const orderLimiter = limiter(10, 15, 'Слишком много заявок подряд. Попробуйте через несколько минут или позвоните нам.', { skipFailedRequests: true });
+const orderLimiter = limiter(Math.max(1, Number(process.env.ORDERS_PER_IP_15MIN) || 10), 15, 'Слишком много заявок подряд. Попробуйте через несколько минут или позвоните нам.', { skipFailedRequests: true });
 // And per customer: at most ORDERS_PER_HOUR placed orders an hour, cart and one-click together.
 // Counted by phone number (from the profile for cart orders, from the form for one-click ones),
 // not by IP — mobile carriers put thousands of people behind one address.
@@ -1356,6 +1356,10 @@ app.patch('/api/admin/orders/:id', requireAdmin, (req, res) => {
     if (text) order.comment = text;
     else delete order.comment;
   }
+  // when an order was shipped / completed: the review request is timed from these
+  if (changed && ['shipped', 'completed'].includes(order.status) && !order[order.status + 'At']) {
+    order[order.status + 'At'] = new Date().toISOString();
+  }
   writeStore(store);
   if (changed) {
     const user = order.userId && store.users.find(u => u.id === order.userId);
@@ -1708,6 +1712,7 @@ app.post('/api/admin/promos', requireAdmin, (req, res) => {
   if (expiresAt && !/^\d{4}-\d{2}-\d{2}$/.test(expiresAt)) return res.status(400).json({ error: 'Некорректная дата окончания' });
   const store = readStore();
   if (store.promos.some(p => p.code === code)) return res.status(400).json({ error: 'Такой промокод уже есть' });
+  const partner = String(body.partner || '').replace(/\s+/g, ' ').trim().slice(0, 80);
   store.promos.push({
     code, type: body.type, value,
     minTotal: Math.max(0, Math.round(Number(body.minTotal) || 0)),
@@ -1715,6 +1720,8 @@ app.post('/api/admin/promos', requireAdmin, (req, res) => {
     maxUses: Math.max(0, Math.round(Number(body.maxUses) || 0)),
     uses: 0,
     active: true,
+    // a coach or partner who hands out this code, and their share of what it brings in
+    ...(partner ? { partner, commission: Math.max(0, Math.min(50, Number(body.commission) || 0)), paidOut: 0 } : {}),
     createdAt: new Date().toISOString(),
   });
   writeStore(store);
@@ -1725,9 +1732,45 @@ app.patch('/api/admin/promos/:code', requireAdmin, (req, res) => {
   const store = readStore();
   const promo = store.promos.find(p => p.code === req.params.code);
   if (!promo) return res.status(404).json({ error: 'Промокод не найден' });
-  if (typeof (req.body || {}).active === 'boolean') promo.active = req.body.active;
+  const body = req.body || {};
+  if (typeof body.active === 'boolean') promo.active = body.active;
+  if (body.partner !== undefined) {
+    const partner = String(body.partner || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    if (partner) { promo.partner = partner; promo.paidOut = promo.paidOut || 0; } else { delete promo.partner; delete promo.commission; }
+  }
+  if (body.commission !== undefined && promo.partner) promo.commission = Math.max(0, Math.min(50, Number(body.commission) || 0));
+  // a payout to the partner is recorded as an amount added to what they have been paid
+  if (body.payout !== undefined && promo.partner) {
+    const amount = Math.round(Number(body.payout));
+    if (!amount) return res.status(400).json({ error: 'Укажите сумму выплаты' });
+    promo.paidOut = Math.max(0, (promo.paidOut || 0) + amount);
+    (promo.payouts = promo.payouts || []).push({ amount, at: new Date().toISOString() });
+  }
   writeStore(store);
   res.json({ promos: store.promos });
+});
+
+// What each partner's code brought: orders and sales (goods after discount, without delivery),
+// commission on completed orders («заработано») and on orders still in progress («ожидается»).
+app.get('/api/admin/partners', requireAdmin, (req, res) => {
+  const store = readStore();
+  const monthStart = moscowDay(new Date().toISOString()).slice(0, 8) + '01';
+  const partners = store.promos.filter(p => p.partner).map(p => {
+    const orders = store.orders.filter(o => o.promo && o.promo.code === p.code && o.status !== 'cancelled');
+    const goods = o => (o.subtotal != null ? o.subtotal : o.total) - (o.promo ? o.promo.discount : 0);
+    const sum = list => list.reduce((s, o) => s + goods(o), 0);
+    const pct = (p.commission || 0) / 100;
+    const done = orders.filter(o => o.status === 'completed');
+    const earned = Math.round(sum(done) * pct);
+    return {
+      code: p.code, partner: p.partner, commission: p.commission || 0, active: p.active,
+      orders: orders.length, sales: sum(orders),
+      monthOrders: orders.filter(o => moscowDay(o.createdAt) >= monthStart).length,
+      earned, pending: Math.round(sum(orders.filter(o => o.status !== 'completed')) * pct),
+      paidOut: p.paidOut || 0, toPay: Math.max(0, earned - (p.paidOut || 0)),
+    };
+  });
+  res.json({ partners });
 });
 
 app.delete('/api/admin/promos/:code', requireAdmin, (req, res) => {
@@ -1840,10 +1883,47 @@ function sendCartReminders(now = Date.now()) {
   writeStore(store);
   return sent;
 }
-setInterval(() => { try { sendCartReminders(); } catch (e) { console.error('Напоминания о корзине:', e.message); } }, 15 * 60 * 1000).unref();
+
+/* ===== Review request =====
+   One email per order: 2 days after it was marked completed, or 10 days after it was shipped
+   if nobody marked it completed — with links straight to each product's reviews. Not for
+   one-click orders (no email) and not for customers who unsubscribed. */
+const DAY_MS = 24 * 3600 * 1000;
+function sendReviewRequests(now = Date.now()) {
+  const store = readStore();
+  let sent = 0;
+  for (const order of store.orders) {
+    if (order.reviewRequestedAt || order.status === 'cancelled' || !order.userId) continue;
+    const due = (order.completedAt && now - new Date(order.completedAt).getTime() >= 2 * DAY_MS)
+      || (order.status === 'shipped' && order.shippedAt && now - new Date(order.shippedAt).getTime() >= 10 * DAY_MS);
+    if (!due) continue;
+    order.reviewRequestedAt = new Date(now).toISOString();
+    const user = store.users.find(u => u.id === order.userId);
+    if (!user || user.noEmails) continue;
+    const products = [...new Map(order.items.map(it => [it.id, store.products.find(p => p.id === it.id && !p.hidden)])).values()].filter(Boolean);
+    if (!products.length) continue;
+    sent++;
+    if (mailTransport) mailTransport.sendMail({
+      from: MAIL_FROM,
+      to: user.email,
+      replyTo: OWNER_EMAIL,
+      subject: `Как вам покупка? Заказ №${order.number} — Two Boots`,
+      text: `Здравствуйте${user.name ? ', ' + user.name : ''}!\n\nНадеемся, заказ №${order.number} уже радует на льду. Расскажите, как вам покупка — пара слов и оценка очень помогут другим фигуристам с выбором:\n\n${products.map(p => `${p.name}: ${SITE_ORIGIN}/product/${p.id}#reviews`).join('\n')}\n\nЕсли что-то не так — просто ответьте на это письмо, разберёмся.\n\nНе хотите получать такие письма? Отписаться: ${unsubscribeUrl(user)}`,
+    }).catch(err => console.error('Не удалось отправить просьбу об отзыве:', err.message));
+  }
+  writeStore(store);
+  return sent;
+}
+setInterval(() => {
+  try { sendCartReminders(); } catch (e) { console.error('Напоминания о корзине:', e.message); }
+  try { sendReviewRequests(); } catch (e) { console.error('Просьбы об отзыве:', e.message); }
+}, 15 * 60 * 1000).unref();
 // Lets the smoke tests run the reminder job at a chosen moment instead of waiting hours.
 if (process.env.NODE_ENV === 'test') {
-  app.post('/api/test/run-reminders', (req, res) => res.json({ cart: sendCartReminders(Date.now() + Number((req.body || {}).shiftMs || 0)) }));
+  app.post('/api/test/run-reminders', (req, res) => {
+    const at = Date.now() + Number((req.body || {}).shiftMs || 0);
+    res.json({ cart: sendCartReminders(at), reviews: sendReviewRequests(at) });
+  });
 }
 setTimeout(runDailyBackup, 60 * 1000);
 

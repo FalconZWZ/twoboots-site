@@ -49,7 +49,9 @@ async function adminClient() {
 
 before(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'twoboots-test-'));
-  const env = { ...process.env, PORT: String(PORT), DATA_DIR: dataDir, SESSION_SECRET: 'test-secret', BOTORDER_SECRET: BOT_SECRET, NODE_ENV: 'test' };
+  const env = { ...process.env, PORT: String(PORT), DATA_DIR: dataDir, SESSION_SECRET: 'test-secret', BOTORDER_SECRET: BOT_SECRET, NODE_ENV: 'test',
+    // every test order comes from 127.0.0.1; the per-customer limit is still the real one
+    ORDERS_PER_IP_15MIN: '1000' };
   for (const k of ['SMTP_HOST', 'BOTORDER_URL', 'TELEGRAM_BOT_TOKEN', 'WHATSAPP_CALLMEBOT_APIKEY']) delete env[k];
   server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = '';
@@ -326,6 +328,39 @@ test('account cart and favorites; cart reminder only with consent, once, with a 
   assert.equal(placed.status, 200, JSON.stringify(placed.data));
   assert.deepEqual((await optOut('/api/me')).data.user.cart, []);
   assert.equal((await client()('/favorites')).status, 200);
+});
+
+test('review request after shipping or completion, once; partner code report and payouts', async () => {
+  const admin = await adminClient();
+  assert.equal((await admin('/api/admin/promos', { method: 'POST', body: { code: 'COACH10', type: 'percent', value: 10, partner: 'Тренер Мария', commission: 15 } })).status, 200);
+
+  const buyer = client();
+  await buyer('/api/register', { method: 'POST', body: { name: 'Отзыв', email: 'review@test.ru', password: 'secret1', phone: '+7 903 000-00-09', consent: true } });
+  const a = (await buyer('/api/orders', { method: 'POST', body: { items: [{ id: 'dry-glide', qty: 2 }], delivery: 'pickup', promoCode: 'COACH10' } })).data.order;
+  const b = (await buyer('/api/orders', { method: 'POST', body: { items: [{ id: 'grip-lace', qty: 1 }], delivery: 'pickup' } })).data.order;
+  assert.equal(a.promo.code, 'COACH10');
+
+  const run = shiftMs => fetch(BASE + '/api/test/run-reminders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shiftMs }) }).then(r => r.json());
+  assert.equal((await admin('/api/admin/orders/' + a.id, { method: 'PATCH', body: { status: 'completed' } })).data.order.completedAt !== undefined, true);
+  await admin('/api/admin/orders/' + b.id, { method: 'PATCH', body: { status: 'shipped' } });
+  assert.equal((await run(0)).reviews, 0, 'not right away');
+  assert.equal((await run(3 * 86400000)).reviews, 1, '2 days after completion');
+  assert.ok((await run(11 * 86400000)).reviews >= 1, '10 days after shipping');
+  const flagged = (await admin('/api/admin/orders')).data.orders.filter(o => o.reviewRequestedAt).map(o => o.id);
+  assert.ok(flagged.includes(a.id) && flagged.includes(b.id));
+  assert.equal((await run(30 * 86400000)).reviews, 0, 'once per order');
+
+  const report = async () => (await admin('/api/admin/partners')).data.partners.find(p => p.code === 'COACH10');
+  let p = await report();
+  const goods = 1490 * 2 - Math.round(1490 * 2 * 0.1);
+  assert.equal(p.orders, 1);
+  assert.equal(p.sales, goods);
+  assert.equal(p.earned, Math.round(goods * 0.15));
+  assert.equal(p.toPay, p.earned);
+  assert.equal((await admin('/api/admin/promos/COACH10', { method: 'PATCH', body: { payout: p.earned } })).status, 200);
+  p = await report();
+  assert.equal(p.paidOut, p.earned);
+  assert.equal(p.toPay, 0);
 });
 
 test('admin: auth, promo code, stock, review moderation', async () => {

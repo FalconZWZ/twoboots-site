@@ -259,8 +259,21 @@
         <div class="field"><label>Действует до (необязательно)</label><input id="promoExpires" type="date"></div>
         <div class="field"><label>Лимит использований (необязательно)</label><input id="promoMaxUses" type="number" min="0" placeholder="без лимита"></div>
       </div>
+      <div class="row">
+        <div class="field"><label>Партнёр — тренер или школа (необязательно)</label><input id="promoPartner" maxlength="80" placeholder="например: Иванова Мария, СШ «Лёд»"></div>
+        <div class="field" style="flex:none;width:200px;"><label>Вознаграждение партнёру, %</label><input id="promoCommission" type="number" min="0" max="50" placeholder="например: 10"></div>
+      </div>
       <button class="btn-primary" type="submit">Создать промокод</button>
     </form>
+  </div>
+
+  <div class="card" data-tab="promos">
+    <h2>Партнёры — тренеры и школы</h2>
+    <p style="color:var(--ink-soft);font-size:.85rem;margin:-6px 0 12px;">Партнёр — это промокод с указанным партнёром. Дайте тренеру его ссылку: по ней скидка подставится покупателю сама. «Заработано» — процент с выполненных заказов, «ожидается» — с заказов, которые ещё в работе. Суммы считаются по товарам после скидки, без доставки; отменённые заказы не учитываются.</p>
+    <div style="overflow-x:auto;"><table>
+      <thead><tr><th>Партнёр</th><th>Ссылка</th><th class="num">Заказы</th><th class="num">Продажи</th><th class="num">%</th><th class="num">Заработано</th><th class="num">Ожидается</th><th class="num">Выплачено</th><th class="num">К выплате</th><th></th></tr></thead>
+      <tbody id="partnersBody"></tbody>
+    </table></div>
   </div>
 
   <div class="card" id="backupsCard" data-tab="settings" hidden>
@@ -901,7 +914,7 @@ function renderPromos(promos){
       : exhausted ? '<span style="color:#e0433a;">Лимит исчерпан</span>'
       : '<span style="color:#1c5e26;">Действует</span>';
     return `<tr>
-      <td style="font-weight:700;font-family:monospace;">${p.code}</td>
+      <td style="font-weight:700;font-family:monospace;">${p.code}${p.partner ? `<br><small style="font-family:inherit;font-weight:500;color:var(--ink-soft);">${escHtml(p.partner)}</small>` : ''}</td>
       <td>${p.type === 'percent' ? '−' + p.value + '%' : '−' + p.value.toLocaleString('ru-RU') + ' ₽'}</td>
       <td>${promoConditions(p)}</td>
       <td>${p.uses || 0}${p.maxUses ? ' из ' + p.maxUses : ''}</td>
@@ -938,7 +951,53 @@ function renderPromos(promos){
 async function loadPromos(){
   const { promos } = await api('/api/admin/promos');
   renderPromos(promos);
+  await loadPartners();
 }
+
+/* ===== Partners (coaches) ===== */
+async function loadPartners(){
+  const { partners } = await api('/api/admin/partners');
+  const money = n => n.toLocaleString('ru-RU') + ' ₽';
+  el('partnersBody').innerHTML = partners.map(p => {
+    const link = 'https://www.two-boots.ru/?promo=' + encodeURIComponent(p.code);
+    return `<tr>
+      <td><b>${escHtml(p.partner)}</b><br><small style="color:var(--ink-soft);font-family:monospace;">${escHtml(p.code)}${p.active ? '' : ' · выключен'}</small></td>
+      <td><button type="button" class="btn-ghost btn-sm" data-copy-link="${escHtml(link)}" title="${escHtml(link)}">Скопировать</button></td>
+      <td class="num">${p.orders}${p.monthOrders ? `<br><small style="color:var(--ink-soft);">в этом месяце: ${p.monthOrders}</small>` : ''}</td>
+      <td class="num">${money(p.sales)}</td>
+      <td class="num">${p.commission}%</td>
+      <td class="num">${money(p.earned)}</td>
+      <td class="num" style="color:var(--ink-soft);">${money(p.pending)}</td>
+      <td class="num">${money(p.paidOut)}</td>
+      <td class="num"><b>${money(p.toPay)}</b></td>
+      <td style="white-space:nowrap;"><button type="button" class="btn-ghost btn-sm" data-payout="${escHtml(p.code)}" data-due="${p.toPay}">Выплата</button>
+        <button type="button" class="btn-ghost btn-sm" data-commission="${escHtml(p.code)}" data-current="${p.commission}">%</button></td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="10" style="color:var(--ink-soft)">Партнёров пока нет — создайте промокод и укажите в нём партнёра.</td></tr>';
+}
+el('partnersBody').addEventListener('click', async e => {
+  const copy = e.target.closest('[data-copy-link]');
+  if(copy){
+    const link = copy.getAttribute('data-copy-link');
+    navigator.clipboard.writeText(link).then(() => showMsg(el('globalMsg'), 'Ссылка скопирована: ' + escHtml(link), 'ok'), () => prompt('Ссылка для партнёра:', link));
+    return;
+  }
+  const pay = e.target.closest('[data-payout]'), pct = e.target.closest('[data-commission]');
+  if(!pay && !pct) return;
+  const code = (pay || pct).getAttribute(pay ? 'data-payout' : 'data-commission');
+  const answer = pay
+    ? prompt('Сколько выплатили партнёру, ₽? (ошибку можно исправить отрицательной суммой)', pay.getAttribute('data-due') || '')
+    : prompt('Вознаграждение партнёру, % (0–50):', pct.getAttribute('data-current'));
+  if(answer === null || answer.trim() === '') return;
+  try{
+    await api('/api/admin/promos/' + encodeURIComponent(code), {
+      method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(pay ? { payout: Number(answer.replace(/\s/g, '').replace(',', '.')) } : { commission: Number(answer) })
+    });
+    showMsg(el('globalMsg'), pay ? 'Выплата записана' : 'Процент обновлён', 'ok');
+    loadPartners();
+  }catch(err){ showMsg(el('globalMsg'), err.message, 'error'); }
+});
 el('promoForm').addEventListener('submit', async e => {
   e.preventDefault();
   try{
@@ -947,10 +1006,12 @@ el('promoForm').addEventListener('submit', async e => {
       body: JSON.stringify({
         code: el('promoCode').value, type: el('promoType').value, value: el('promoValue').value,
         minTotal: el('promoMin').value, expiresAt: el('promoExpires').value, maxUses: el('promoMaxUses').value,
+        partner: el('promoPartner').value, commission: el('promoCommission').value,
       })
     });
     el('promoForm').reset();
     renderPromos(promos);
+    loadPartners();
     showMsg(el('globalMsg'), 'Промокод создан', 'ok');
   }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
 });
