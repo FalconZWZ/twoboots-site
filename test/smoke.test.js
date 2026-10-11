@@ -237,6 +237,53 @@ test('visitor counter: counts people and pages, skips bots and admins, keeps no 
   assert.equal((await client()('/api/admin/visits')).status, 401);
 });
 
+test('delivery: methods from the admin, price in the total, free threshold, tracking number', async () => {
+  const pub = (await client()('/api/data')).data.deliveryMethods;
+  assert.deepEqual(pub.map(m => m.id), ['cdek', 'cdek-door', 'post', 'yandex', 'ozon', 'wb', 'avito', 'courier', 'pickup']);
+  assert.ok(!('enabled' in pub[0]));
+
+  const admin = await adminClient();
+  const { methods } = (await admin('/api/admin/delivery-methods')).data;
+  const edited = methods.map(m => m.id === 'courier' ? { ...m, pricing: 'fixed', price: 400, freeFrom: 5000 } : m.id === 'wb' ? { ...m, enabled: false } : m);
+  assert.equal((await admin('/api/admin/delivery-methods', { method: 'PUT', body: { methods: [...edited, { ...edited[0] }] } })).status, 400, 'duplicate id');
+  assert.equal((await admin('/api/admin/delivery-methods', { method: 'PUT', body: { methods: [{ id: 'Bad id!' }] } })).status, 400);
+  assert.equal((await admin('/api/admin/delivery-methods', { method: 'PUT', body: { methods: edited } })).status, 200);
+  assert.ok(!(await client()('/api/data')).data.deliveryMethods.some(m => m.id === 'wb'), 'disabled methods are not offered');
+
+  const req = client();
+  await req('/api/register', { method: 'POST', body: { name: 'Доставка', email: 'ship@test.ru', password: 'secret1', phone: '+7901', consent: true } });
+  const order = body => req('/api/orders', { method: 'POST', body: { items: [{ id: 'dry-glide', qty: 1 }], ...body } });
+  assert.equal((await order({ delivery: 'wb', city: 'Казань', address: 'ПВЗ' })).status, 400, 'disabled method');
+  assert.equal((await order({ delivery: 'ozon', city: 'Казань' })).data.error, 'Укажите адрес пункта выдачи');
+  assert.equal((await order({ delivery: 'avito' })).data.error, 'Укажите город');
+
+  const courier = await order({ delivery: 'courier', address: 'Тверская 1' });
+  assert.equal(courier.status, 200, JSON.stringify(courier.data));
+  assert.equal(courier.data.order.total, 1490 + 400, 'a fixed price is added to the total');
+  assert.equal(courier.data.order.city, 'Москва');
+  assert.equal(courier.data.order.deliveryName, 'Курьер по Москве');
+  const freeCourier = await req('/api/orders', { method: 'POST', body: { items: [{ id: 'dry-glide', qty: 4 }], delivery: 'courier', address: 'Тверская 1' } });
+  assert.equal(freeCourier.data.order.total, 1490 * 4, 'free from 5000 ₽');
+  assert.equal(freeCourier.data.order.deliveryPrice, 'бесплатно');
+  const avito = await order({ delivery: 'avito', city: 'Пермь', address: 'ignored' });
+  assert.equal(avito.status, 200);
+  assert.equal(avito.data.order.address, '', 'manager-arranged delivery keeps only the city');
+  assert.match(avito.data.order.deliveryPrice, /при получении/);
+
+  const cdek = await order({ delivery: 'cdek', city: 'Казань', address: 'ПВЗ на Баумана' });
+  const id = cdek.data.order.id;
+  assert.equal((await admin('/api/admin/orders/' + id, { method: 'PATCH', body: { trackNumber: 'bad track!' } })).status, 400);
+  const tracked = await admin('/api/admin/orders/' + id, { method: 'PATCH', body: { trackNumber: ' 1234 5678 ' } });
+  assert.equal(tracked.status, 200);
+  assert.equal(tracked.data.order.status, 'shipped', 'a tracking number marks the order shipped');
+  assert.equal(tracked.data.order.trackUrl, 'https://www.cdek.ru/ru/tracking/?order_id=12345678');
+  const mine = (await req('/api/orders')).data.orders.find(o => o.id === id);
+  assert.equal(mine.trackNumber, '12345678');
+
+  const stats = (await admin('/api/admin/stats?days=7')).data;
+  assert.ok(stats.delivery['Курьер по Москве'] >= 2, 'statistics count by method name');
+});
+
 test('admin: auth, promo code, stock, review moderation', async () => {
   const anon = client();
   assert.equal((await anon('/api/admin/orders')).status, 401);

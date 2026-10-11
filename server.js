@@ -54,14 +54,86 @@ const mailTransport = SMTP_HOST
     })
   : null;
 
-const DELIVERY_METHODS = { cdek: 'СДЭК', post: 'Почта России', courier: 'Курьер по Москве', pickup: 'Самовывоз' };
+/* ===== Delivery methods =====
+   The owner sets them up in the admin (store.deliveryMethods): name, what the customer has to
+   fill in (kind), whose parcel it is (carrier — for the tracking link), and how it's paid:
+     fixed      — a set price, added to the order total
+     onDelivery — by the carrier's tariff, paid on receipt (an optional estimate is shown)
+     agree      — the manager quotes it when confirming the order
+     free       — free
+   plus «free from N ₽» for any of them. Without carrier contracts there are no live quotes;
+   the customer finds a pickup point on the map by link and types its address. */
+// kind → what the customer fills in: point — city + pickup point address, address — city + address,
+// courier — address in Moscow, manager — city only (the manager arranges the rest), pickup — nothing
+const DELIVERY_KINDS = {
+  point: 'Пункт выдачи',
+  address: 'До адреса',
+  courier: 'Курьер по Москве',
+  manager: 'Через менеджера',
+  pickup: 'Самовывоз',
+};
+const DELIVERY_CARRIERS = { cdek: 'СДЭК', post: 'Почта России', yandex: 'Яндекс Доставка', ozon: 'Ozon', wb: 'Wildberries', avito: 'Авито Доставка', courier: 'Курьер', other: 'Другое' };
+const DELIVERY_PRICING = ['fixed', 'onDelivery', 'agree', 'free'];
+const DEFAULT_DELIVERY_METHODS = [
+  { id: 'cdek', name: 'СДЭК — пункт выдачи', kind: 'point', carrier: 'cdek', pricing: 'onDelivery', mapQuery: 'СДЭК пункт выдачи', note: 'По тарифам СДЭК, обычно 2–7 дней.' },
+  { id: 'cdek-door', name: 'СДЭК — курьер до двери', kind: 'address', carrier: 'cdek', pricing: 'onDelivery', note: 'По тарифам СДЭК, обычно 2–7 дней.' },
+  { id: 'post', name: 'Почта России', kind: 'address', carrier: 'post', pricing: 'onDelivery', note: 'В любой населённый пункт, обычно 5–14 дней. Укажите адрес с индексом.' },
+  { id: 'yandex', name: 'Яндекс Доставка — пункт выдачи', kind: 'point', carrier: 'yandex', pricing: 'onDelivery', mapQuery: 'Яндекс Маркет пункт выдачи' },
+  { id: 'ozon', name: 'Ozon — пункт выдачи', kind: 'point', carrier: 'ozon', pricing: 'onDelivery', mapQuery: 'Ozon пункт выдачи' },
+  { id: 'wb', name: 'Wildberries — пункт выдачи', kind: 'point', carrier: 'wb', pricing: 'onDelivery', mapQuery: 'Wildberries пункт выдачи' },
+  { id: 'avito', name: 'Авито Доставка', kind: 'manager', carrier: 'avito', pricing: 'onDelivery', note: 'Оформим покупку через наше объявление на Авито — менеджер пришлёт ссылку, пункт выдачи вы выберете там.' },
+  { id: 'courier', name: 'Курьер по Москве', kind: 'courier', carrier: 'courier', pricing: 'agree', note: '1–2 дня.' },
+  { id: 'pickup', name: 'Самовывоз', kind: 'pickup', carrier: 'other', pricing: 'free', note: 'Москва, по договорённости. Адрес и время сообщит менеджер.' },
+];
+// Names of the four methods orders were placed with before methods became editable
+const LEGACY_DELIVERY_NAMES = { cdek: 'СДЭК', post: 'Почта России', courier: 'Курьер по Москве', pickup: 'Самовывоз' };
 
-// "Доставка: СДЭК — Казань, ул. …" plus the customer's comment, one line each ('' if absent).
+function cleanDeliveryMethod(m) {
+  const str = (v, max) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, max);
+  const num = v => Math.max(0, Math.min(1e6, Math.round(Number(v) || 0)));
+  const id = str(m.id, 30).toLowerCase();
+  if (!/^[a-z0-9-]+$/.test(id)) return null;
+  return {
+    id,
+    name: str(m.name, 80) || id,
+    kind: DELIVERY_KINDS[m.kind] ? m.kind : 'address',
+    carrier: DELIVERY_CARRIERS[m.carrier] ? m.carrier : 'other',
+    pricing: DELIVERY_PRICING.includes(m.pricing) ? m.pricing : 'agree',
+    price: num(m.price),
+    freeFrom: num(m.freeFrom),
+    estimate: str(m.estimate, 60),
+    note: str(m.note, 300),
+    mapQuery: str(m.mapQuery, 80),
+    enabled: m.enabled !== false,
+  };
+}
+
+// What delivery costs for this order: the amount added to the total and how to describe it.
+function deliveryQuote(method, goodsTotal) {
+  if (method.pricing === 'free' || (method.freeFrom > 0 && goodsTotal >= method.freeFrom)) return { cost: 0, text: 'бесплатно' };
+  if (method.pricing === 'fixed') return { cost: method.price, text: method.price.toLocaleString('ru-RU') + ' ₽' };
+  if (method.pricing === 'onDelivery') return { cost: 0, text: 'по тарифу перевозчика, оплата при получении' + (method.estimate ? ` (${method.estimate})` : '') };
+  return { cost: 0, text: 'стоимость сообщит менеджер' };
+}
+
+function deliveryLabel(order) {
+  return order.deliveryName || LEGACY_DELIVERY_NAMES[order.delivery] || order.delivery || '';
+}
+
+// Where the customer can follow the parcel; carriers without a public tracking page get none.
+function trackingUrl(carrier, number) {
+  const n = encodeURIComponent(number);
+  if (carrier === 'cdek') return `https://www.cdek.ru/ru/tracking/?order_id=${n}`;
+  if (carrier === 'post') return `https://www.pochta.ru/tracking?barcode=${n}`;
+  return '';
+}
+
+// "Доставка: СДЭК — Казань, ул. … · 350 ₽" plus the customer's comment, one line each ('' if absent).
 function orderDeliveryLines(order) {
   let text = '';
   if (order.delivery) {
     const where = [order.city, order.address].filter(Boolean).join(', ');
-    text += `Доставка: ${DELIVERY_METHODS[order.delivery] || order.delivery}${where ? ' — ' + where : ''}\n`;
+    text += `Доставка: ${deliveryLabel(order)}${where ? ' — ' + where : ''}${order.deliveryPrice ? ' · ' + order.deliveryPrice : ''}\n`;
   }
   if (order.customerComment) text += `Комментарий: ${order.customerComment}\n`;
   return text;
@@ -83,7 +155,7 @@ function sendOrderConfirmationEmail(order, user) {
     html: `<p>Спасибо за заказ <b>№${order.number}</b>!</p><p>В ближайшее время с вами свяжется менеджер.</p>
       <table style="border-collapse:collapse;">${itemsHtml}</table>
       ${order.promo ? `<p>Промокод ${order.promo.code}: −${order.promo.discount.toLocaleString('ru-RU')} ₽</p>` : ''}
-      ${order.delivery ? `<p>Доставка: ${DELIVERY_METHODS[order.delivery]}${[order.city, order.address].filter(Boolean).length ? ' — ' + escHtml([order.city, order.address].filter(Boolean).join(', ')) : ''}</p>` : ''}
+      ${order.delivery ? `<p>Доставка: ${escHtml(deliveryLabel(order))}${[order.city, order.address].filter(Boolean).length ? ' — ' + escHtml([order.city, order.address].filter(Boolean).join(', ')) : ''}${order.deliveryPrice ? ' · ' + escHtml(order.deliveryPrice) : ''}</p>` : ''}
       <p><b>Итого: ${order.total.toLocaleString('ru-RU')} ₽</b></p>`,
   }).catch(err => console.error('Не удалось отправить письмо с подтверждением заказа:', err.message));
 }
@@ -111,7 +183,7 @@ function botOrderFields(order) {
     'Состав': order.items.map(it => `${it.name}${it.size ? ' (' + it.size + ')' : ''} — ${it.qty} шт. × ${it.price.toLocaleString('ru-RU')} ₽`).join('\n'),
     'Итого': `${order.total.toLocaleString('ru-RU')} ₽`,
     ...(order.promo ? { 'Промокод': `${order.promo.code} (−${order.promo.discount.toLocaleString('ru-RU')} ₽)` } : {}),
-    ...(order.delivery ? { 'Доставка': `${DELIVERY_METHODS[order.delivery]}${[order.city, order.address].filter(Boolean).length ? ' — ' + [order.city, order.address].filter(Boolean).join(', ') : ''}` } : {}),
+    ...(order.delivery ? { 'Доставка': `${deliveryLabel(order)}${[order.city, order.address].filter(Boolean).length ? ' — ' + [order.city, order.address].filter(Boolean).join(', ') : ''}${order.deliveryPrice ? ' · ' + order.deliveryPrice : ''}` } : {}),
     ...(order.customerComment ? { 'Комментарий': order.customerComment } : {}),
   };
 }
@@ -200,12 +272,14 @@ const STATUS_EMAIL_TEXT = {
 
 function sendOrderStatusEmail(order, email) {
   if (!mailTransport || !email || !STATUS_EMAIL_TEXT[order.status]) return;
+  const track = order.trackNumber && order.status === 'shipped'
+    ? `\n\nТрек-номер: ${order.trackNumber}${order.trackUrl ? '\nОтследить посылку: ' + order.trackUrl : ''}` : '';
   mailTransport.sendMail({
     from: MAIL_FROM,
     to: email,
     replyTo: OWNER_EMAIL,
     subject: `Заказ №${order.number}: статус изменён — Two Boots`,
-    text: `Здравствуйте${order.name ? ', ' + order.name : ''}!\n\nВаш заказ №${order.number} ${STATUS_EMAIL_TEXT[order.status]}\n\nИстория заказов — в личном кабинете: https://www.two-boots.ru/account`,
+    text: `Здравствуйте${order.name ? ', ' + order.name : ''}!\n\nВаш заказ №${order.number} ${STATUS_EMAIL_TEXT[order.status]}${track}\n\nИстория заказов — в личном кабинете: https://www.two-boots.ru/account`,
   }).catch(err => console.error('Не удалось отправить письмо о смене статуса заказа:', err.message));
 }
 
@@ -286,6 +360,7 @@ function normalizeStore(store) {
   if (!store.promos) { store.promos = []; changed = true; }
   if (!store.reviews) { store.reviews = []; changed = true; }
   if (!store.restockSubs) { store.restockSubs = []; changed = true; }
+  if (!Array.isArray(store.deliveryMethods)) { store.deliveryMethods = DEFAULT_DELIVERY_METHODS.map(cleanDeliveryMethod); changed = true; }
   // Starter articles arrive as drafts: the owner reads them and publishes from the admin.
   if (!store.articles) {
     const now = new Date().toISOString();
@@ -361,7 +436,8 @@ function limiter(limit, windowMinutes, error, extra = {}) {
 const loginLimiter = limiter(10, 15, 'Слишком много неудачных попыток входа. Попробуйте через 15 минут.', { skipSuccessfulRequests: true });
 // Only successful sign-ups count: a form mistake (no consent tick, taken email) never locks anyone out.
 const registerLimiter = limiter(10, 60, 'Слишком много регистраций с вашего адреса. Попробуйте позже.', { skipFailedRequests: true });
-const orderLimiter = limiter(10, 15, 'Слишком много заявок подряд. Попробуйте через несколько минут или позвоните нам.');
+// Only placed orders count: a customer fixing a form mistake (no address, no size) is never locked out.
+const orderLimiter = limiter(10, 15, 'Слишком много заявок подряд. Попробуйте через несколько минут или позвоните нам.', { skipFailedRequests: true });
 const contactLimiter = limiter(5, 15, 'Слишком много сообщений подряд. Попробуйте через несколько минут.');
 // Generous for real shoppers, but stops anyone from guessing codes by brute force.
 const promoLimiter = limiter(20, 15, 'Слишком много попыток ввода промокода. Попробуйте позже.');
@@ -420,10 +496,11 @@ function safeUser(u) {
 
 /* ===== Public data API ===== */
 app.get('/api/data', (req, res) => {
-  const { categories, products, reviews, articles } = readStore();
+  const { categories, products, reviews, articles, deliveryMethods } = readStore();
   const ratings = productRatings(reviews);
   res.json({
     categories,
+    deliveryMethods: deliveryMethods.filter(m => m.enabled).map(publicDeliveryMethod),
     articles: publishedArticles(articles).map(articleSummary),
     products: products.filter(p => !p.hidden).map(p => (ratings[p.id] ? { ...p, rating: ratings[p.id] } : p)),
   });
@@ -987,20 +1064,24 @@ app.post('/api/orders', orderLimiter, requireUser, (req, res) => {
   if (lines.length === 0) return res.status(400).json({ error: 'Товары не найдены' });
 
   const delivery = String(req.body.delivery || '');
-  if (!DELIVERY_METHODS[delivery]) return res.status(400).json({ error: 'Выберите способ доставки' });
-  const city = String(req.body.city || '').trim().slice(0, 100) || (delivery === 'courier' ? 'Москва' : '');
-  const address = String(req.body.address || '').trim().slice(0, 300);
-  if (delivery !== 'pickup' && !address) return res.status(400).json({ error: 'Укажите адрес доставки или пункт выдачи' });
-  if ((delivery === 'cdek' || delivery === 'post') && !city) return res.status(400).json({ error: 'Укажите город' });
+  const method = store.deliveryMethods.find(m => m.id === delivery && m.enabled);
+  if (!method) return res.status(400).json({ error: 'Выберите способ доставки' });
+  const kind = method.kind;
+  const city = kind === 'pickup' ? '' : kind === 'courier' ? 'Москва' : String(req.body.city || '').trim().slice(0, 100);
+  const address = kind === 'pickup' || kind === 'manager' ? '' : String(req.body.address || '').trim().slice(0, 300);
+  if (kind !== 'pickup' && kind !== 'courier' && !city) return res.status(400).json({ error: 'Укажите город' });
+  if (kind === 'point' && !address) return res.status(400).json({ error: 'Укажите адрес пункта выдачи' });
+  if ((kind === 'address' || kind === 'courier') && !address) return res.status(400).json({ error: 'Укажите адрес доставки' });
   const customerComment = String(req.body.comment || '').trim().slice(0, 1000);
-  // First address a customer types becomes their profile default for next time.
-  if (delivery !== 'pickup') {
+  // First address a customer types to their door becomes their profile default for next time.
+  if (kind === 'address' || kind === 'courier') {
     if (!user.city) user.city = city;
     if (!user.address) user.address = address;
   }
   const { promo, discount = 0, error: promoError } = applyPromo(store, req.body.promoCode, subtotal);
   if (promoError) return res.status(400).json({ error: promoError });
   if (promo) promo.uses = (promo.uses || 0) + 1;
+  const quote = deliveryQuote(method, subtotal - discount);
 
   store.orderSeq = (store.orderSeq || 0) + 1;
   const order = {
@@ -1010,12 +1091,16 @@ app.post('/api/orders', orderLimiter, requireUser, (req, res) => {
     items: lines,
     subtotal,
     ...(promo ? { promo: { code: promo.code, discount } } : {}),
-    total: subtotal - discount,
+    total: subtotal - discount + quote.cost,
     status: 'new',
     name: user.name, phone: user.phone, email: user.email,
     delivery,
-    city: delivery === 'pickup' ? '' : city,
-    address: delivery === 'pickup' ? '' : address,
+    deliveryName: method.name,
+    deliveryCarrier: method.carrier,
+    deliveryCost: quote.cost,
+    deliveryPrice: quote.text,
+    city,
+    address,
     ...(customerComment ? { customerComment } : {}),
     createdAt: new Date().toISOString(),
   };
@@ -1119,6 +1204,33 @@ app.post('/api/contact', contactLimiter, (req, res) => {
   res.json({ ok: true });
 });
 
+/* ===== Delivery methods: public list and admin editing ===== */
+const publicDeliveryMethod = ({ enabled, ...m }) => m;
+app.get('/api/delivery-methods', (req, res) => {
+  res.json({ methods: readStore().deliveryMethods.filter(m => m.enabled).map(publicDeliveryMethod) });
+});
+
+app.get('/api/admin/delivery-methods', requireAdmin, (req, res) => {
+  res.json({ methods: readStore().deliveryMethods, kinds: DELIVERY_KINDS, carriers: DELIVERY_CARRIERS });
+});
+
+app.put('/api/admin/delivery-methods', requireAdmin, (req, res) => {
+  const list = Array.isArray((req.body || {}).methods) ? req.body.methods : null;
+  if (!list || list.length > 30) return res.status(400).json({ error: 'Некорректный список способов доставки' });
+  const methods = [];
+  for (const raw of list) {
+    const m = cleanDeliveryMethod(raw || {});
+    if (!m) return res.status(400).json({ error: 'ID способа доставки — латинские буквы, цифры и дефис' });
+    if (methods.some(x => x.id === m.id)) return res.status(400).json({ error: `ID «${m.id}» встречается дважды` });
+    methods.push(m);
+  }
+  if (!methods.some(m => m.enabled)) return res.status(400).json({ error: 'Оставьте включённым хотя бы один способ доставки' });
+  const store = readStore();
+  store.deliveryMethods = methods;
+  writeStore(store);
+  res.json({ methods });
+});
+
 /* ===== Admin: orders ===== */
 const ORDER_STATUSES = ['new', 'processing', 'shipped', 'completed', 'cancelled'];
 
@@ -1134,13 +1246,25 @@ app.get('/api/admin/orders', requireAdmin, (req, res) => {
 });
 
 app.patch('/api/admin/orders/:id', requireAdmin, (req, res) => {
-  const { status, comment } = req.body || {};
+  const { status, comment, trackNumber, trackCarrier } = req.body || {};
   if (status !== undefined && !ORDER_STATUSES.includes(status)) return res.status(400).json({ error: 'Некорректный статус' });
   const store = readStore();
   const order = store.orders.find(o => o.id === req.params.id);
   if (!order) return res.status(404).json({ error: 'Заказ не найден' });
-  const changed = status !== undefined && order.status !== status;
+  let changed = status !== undefined && order.status !== status;
   if (status !== undefined) order.status = status;
+  // A new tracking number marks the order as shipped and tells the customer (with the number).
+  if (trackNumber !== undefined) {
+    const number = String(trackNumber).replace(/\s+/g, '').slice(0, 60);
+    if (number && !/^[A-Za-z0-9-]+$/.test(number)) return res.status(400).json({ error: 'Трек-номер: только буквы, цифры и дефис' });
+    if (trackCarrier !== undefined) order.deliveryCarrier = DELIVERY_CARRIERS[trackCarrier] ? trackCarrier : 'other';
+    if (!number) { delete order.trackNumber; delete order.trackUrl; }
+    else if (number !== order.trackNumber) {
+      order.trackNumber = number;
+      order.trackUrl = trackingUrl(order.deliveryCarrier, number);
+      if (order.status === 'new' || order.status === 'processing' || order.status === 'shipped') { order.status = 'shipped'; changed = true; }
+    }
+  }
   // Internal manager note — never sent to the customer (see customerOrder()).
   if (comment !== undefined) {
     const text = String(comment).trim().slice(0, 1000);
@@ -1227,7 +1351,7 @@ app.get('/api/admin/stats', requireAdmin, (req, res) => {
     byDay: dayList.map(d => byDay[d]),
     topProducts: Object.values(products).sort((a, b) => b.revenue - a.revenue).slice(0, 10),
     promos: Object.values(promos).sort((a, b) => b.orders - a.orders),
-    delivery: count(live(inPeriod), o => o.quick ? 'quick' : o.delivery),
+    delivery: count(live(inPeriod), o => o.quick ? 'quick' : deliveryLabel(o)),
     statuses: count(inPeriod, o => o.status),
     newCustomers: users.filter(u => u.createdAt && moscowDay(u.createdAt) >= from).length,
   });
@@ -2047,7 +2171,7 @@ function pageSeo(pathname, query) {
   }
   if (pathname === '/delivery') {
     return { title: 'Доставка и оплата — Two Boots', url,
-      description: 'Доставка СДЭК, Почтой России, курьером по Москве и самовывоз. Оплата переводом, по СБП или при получении. Условия возврата.' };
+      description: 'Доставка СДЭК, Почтой России, Яндекс Доставкой, в пункты Ozon и Wildberries, Авито Доставкой, курьером по Москве и самовывоз. Оплата переводом, по СБП или при получении. Условия возврата.' };
   }
   if (pathname === '/reset-password') return { title: 'Новый пароль — Two Boots', url, noindex: true };
   return { status: 404, title: 'Страница не найдена — Two Boots', url };
