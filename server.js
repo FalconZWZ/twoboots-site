@@ -371,26 +371,7 @@ function normalizeStore(store) {
       .map(a => ({ id: crypto.randomUUID(), ...a, cover: null, published: false, createdAt: now, updatedAt: now }));
     changed = true;
   }
-  // Colour variants: products named the same apart from their colour — «Скакалка скоростная
-  // Two Boots (красный)», «Котик 3D … Two Boots Белый» — become one model (group), once.
-  // A group that is just the product's own full name (made before copies joined models) or no
-  // group at all is replaced; groups set some other way are left alone.
-  if (!store.variantsGrouped2 && Array.isArray(store.products)) {
-    const byBase = {};
-    store.products.filter(p => p.color).forEach(p => {
-      const base = modelBaseName(p).toLowerCase();
-      (byBase[base] = byBase[base] || []).push(p);
-    });
-    Object.values(byBase).forEach(list => {
-      if (list.length < 2) return;
-      const loose = p => !p.group || p.group === slugify(p.name);
-      const kept = list.find(p => !loose(p));
-      const group = kept ? kept.group : slugify(modelBaseName(list[0]));
-      list.filter(loose).forEach(p => { p.group = group; });
-    });
-    store.variantsGrouped = store.variantsGrouped2 = true;
-    changed = true;
-  }
+  if (Array.isArray(store.products) && linkColorModels(store)) changed = true;
   // Starter texts and FAQ for the category pages; the owner edits them in the admin.
   if (!store.categoryContent) {
     const starter = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'category-content.json'), 'utf8'));
@@ -407,6 +388,28 @@ function normalizeStore(store) {
   const store = readStore();
   if (normalizeStore(store)) writeStore(store);
 }
+// Colour variants: products named the same apart from their colour — «Скакалка скоростная
+// Two Boots (красный)», «Котик 3D … Two Boots Белый» — are one model (group). Runs on start and
+// whenever a product is saved: a coloured product without a model (or with one that is just its
+// own full name) joins the model of its namesakes. A model the admin cleared on purpose
+// (groupOff) is left alone. Returns whether anything changed.
+function linkColorModels(store) {
+  let changed = false;
+  const byBase = {};
+  store.products.filter(p => p.color && !p.groupOff).forEach(p => {
+    const base = modelBaseName(p).toLowerCase().replace(/ё/g, 'е');
+    (byBase[base] = byBase[base] || []).push(p);
+  });
+  Object.values(byBase).forEach(list => {
+    if (list.length < 2) return;
+    const loose = p => !p.group || p.group === slugify(p.name);
+    const kept = list.find(p => !loose(p));
+    const group = kept ? kept.group : slugify(modelBaseName(list[0]));
+    list.filter(loose).forEach(p => { if (p.group !== group) { p.group = group; changed = true; } });
+  });
+  return changed;
+}
+
 // The model's name: the product name without its colour, whether that is in brackets at the
 // end («… (красный)») or just the last words («… Two Boots Белый», «… — белый»).
 function modelBaseName(p) {
@@ -631,7 +634,7 @@ app.put('/api/admin/category-content/:cat', requireAdmin, (req, res) => {
 /* ===== Public data API ===== */
 // The shop window never shows exact stock — only «осталось N» when 5 or fewer are left.
 const publicProduct = ratings => p => {
-  const { quantity, lowStockAlerted, draftCopy, ...rest } = p;
+  const { quantity, lowStockAlerted, draftCopy, groupOff, ...rest } = p;
   return {
     ...rest,
     ...(ratings[p.id] ? { rating: ratings[p.id] } : {}),
@@ -969,7 +972,8 @@ app.get('/admin/session', (req, res) => {
   });
 });
 app.get('/admin', (req, res) => {
-  res.set('Cache-Control', 'no-cache').sendFile(path.join(__dirname, 'admin.html'));
+  res.set('Cache-Control', 'no-cache').type('html')
+    .send(fs.readFileSync(path.join(__dirname, 'admin.html'), 'utf8').replace('</head>', () => `<meta name="admin-build" content="${ADMIN_BUILD_ID}">\n</head>`));
 });
 
 /* ===== Admin: manage admin accounts ===== */
@@ -2577,6 +2581,7 @@ app.post('/api/admin/products', requireAdmin, productUpload, async (req, res) =>
   if (uploads.extras.length) product.images = uploads.extras;
 
   store.products.push(product);
+  linkColorModels(store);
   writeStore(store);
   res.json(product);
 });
@@ -2593,9 +2598,18 @@ app.put('/api/admin/products/:id', requireAdmin, productUpload, async (req, res)
   const existing = store.products[idx];
   if (data.related) data.related = data.related.filter(r => r !== existing.id && store.products.some(p => p.id === r));
   if (data.related && !data.related.length) data.related = undefined;
+  // A form without the Model / swatch fields (an admin tab opened before they existed) keeps them.
+  if (req.body.group === undefined) data.group = existing.group;
+  if (req.body.colorHex === undefined) data.colorHex = existing.colorHex;
   const updated = { ...existing, ...data };
   if (!data.color) delete updated.color;
   if (!data.size) delete updated.size;
+  if (!updated.group) delete updated.group;
+  if (!updated.colorHex) delete updated.colorHex;
+  if (req.body.group !== undefined) {
+    if (!data.group && existing.group) updated.groupOff = true; // cleared on purpose: don't re-link
+    else if (data.group) delete updated.groupOff;
+  }
   if (data.quantity === undefined) { delete updated.quantity; delete updated.lowStockAlerted; }
   syncStockWithQuantity(updated);
 
@@ -2629,6 +2643,7 @@ app.put('/api/admin/products/:id', requireAdmin, productUpload, async (req, res)
     }
   }
   store.products[idx] = updated;
+  linkColorModels(store);
   const restockDue = takeRestockSubs(store, [[existing, updated]]);
   writeStore(store);
   sendRestockEmails(restockDue);
@@ -2659,6 +2674,7 @@ app.post('/api/admin/products/:id/duplicate', requireAdmin, (req, res) => {
   // a copy is another colour of the same model
   if (!src.group || src.group === slugify(src.name)) src.group = slugify(modelBaseName(src)) || src.id;
   copy.group = src.group;
+  delete src.groupOff; delete copy.groupOff;
   delete copy.colorHex;
   const mainPhoto = copyPhoto(img);
   if (mainPhoto) copy.img = mainPhoto;
@@ -2908,7 +2924,9 @@ const INDEX_HTML = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
 // and polls /api/version: a tab left open across a deploy notices it's stale and reloads, instead
 // of sending the new server requests in an old format (e.g. a sign-up without the consent flag).
 const BUILD_ID = crypto.createHash('sha1').update(INDEX_HTML).digest('hex').slice(0, 12);
-app.get('/api/version', (req, res) => res.set('Cache-Control', 'no-store').json({ build: BUILD_ID }));
+// The admin page has its own version, so an admin tab left open across an update can say so.
+const ADMIN_BUILD_ID = crypto.createHash('sha1').update(fs.readFileSync(path.join(__dirname, 'admin.html'))).digest('hex').slice(0, 12);
+app.get('/api/version', (req, res) => res.set('Cache-Control', 'no-store').json({ build: BUILD_ID, admin: ADMIN_BUILD_ID }));
 const DEFAULT_DESCRIPTION = 'Two Boots — экипировка для фигурного катания: чехлы для лезвий, сумки и чемоданы, скакалки и аксессуары.';
 const CATALOG_DESCRIPTION = 'Чехлы для лезвий, сумки и чемоданы, скакалки и аксессуары для фигурного катания.';
 

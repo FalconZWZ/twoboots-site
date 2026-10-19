@@ -136,6 +136,10 @@
     <button type="button" role="tab" data-tab-btn="stats">Статистика</button>
     <button type="button" role="tab" data-tab-btn="settings">Настройки</button>
   </nav>
+  <div id="updateNotice" class="msg" hidden style="background:#fff4d6;color:#6b4e00;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+    <span><b>Админка обновилась.</b> Обновите страницу, чтобы не сохранять товары из старой версии.</span>
+    <button type="button" class="btn-primary btn-sm" onclick="location.reload()">Обновить</button>
+  </div>
   <div id="globalMsg"></div>
 
   <div class="card" id="statsCard" data-tab="stats">
@@ -816,6 +820,18 @@ async function loadVisitorsNow(){
   }catch(e){ /* not logged in any more — the next full load will show the login screen */ }
 }
 setInterval(() => { if(!el('adminScreen').hidden && document.visibilityState === 'visible') loadVisitorsNow(); }, 60000);
+
+// A tab left open across a site update offers a reload instead of saving with an old form
+const ADMIN_BUILD = (document.querySelector('meta[name="admin-build"]') || {}).content;
+async function checkAdminVersion(){
+  if(!ADMIN_BUILD) return;
+  try{
+    const { admin } = await (await fetch('/api/version', { cache: 'no-store' })).json();
+    if(admin && admin !== ADMIN_BUILD) el('updateNotice').hidden = false;
+  }catch(e){}
+}
+setInterval(checkAdminVersion, 5 * 60000);
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') checkAdminVersion(); });
 
 /* ===== Articles ===== */
 let ARTICLES_ADMIN = [];
