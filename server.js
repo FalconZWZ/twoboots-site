@@ -371,16 +371,24 @@ function normalizeStore(store) {
       .map(a => ({ id: crypto.randomUUID(), ...a, cover: null, published: false, createdAt: now, updatedAt: now }));
     changed = true;
   }
-  // Colour variants: products named the same apart from the colour in brackets — «Скакалка
-  // скоростная Two Boots (красный)», «… (синий)» — become one model (group), once.
-  if (!store.variantsGrouped && Array.isArray(store.products)) {
+  // Colour variants: products named the same apart from their colour — «Скакалка скоростная
+  // Two Boots (красный)», «Котик 3D … Two Boots Белый» — become one model (group), once.
+  // A group that is just the product's own full name (made before copies joined models) or no
+  // group at all is replaced; groups set some other way are left alone.
+  if (!store.variantsGrouped2 && Array.isArray(store.products)) {
     const byBase = {};
-    store.products.filter(p => p.color && !p.group).forEach(p => {
-      const base = String(p.name).replace(/\s*\([^)]*\)\s*$/, '').trim();
+    store.products.filter(p => p.color).forEach(p => {
+      const base = modelBaseName(p).toLowerCase();
       (byBase[base] = byBase[base] || []).push(p);
     });
-    Object.entries(byBase).forEach(([base, list]) => { if (list.length > 1) list.forEach(p => { p.group = slugify(base); }); });
-    store.variantsGrouped = true;
+    Object.values(byBase).forEach(list => {
+      if (list.length < 2) return;
+      const loose = p => !p.group || p.group === slugify(p.name);
+      const kept = list.find(p => !loose(p));
+      const group = kept ? kept.group : slugify(modelBaseName(list[0]));
+      list.filter(loose).forEach(p => { p.group = group; });
+    });
+    store.variantsGrouped = store.variantsGrouped2 = true;
     changed = true;
   }
   // Starter texts and FAQ for the category pages; the owner edits them in the admin.
@@ -399,6 +407,18 @@ function normalizeStore(store) {
   const store = readStore();
   if (normalizeStore(store)) writeStore(store);
 }
+// The model's name: the product name without its colour, whether that is in brackets at the
+// end («… (красный)») or just the last words («… Two Boots Белый», «… — белый»).
+function modelBaseName(p) {
+  let base = String(p.name || '').replace(/\s*\([^)]*\)\s*$/, '').trim();
+  const color = String(p.color || '').trim();
+  if (color) {
+    const norm = t => t.toLowerCase().replace(/ё/g, 'е');
+    if (norm(base).endsWith(norm(color))) base = base.slice(0, base.length - color.length).replace(/[\s,—–-]+$/, '').trim();
+  }
+  return base || String(p.name || '');
+}
+
 function slugify(text) {
   const translit = {
     а:'a',б:'b',в:'v',г:'g',д:'d',е:'e',ё:'e',ж:'zh',з:'z',и:'i',й:'y',к:'k',л:'l',м:'m',
@@ -2637,7 +2657,7 @@ app.post('/api/admin/products/:id/duplicate', requireAdmin, (req, res) => {
   const copy = { ...JSON.parse(JSON.stringify(rest)), id: newId, name, hidden: true, draftCopy: true };
   if (quantity !== undefined) delete copy.stock; // the source's «sold out» came from its own count
   // a copy is another colour of the same model
-  if (!src.group) src.group = slugify(String(src.name).replace(/\s*\([^)]*\)\s*$/, '').trim()) || src.id;
+  if (!src.group || src.group === slugify(src.name)) src.group = slugify(modelBaseName(src)) || src.id;
   copy.group = src.group;
   delete copy.colorHex;
   const mainPhoto = copyPhoto(img);

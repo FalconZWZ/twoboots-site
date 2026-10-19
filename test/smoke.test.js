@@ -748,3 +748,30 @@ test('restore from a backup: round-trips the data, rejects junk, never writes ou
   assert.ok(fs.readdirSync(dataDir).some(f => f.startsWith('store.before-restore-')));
   assert.equal((await admin('/api/admin/orders')).data.orders.length, before);
 });
+
+test('colour models are rebuilt once from names with the colour at the end (no brackets)', async () => {
+  const AdmZip = require('adm-zip');
+  const admin = await adminClient();
+  const zip = new AdmZip((await admin('/api/admin/backup')).data);
+  const store = JSON.parse(zip.readAsText('store.json'));
+  const name = c => `Котик 3D — игрушка Two Boots ${c}`;
+  // as on the live site: copies made before copies joined models
+  store.products.push(
+    { id: 'kot-test', cat: 'access', name: name('Белый'), color: 'Белый', price: 500, specs: [], desc: '', group: 'kotik-3d-igrushka-two-boots-belyy' },
+    { id: 'kot-test-red', cat: 'access', name: name('Красный'), color: 'Красный', price: 500, specs: [], desc: '' },
+    { id: 'kot-test-bronze', cat: 'access', name: name('Бронзовый'), color: 'Бронзовый', price: 500, specs: [], desc: '' },
+  );
+  delete store.variantsGrouped2;
+  zip.updateFile('store.json', Buffer.from(JSON.stringify(store)));
+  const f = new FormData(); f.append('backup', new Blob([zip.toBuffer()]), 'b.zip');
+  assert.equal((await admin('/api/admin/restore', { method: 'POST', form: f })).status, 200);
+
+  const products = (await client()('/api/data')).data.products;
+  const kots = products.filter(p => p.id.startsWith('kot-test'));
+  assert.deepEqual([...new Set(kots.map(p => p.group))], ['kotik-3d-igrushka-two-boots'], 'all three are one model');
+  assert.equal(products.find(p => p.id === 'speedjump-red').group, 'skakalka-skorostnaya-two-boots', 'existing models untouched');
+
+  // copying a colour named without brackets joins the same model
+  const dup = (await admin('/api/admin/products/kot-test-red/duplicate', { method: 'POST' })).data;
+  assert.equal(dup.group, 'kotik-3d-igrushka-two-boots');
+});
