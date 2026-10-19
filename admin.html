@@ -362,8 +362,13 @@
       </div>
       <div class="row">
         <div class="field"><label>Цена, ₽</label><input id="pPrice" type="number" min="0" required></div>
-        <div class="field"><label>Цвет (необязательно)</label><input id="pColor"></div>
+        <div class="field"><label>Цвет (необязательно)</label><input id="pColor" placeholder="например: красный"></div>
         <div class="field"><label>Размер (необязательно)</label><input id="pSize"></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>Модель — общая для всех цветов (необязательно)</label><input id="pGroup" list="groupList" maxlength="60" placeholder="например: skakalka-skorostnaya-two-boots"><datalist id="groupList"></datalist>
+          <small style="color:var(--ink-soft);font-size:.78rem;">У товаров с одинаковой моделью на сайте появятся кружки цветов для переключения. «Копировать» ставит модель сама.</small></div>
+        <div class="field" style="flex:none;width:190px;"><label>Цвет кружка (если не угадался)</label><input id="pColorHex" maxlength="7" placeholder="#ff6600"></div>
       </div>
       <div class="field">
         <label>Варианты размера на выбор (через запятую, необязательно)</label>
@@ -1476,12 +1481,13 @@ function renderProdCatTabs(){
 
 function renderProducts(){
   renderProdCatTabs();
+  el('groupList').innerHTML = [...new Set(STATE.products.map(p => p.group).filter(Boolean))].map(g => `<option value="${escHtml(g)}">`).join('');
   const shown = STATE.products.filter(p => !PROD_CAT || (PROD_CAT === NO_CAT ? !STATE.categories[p.cat] : p.cat === PROD_CAT));
   el('productsBody').innerHTML = shown.map(p => `
     <tr>
       <td><input type="checkbox" class="prod-chk" value="${p.id}"></td>
       <td>${p.img ? `<img class="thumb" src="${p.img}">` : ''}${p.images && p.images.length ? `<small style="color:var(--ink-soft);white-space:nowrap;">+${p.images.length} фото</small>` : ''}</td>
-      <td>${p.name}${p.size ? ' · ' + p.size : ''}${p.sizes && p.sizes.length ? `<br><small style="color:var(--ink-soft);">Размеры: ${p.sizes.join(', ')}</small>` : ''}</td>
+      <td>${p.name}${p.size ? ' · ' + p.size : ''}${p.group ? `<br><small style="color:var(--ink-soft);">модель: ${escHtml(p.group)}${p.color ? ' · ' + escHtml(p.color) : ''}</small>` : ''}${p.sizes && p.sizes.length ? `<br><small style="color:var(--ink-soft);">Размеры: ${p.sizes.join(', ')}</small>` : ''}</td>
       <td>${STATE.categories[p.cat] || p.cat}</td>
       <td>${p.discountPercent ? `<span class="price-old-admin" style="color:var(--ink-soft);text-decoration:line-through;">${p.price.toLocaleString('ru-RU')} ₽</span> ${Math.round(p.price*(1-p.discountPercent/100)).toLocaleString('ru-RU')} ₽` : p.price.toLocaleString('ru-RU') + ' ₽'}</td>
       <td>${p.discountPercent ? '−' + p.discountPercent + '%' : '—'}</td>
@@ -1633,6 +1639,8 @@ function startEdit(id){
   el('pHidden').checked = !!p.hidden;
   el('pStock').value = p.stock || '';
   el('pQuantity').value = p.quantity === undefined ? '' : p.quantity;
+  el('pGroup').value = p.group || '';
+  el('pColorHex').value = p.colorHex || '';
   el('specsList').innerHTML = '';
   (p.specs || []).forEach(([k,v]) => el('specsList').appendChild(specRow(k,v)));
   if(p.img){ el('currentImg').src = p.img; el('currentImgWrap').hidden = false; } else { el('currentImgWrap').hidden = true; }
@@ -1664,6 +1672,8 @@ el('productForm').addEventListener('submit', async (e) => {
   fd.append('hidden', el('pHidden').checked ? 'true' : 'false');
   fd.append('stock', el('pStock').value);
   fd.append('quantity', el('pQuantity').value);
+  fd.append('group', el('pGroup').value);
+  fd.append('colorHex', el('pColorHex').value);
   if(el('pImage').files[0]) fd.append('image', el('pImage').files[0]);
   const newExtras = Array.from(el('pImages').files);
   if(EDIT_EXTRAS.length + newExtras.length > 10){
