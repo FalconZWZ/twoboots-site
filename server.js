@@ -599,7 +599,7 @@ app.put('/api/admin/category-content/:cat', requireAdmin, (req, res) => {
 /* ===== Public data API ===== */
 // The shop window never shows exact stock — only «осталось N» when 5 or fewer are left.
 const publicProduct = ratings => p => {
-  const { quantity, lowStockAlerted, ...rest } = p;
+  const { quantity, lowStockAlerted, draftCopy, ...rest } = p;
   return {
     ...rest,
     ...(ratings[p.id] ? { rating: ratings[p.id] } : {}),
@@ -2581,11 +2581,51 @@ app.put('/api/admin/products/:id', requireAdmin, productUpload, async (req, res)
   if (gallery.length) updated.images = gallery.slice(0, MAX_EXTRA_IMAGES);
   else delete updated.images;
 
+  // A fresh copy gets its address from the name it was given (nothing links to it yet).
+  if (updated.draftCopy) {
+    delete updated.draftCopy;
+    if (updated.name !== existing.name) {
+      let newId = slugify(updated.name);
+      if (store.products.some((p, i) => i !== idx && p.id === newId)) newId += '-' + Date.now().toString(36);
+      store.products.forEach(p => { if (p.related) p.related = p.related.map(r => (r === existing.id ? newId : r)); });
+      updated.id = newId;
+    }
+  }
   store.products[idx] = updated;
   const restockDue = takeRestockSubs(store, [[existing, updated]]);
   writeStore(store);
   sendRestockEmails(restockDue);
   res.json(updated);
+});
+
+// A copy of a product — for variants that differ only in colour. It is hidden until the
+// admin changes what differs and shows it; photos are copied to new files, so deleting
+// either product never removes the other's pictures. Stock isn't copied.
+app.post('/api/admin/products/:id/duplicate', requireAdmin, (req, res) => {
+  const store = readStore();
+  const idx = store.products.findIndex(p => p.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Товар не найден' });
+  const src = store.products[idx];
+  const copyPhoto = url => {
+    if (!url || !url.startsWith('/uploads/')) return url; // built-in pictures are shared files that are never deleted
+    const fresh = crypto.randomBytes(16).toString('hex') + path.extname(url);
+    try { fs.copyFileSync(path.join(UPLOADS_DIR, path.basename(url)), path.join(UPLOADS_DIR, fresh)); return '/uploads/' + fresh; }
+    catch (e) { return undefined; }
+  };
+  const { id, quantity, lowStockAlerted, hidden, img, images, ...rest } = src;
+  const name = `${src.name} (копия)`;
+  let newId = slugify(name);
+  if (store.products.some(p => p.id === newId)) newId += '-' + Date.now().toString(36);
+  // draftCopy: the address (/product/<id>) is rebuilt from the real name on the first save
+  const copy = { ...JSON.parse(JSON.stringify(rest)), id: newId, name, hidden: true, draftCopy: true };
+  if (quantity !== undefined) delete copy.stock; // the source's «sold out» came from its own count
+  const mainPhoto = copyPhoto(img);
+  if (mainPhoto) copy.img = mainPhoto;
+  const gallery = (images || []).map(copyPhoto).filter(Boolean);
+  if (gallery.length) copy.images = gallery;
+  store.products.splice(idx + 1, 0, copy); // right after the original in the list
+  writeStore(store);
+  res.json(copy);
 });
 
 app.patch('/api/admin/products/:id', requireAdmin, (req, res) => {

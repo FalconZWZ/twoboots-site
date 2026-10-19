@@ -1489,6 +1489,7 @@ function renderProducts(){
       <td style="white-space:nowrap;">
         <button type="button" class="btn-ghost btn-sm" data-toggle-hidden="${p.id}" data-hidden="${p.hidden ? '1' : '0'}">${p.hidden ? 'Показать' : 'Скрыть'}</button>
         <button type="button" class="btn-ghost btn-sm" data-edit="${p.id}">Изменить</button>
+        <button type="button" class="btn-ghost btn-sm" data-duplicate="${p.id}" title="Создать такой же товар — например, другого цвета">Копировать</button>
         <button type="button" class="btn-danger btn-sm" data-del="${p.id}">Удалить</button>
       </td>
     </tr>
@@ -1496,6 +1497,19 @@ function renderProducts(){
 
   el('productsBody').querySelectorAll('[data-edit]').forEach(btn => {
     btn.addEventListener('click', () => startEdit(btn.getAttribute('data-edit')));
+  });
+  el('productsBody').querySelectorAll('[data-duplicate]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try{
+        const copy = await api('/api/admin/products/' + encodeURIComponent(btn.getAttribute('data-duplicate')) + '/duplicate', { method:'POST' });
+        await loadAll();
+        startEdit(copy.id);
+        el('pName').focus({ preventScroll: true });
+        el('pName').select();
+        showMsg(el('globalMsg'), 'Копия создана и пока <b>скрыта</b> от покупателей. Поменяйте название, цвет и фото, снимите галочку «Скрыть от покупателей» и сохраните.', 'ok');
+      }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); btn.disabled = false; }
+    });
   });
   el('productsBody').querySelectorAll('[data-del]').forEach(btn => {
     btn.addEventListener('click', async () => {
