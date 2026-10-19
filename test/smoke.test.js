@@ -139,7 +139,7 @@ test('pages are revalidated and carry the build id the version endpoint reports'
 
 test('public files are served, private files are not', async () => {
   const req = client();
-  for (const url of ['/robots.txt', '/sitemap.xml', '/yml.xml', '/favicon.svg', '/images/two-boots-s-black.jpg']) {
+  for (const url of ['/robots.txt', '/sitemap.xml', '/yml.xml', '/favicon.svg', '/colors.js', '/images/two-boots-s-black.jpg']) {
     assert.equal((await req(url)).status, 200, url);
   }
   for (const url of ['/server.js', '/package.json', '/data/seed.json', '/README.md', '/.git/config', '/admin.html']) {
