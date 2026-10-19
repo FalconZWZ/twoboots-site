@@ -774,4 +774,17 @@ test('colour models are rebuilt once from names with the colour at the end (no b
   // copying a colour named without brackets joins the same model
   const dup = (await admin('/api/admin/products/kot-test-red/duplicate', { method: 'POST' })).data;
   assert.equal(dup.group, 'kotik-3d-igrushka-two-boots');
+
+  // a form from an admin tab opened before the Model field existed doesn't wipe the model
+  const stale = new FormData();
+  for (const [k, v] of Object.entries({ cat: 'access', name: name('Красный'), price: '550', color: 'Красный' })) stale.append(k, v);
+  assert.equal((await admin('/api/admin/products/kot-test-red', { method: 'PUT', form: stale })).data.group, 'kotik-3d-igrushka-two-boots');
+
+  // a colour added with «Добавить товар» (not a copy) joins its namesakes by itself
+  const fresh = new FormData();
+  for (const [k, v] of Object.entries({ cat: 'access', name: name('Оранжевый'), price: '500', color: 'Оранжевый' })) fresh.append(k, v);
+  const orange = (await admin('/api/admin/products', { method: 'POST', form: fresh })).data;
+  const live = (await client()('/api/data')).data.products.find(p => p.id === orange.id);
+  assert.equal(live.group, 'kotik-3d-igrushka-two-boots');
+  assert.ok(!('groupOff' in live));
 });
