@@ -547,6 +547,52 @@ test('online payment: redirect to YooKassa, paid only when YooKassa says so, cer
   assert.equal(after.data.order.giftCodes.length, 1);
 });
 
+test('duplicating a product: hidden copy with its own photo files, stock not copied', async () => {
+  const admin = await adminClient();
+  // 1×1 PNG
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  const fd = new FormData();
+  for (const [k, v] of Object.entries({ cat: 'ropes', name: 'Скакалка Тест синяя', price: '700', color: 'синий', desc: 'Описание', specs: JSON.stringify([['Трос', 'металл']]), sizes: '250 см, 280 см', quantity: '4' })) fd.append(k, v);
+  fd.append('image', new Blob([png], { type: 'image/png' }), 'a.png');
+  const created = await admin('/api/admin/products', { method: 'POST', form: fd });
+  assert.equal(created.status, 200, JSON.stringify(created.data));
+  const src = created.data;
+
+  assert.equal((await admin('/api/admin/products/no-such/duplicate', { method: 'POST' })).status, 404);
+  const dup = await admin(`/api/admin/products/${src.id}/duplicate`, { method: 'POST' });
+  assert.equal(dup.status, 200);
+  const copy = dup.data;
+  assert.notEqual(copy.id, src.id);
+  assert.equal(copy.name, 'Скакалка Тест синяя (копия)');
+  assert.equal(copy.hidden, true, 'hidden until edited');
+  assert.equal(copy.price, 700);
+  assert.deepEqual(copy.sizes, ['250 см', '280 см']);
+  assert.deepEqual(copy.specs, [['Трос', 'металл']]);
+  assert.ok(!('quantity' in copy), 'stock is not copied');
+  assert.ok(copy.img && copy.img !== src.img, 'its own photo file');
+  assert.equal((await fetch(BASE + copy.img)).status, 200);
+  const list = (await admin('/api/admin/data')).data.products.map(p => p.id);
+  assert.equal(list.indexOf(copy.id), list.indexOf(src.id) + 1, 'placed right after the original');
+  assert.ok(!(await client()('/api/data')).data.products.some(p => p.id === copy.id), 'not on the site yet');
+
+
+  // the first save of a renamed copy gives it an address from its new name
+  const fd2 = new FormData();
+  for (const [k, v] of Object.entries({ cat: 'ropes', name: 'Скакалка Тест белая', price: '700', color: 'белый', hidden: 'false' })) fd2.append(k, v);
+  const saved = await admin('/api/admin/products/' + copy.id, { method: 'PUT', form: fd2 });
+  assert.equal(saved.status, 200, JSON.stringify(saved.data));
+  assert.equal(saved.data.id, 'skakalka-test-belaya');
+  assert.ok(!('draftCopy' in saved.data));
+  copy.id = saved.data.id;
+  const renamedAgain = new FormData();
+  for (const [k, v] of Object.entries({ cat: 'ropes', name: 'Скакалка Тест молочная', price: '700' })) renamedAgain.append(k, v);
+  assert.equal((await admin('/api/admin/products/' + copy.id, { method: 'PUT', form: renamedAgain })).data.id, 'skakalka-test-belaya', 'later renames keep the address');
+
+  assert.equal((await admin('/api/admin/products/' + src.id, { method: 'DELETE' })).status, 200);
+  await new Promise(r => setTimeout(r, 100));
+  assert.equal((await fetch(BASE + copy.img)).status, 200, "deleting the original keeps the copy's photo");
+});
+
 test('admin: auth, promo code, stock, review moderation', async () => {
   const anon = client();
   assert.equal((await anon('/api/admin/orders')).status, 401);
