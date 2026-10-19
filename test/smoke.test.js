@@ -593,6 +593,30 @@ test('duplicating a product: hidden copy with its own photo files, stock not cop
   assert.equal((await fetch(BASE + copy.img)).status, 200, "deleting the original keeps the copy's photo");
 });
 
+test('colour variants: models grouped from names, copies join the model, the group can be cleared', async () => {
+  const products = (await client()('/api/data')).data.products;
+  const by = id => products.find(p => p.id === id);
+  const ropes = products.filter(p => p.id.startsWith('speedjump-'));
+  assert.equal(new Set(ropes.map(p => p.group)).size, 1, 'all 9 ropes are one model');
+  assert.equal(by('speedjump-red').group, 'skakalka-skorostnaya-two-boots');
+  assert.equal(by('two-boots-silver-m').group, by('two-boots-graphite-m').group, 'suitcases M are one model');
+  assert.ok(!by('two-boots-black-xl').group, 'the only XL has no other colours');
+  assert.ok(!by('dry-glide').group, 'products without a colour are left alone');
+
+  const admin = await adminClient();
+  const dup = (await admin('/api/admin/products/grip-lace/duplicate', { method: 'POST' })).data;
+  assert.ok(dup.group, 'a copy joins the model of its original');
+  const original = (await admin('/api/admin/data')).data.products.find(p => p.id === 'grip-lace');
+  assert.equal(original.group, dup.group);
+
+  const fd = new FormData();
+  for (const [k, v] of Object.entries({ cat: 'access', name: 'Шнурки чёрные', price: '390', color: 'чёрный', group: '', colorHex: 'nonsense' })) fd.append(k, v);
+  const saved = (await admin('/api/admin/products/' + dup.id, { method: 'PUT', form: fd })).data;
+  assert.ok(!saved.group, 'an empty field leaves the model');
+  assert.ok(!saved.colorHex, 'only #rrggbb colours are kept');
+  await admin('/api/admin/products/' + saved.id, { method: 'DELETE' });
+});
+
 test('admin: auth, promo code, stock, review moderation', async () => {
   const anon = client();
   assert.equal((await anon('/api/admin/orders')).status, 401);

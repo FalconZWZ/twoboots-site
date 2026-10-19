@@ -371,6 +371,18 @@ function normalizeStore(store) {
       .map(a => ({ id: crypto.randomUUID(), ...a, cover: null, published: false, createdAt: now, updatedAt: now }));
     changed = true;
   }
+  // Colour variants: products named the same apart from the colour in brackets — «Скакалка
+  // скоростная Two Boots (красный)», «… (синий)» — become one model (group), once.
+  if (!store.variantsGrouped && Array.isArray(store.products)) {
+    const byBase = {};
+    store.products.filter(p => p.color && !p.group).forEach(p => {
+      const base = String(p.name).replace(/\s*\([^)]*\)\s*$/, '').trim();
+      (byBase[base] = byBase[base] || []).push(p);
+    });
+    Object.entries(byBase).forEach(([base, list]) => { if (list.length > 1) list.forEach(p => { p.group = slugify(base); }); });
+    store.variantsGrouped = true;
+    changed = true;
+  }
   // Starter texts and FAQ for the category pages; the owner edits them in the admin.
   if (!store.categoryContent) {
     const starter = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'category-content.json'), 'utf8'));
@@ -2428,6 +2440,9 @@ function parseProductBody(body) {
     discountPercent: discountPercent || undefined,
     stock: normStock(body.stock),
     quantity: normQuantity(body.quantity),
+    // products with the same group are one model in different colours (swatches on the product page)
+    group: String(body.group || '').trim() ? slugify(String(body.group).trim()).slice(0, 60) || undefined : undefined,
+    colorHex: /^#[0-9a-f]{6}$/i.test(String(body.colorHex || '').trim()) ? String(body.colorHex).trim().toLowerCase() : undefined,
     sizes: parseSizes(body.sizes).length ? parseSizes(body.sizes) : undefined,
     related: parseRelated(body.related),
     hidden: body.hidden === 'true' || body.hidden === true || undefined,
@@ -2535,6 +2550,8 @@ app.post('/api/admin/products', requireAdmin, productUpload, async (req, res) =>
   if (!product.color) delete product.color;
   if (!product.size) delete product.size;
   if (product.quantity === undefined) delete product.quantity;
+  if (!product.group) delete product.group;
+  if (!product.colorHex) delete product.colorHex;
   syncStockWithQuantity(product);
   if (uploads.main) product.img = uploads.main;
   if (uploads.extras.length) product.images = uploads.extras;
@@ -2619,6 +2636,10 @@ app.post('/api/admin/products/:id/duplicate', requireAdmin, (req, res) => {
   // draftCopy: the address (/product/<id>) is rebuilt from the real name on the first save
   const copy = { ...JSON.parse(JSON.stringify(rest)), id: newId, name, hidden: true, draftCopy: true };
   if (quantity !== undefined) delete copy.stock; // the source's «sold out» came from its own count
+  // a copy is another colour of the same model
+  if (!src.group) src.group = slugify(String(src.name).replace(/\s*\([^)]*\)\s*$/, '').trim()) || src.id;
+  copy.group = src.group;
+  delete copy.colorHex;
   const mainPhoto = copyPhoto(img);
   if (mainPhoto) copy.img = mainPhoto;
   const gallery = (images || []).map(copyPhoto).filter(Boolean);
