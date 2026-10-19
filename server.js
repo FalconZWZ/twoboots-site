@@ -513,7 +513,7 @@ app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '30d', immutable: true
 // package.json, data/ and (when DATA_DIR is unset) data-runtime/store.json.
 // Everything else, "/" and /index.html included, reaches the SPA fallback below.
 app.use('/images', express.static(path.join(__dirname, 'images'), { maxAge: '1d' }));
-const PUBLIC_ROOT_FILES = ['favicon.svg', 'robots.txt', 'yandex_1c7e02c88165d0f5.html'];
+const PUBLIC_ROOT_FILES = ['favicon.svg', 'robots.txt', 'yandex_1c7e02c88165d0f5.html', 'colors.js'];
 PUBLIC_ROOT_FILES.forEach(file => {
   app.get('/' + file, (req, res) => res.sendFile(path.join(__dirname, file)));
 });

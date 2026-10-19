@@ -372,7 +372,14 @@
       <div class="row">
         <div class="field"><label>Модель — общая для всех цветов (необязательно)</label><input id="pGroup" list="groupList" maxlength="60" placeholder="например: skakalka-skorostnaya-two-boots"><datalist id="groupList"></datalist>
           <small style="color:var(--ink-soft);font-size:.78rem;">У товаров с одинаковой моделью на сайте появятся кружки цветов для переключения. «Копировать» ставит модель сама.</small></div>
-        <div class="field" style="flex:none;width:190px;"><label>Цвет кружка (если не угадался)</label><input id="pColorHex" maxlength="7" placeholder="#ff6600"></div>
+        <div class="field" style="flex:none;width:250px;"><label>Кружок цвета на сайте</label>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <span id="pColorDot" style="width:30px;height:30px;border-radius:50%;flex:none;box-shadow:0 0 0 1px var(--border);background:#eee;"></span>
+            <input type="color" id="pColorPick" title="Выбрать цвет" style="width:42px;height:34px;padding:2px;flex:none;cursor:pointer;">
+            <input id="pColorHex" maxlength="7" placeholder="авто" style="min-width:0;">
+            <button type="button" class="btn-ghost btn-sm" id="pColorAuto" title="Убрать свой цвет и брать его из названия">Авто</button>
+          </div>
+          <small id="pColorNote" style="color:var(--ink-soft);font-size:.78rem;"></small></div>
       </div>
       <div class="field">
         <label>Варианты размера на выбор (через запятую, необязательно)</label>
@@ -442,6 +449,7 @@
 
 </div>
 
+<script src="/colors.js"></script>
 <script>
 let STATE = { categories: {}, products: [] };
 
@@ -1632,7 +1640,28 @@ function resetForm(){
   el('formTitle').textContent = 'Добавить товар';
   el('cancelEditBtn').hidden = true;
   if(STATE.categories[PROD_CAT]) el('pCat').value = PROD_CAT;
+  updateColorPreview();
 }
+// The swatch the shop will draw: the admin's own colour, else one guessed from the colour name
+function updateColorPreview(){
+  const name = el('pColor').value.trim();
+  const own = window.safeHex ? safeHex(el('pColorHex').value) : null;
+  const guessed = window.colorFromName ? colorFromName(name) : null;
+  const shown = own || guessed;
+  el('pColorDot').style.background = shown || '#eee';
+  if(/^#[0-9a-f]{6}$/i.test(shown || '')) el('pColorPick').value = shown;
+  el('pColorAuto').hidden = !own;
+  const note = el('pColorNote');
+  note.style.color = 'var(--ink-soft)';
+  if(!name) note.textContent = 'Кружок появится, когда указан цвет.';
+  else if(own) note.textContent = 'Свой цвет кружка.';
+  else if(guessed) note.textContent = 'Цвет определён по названию.';
+  else { note.textContent = `«${name}» не узнали — выберите цвет кружка, иначе на сайте будет надпись.`; note.style.color = '#b45309'; }
+}
+el('pColorPick').addEventListener('input', () => { el('pColorHex').value = el('pColorPick').value; updateColorPreview(); });
+el('pColorAuto').addEventListener('click', () => { el('pColorHex').value = ''; updateColorPreview(); });
+['pColor', 'pColorHex'].forEach(id => el(id).addEventListener('input', updateColorPreview));
+updateColorPreview();
 el('addProductBtn').addEventListener('click', () => {
   resetForm();
   el('productFormCard').scrollIntoView({ behavior:'smooth' });
@@ -1657,6 +1686,7 @@ function startEdit(id){
   el('pQuantity').value = p.quantity === undefined ? '' : p.quantity;
   el('pGroup').value = p.group || '';
   el('pColorHex').value = p.colorHex || '';
+  updateColorPreview();
   el('specsList').innerHTML = '';
   (p.specs || []).forEach(([k,v]) => el('specsList').appendChild(specRow(k,v)));
   if(p.img){ el('currentImg').src = p.img; el('currentImgWrap').hidden = false; } else { el('currentImgWrap').hidden = true; }
