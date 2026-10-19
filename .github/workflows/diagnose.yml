@@ -38,3 +38,13 @@ jobs:
           curl -sS --max-time 20 -D - -H 'Content-Type: application/json' \
             -d '{"name":"Diag","email":"diag@example.invalid","password":"diag12345","phone":"1"}' \
             -w '\nHTTP %{http_code}\n' https://www.two-boots.ru/api/register
+
+      - name: Products, colours and colour models
+        run: |
+          set +e
+          curl -sS --max-time 20 https://www.two-boots.ru/api/data | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          for p in d['products']:
+              print(f\"{p['id'][:38]:38} | {p['name'][:55]:55} | цвет: {p.get('color') or '—':14} | модель: {p.get('group') or '—'}\")
+          "
