@@ -488,7 +488,7 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   .gal-thumb.active{border-color:var(--ink);}
   .pdp-info h1{font-size:clamp(1.7rem,3vw,2.3rem);margin-bottom:14px;}
   .pdp-price{font-size:1.7rem;margin:14px 0 20px;}
-  .pdp-desc{color:var(--ink-soft);margin-bottom:24px;max-width:52ch;}
+  .pdp-desc{color:var(--ink-soft);margin-bottom:24px;max-width:60ch;white-space:pre-line;}
   .spec-list{display:flex;flex-direction:column;gap:10px;margin-bottom:28px;}
   .spec-list li{display:flex;gap:10px;font-size:.92rem;color:var(--ink-soft);}
   .spec-list li b{color:var(--ink);font-weight:700;}
@@ -2427,6 +2427,14 @@ function trackPageview(){
   ym(METRIKA_ID, 'hit', location.href, { title: document.title, referer: lastTrackedUrl });
   lastTrackedUrl = location.href;
 }
+// One line of a multi-paragraph description, for the page's meta description
+function shortDesc(text, max = 160){
+  const flat = String(text || '').split('\n').map(l => l.replace(/^\s*[•\-–—]\s*/, '').trim()).filter(Boolean)
+    .map(l => /[.!?…:]$/.test(l) ? l : l + '.').join(' ').replace(/\s+/g, ' ');
+  if(flat.length <= max) return flat;
+  const cut = flat.slice(0, max - 1);
+  return cut.slice(0, cut.lastIndexOf(' ') > 80 ? cut.lastIndexOf(' ') : cut.length).replace(/[\s,.:;—–-]+$/, '') + '…';
+}
 function trackGoal(goal){ ym(METRIKA_ID, 'reachGoal', goal); }
 let lastDetailId = null; // a product page re-rendered (e.g. after login) is not a second view
 // Ecommerce events for Metrika reports (product views, cart additions and removals)
@@ -2487,7 +2495,7 @@ function render(){
     html = pageProduct(path.replace('/product/',''));
     routeKey = '/catalog';
     if(p && lastDetailId !== p.id){ lastDetailId = p.id; trackEcommerce('detail', p); }
-    setMeta(p ? `${p.name} — Two Boots` : 'Товар не найден — Two Boots', p ? p.desc : undefined);
+    setMeta(p ? `${p.name} — Two Boots` : 'Товар не найден — Two Boots', p ? shortDesc(p.desc) : undefined);
   } else if(path === '/about'){
     html = pageAbout();
     setMeta('О бренде — Two Boots');

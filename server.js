@@ -2930,6 +2930,17 @@ app.get('/api/version', (req, res) => res.set('Cache-Control', 'no-store').json(
 const DEFAULT_DESCRIPTION = 'Two Boots — экипировка для фигурного катания: чехлы для лезвий, сумки и чемоданы, скакалки и аксессуары.';
 const CATALOG_DESCRIPTION = 'Чехлы для лезвий, сумки и чемоданы, скакалки и аксессуары для фигурного катания.';
 
+// Product descriptions may be several paragraphs with "•" lists; search snippets get one line
+function plainDescription(text) {
+  return String(text || '').split('\n').map(l => l.replace(/^\s*[•\-–—]\s*/, '').trim()).filter(Boolean)
+    .map(l => /[.!?…:]$/.test(l) ? l : l + '.').join(' ').replace(/\s+/g, ' ');
+}
+function shortDescription(text, max = 160) {
+  const flat = plainDescription(text);
+  if (flat.length <= max) return flat;
+  const cut = flat.slice(0, max - 1);
+  return cut.slice(0, cut.lastIndexOf(' ') > 80 ? cut.lastIndexOf(' ') : cut.length).replace(/[\s,.:;—–-]+$/, '') + '…';
+}
 function escHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
@@ -2982,11 +2993,11 @@ function pageSeo(pathname, query) {
     if (categories[p.cat]) crumbs.push({ name: categories[p.cat], item: `${SITE_ORIGIN}/catalog?cat=${encodeURIComponent(p.cat)}` });
     crumbs.push({ name: p.name, item: url });
     return {
-      title: `${p.name} — Two Boots`, description: p.desc, url, image,
+      title: `${p.name} — Two Boots`, description: shortDescription(p.desc), url, image,
       jsonLd: [
         {
           '@context': 'https://schema.org', '@type': 'Product',
-          name: p.name, description: p.desc, sku: p.id,
+          name: p.name, description: plainDescription(p.desc), sku: p.id,
           ...(image ? { image: [...new Set([image, ...(p.images || []).map(absoluteImageUrl)])] } : {}),
           brand: { '@type': 'Brand', name: 'Two Boots' },
           ...productReviewsLd(store, p.id),
