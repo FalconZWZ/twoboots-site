@@ -988,9 +988,13 @@ function addToCart(id, qty=1, size=null){
   const line = cart.find(l => lineKey(l.id, l.size) === key);
   if(line){ line.qty += qty; } else { cart.push({id, qty, size, price: unitPrice}); }
   updateCartUI();
+  trackGoal('cart_add');
+  trackEcommerce('add', p, qty, size);
   showToast('Добавлено в корзину — ' + p.name);
 }
 function removeFromCart(key){
+  const gone = cart.find(l => lineKey(l.id, l.size) === key);
+  if(gone && productById(gone.id)) trackEcommerce('remove', productById(gone.id), gone.qty, gone.size);
   cart = cart.filter(l => lineKey(l.id, l.size) !== key);
   updateCartUI();
 }
@@ -1328,6 +1332,7 @@ function openCart(){
   applyLinkPromo();
   document.getElementById('cartDrawer').classList.add('open');
   document.getElementById('overlay').classList.add('open');
+  trackGoal('cart_open');
 }
 function closeCart(){
   document.getElementById('cartDrawer').classList.remove('open');
@@ -1374,6 +1379,7 @@ document.getElementById('cartFoot').addEventListener('click', e => {
     return;
   }
   if(e.target.id !== 'checkoutBtn') return;
+  trackGoal('checkout_start');
   if(!CURRENT_USER){
     showToast('Войдите или зарегистрируйтесь — и сразу вернёмся к оформлению заказа');
     RESUME_CHECKOUT = true;
@@ -2422,6 +2428,22 @@ function trackPageview(){
   lastTrackedUrl = location.href;
 }
 function trackGoal(goal){ ym(METRIKA_ID, 'reachGoal', goal); }
+let lastDetailId = null; // a product page re-rendered (e.g. after login) is not a second view
+// Ecommerce events for Metrika reports (product views, cart additions and removals)
+function trackEcommerce(action, p, qty, size){
+  const item = { id: p.id, name: p.name, price: effectivePrice(p), category: CATEGORIES[p.cat] || p.cat, variant: size || p.color || undefined };
+  if(qty) item.quantity = qty;
+  window.dataLayer.push({ ecommerce: { currencyCode: 'RUB', [action]: { products: [item] } } });
+}
+// Calls, messengers and e-mail from any link on the site (the floating chat buttons have their own goals)
+document.addEventListener('click', e => {
+  const a = e.target.closest('a[href]');
+  if(!a || a.hasAttribute('data-goal') || a.hasAttribute('data-share')) return;
+  const href = a.getAttribute('href');
+  if(href.startsWith('tel:')) trackGoal('contact_phone');
+  else if(href.startsWith('mailto:')) trackGoal('contact_email');
+  else if(/^https:\/\/(wa\.me|t\.me)\//.test(href)) trackGoal('contact_messenger');
+});
 
 /* ============ Own visitor counter (shown in the admin) ============ */
 // One beacon per page shown (the first one carries where the visitor came from) and a ping
@@ -2464,6 +2486,7 @@ function render(){
     const p = productById(path.replace('/product/',''));
     html = pageProduct(path.replace('/product/',''));
     routeKey = '/catalog';
+    if(p && lastDetailId !== p.id){ lastDetailId = p.id; trackEcommerce('detail', p); }
     setMeta(p ? `${p.name} — Two Boots` : 'Товар не найден — Two Boots', p ? p.desc : undefined);
   } else if(path === '/about'){
     html = pageAbout();
