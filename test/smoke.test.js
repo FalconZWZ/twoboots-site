@@ -865,3 +865,27 @@ test('search engines: verification tags, IndexNow key file, changed pages are se
   assert.ok(all.last.urls > 10);
   assert.equal(Object.values(all.last.results)[0], 202);
 });
+
+test('regions: visitors and orders by region from the IP, delivery cities', async () => {
+  const hit = (ip, body) => fetch(BASE + '/api/hit', { method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 Region test', 'X-Forwarded-For': ip }, body: JSON.stringify(body) });
+  await hit('77.88.55.88', { path: '/' });   // Moscow
+  await hit('8.8.8.8', { path: '/' });       // USA
+  const order = await fetch(BASE + '/api/quick-order', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '77.88.55.88' },
+    body: JSON.stringify({ productId: 'speedjump-green', qty: 1, name: 'Регион', phone: '+7 912 000-11-22', consent: true }) });
+  assert.equal(order.status, 200);
+
+  const admin = await adminClient();
+  const v = (await admin('/api/admin/visits?days=7')).data;
+  const moscow = v.regions.find(r => r.region === 'RU:Москва');
+  assert.equal(moscow.label, 'Москва');
+  assert.ok(moscow.visitors >= 1);
+  assert.ok(moscow.orders >= 1 && moscow.revenue > 0);
+  assert.match(v.regions.find(r => r.region === 'US').label, /^Соедин[её]нные Штаты/);
+  const { data } = await admin('/api/admin/orders');
+  const orders = Array.isArray(data) ? data : data.orders;
+  assert.ok(orders.some(o => o.region === 'RU:Москва'));
+
+  const st = (await admin('/api/admin/stats?days=7')).data;
+  assert.ok(Array.isArray(st.cities));
+  st.cities.forEach(c => assert.match(c.city, /^[A-ZА-ЯЁ]/));
+});

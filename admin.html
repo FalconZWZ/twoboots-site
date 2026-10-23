@@ -190,6 +190,15 @@
   </div>
 
   <div class="card" data-tab="stats">
+    <h2>Регионы</h2>
+    <div class="stats-cols">
+      <div><h3>Откуда посетители и покупатели</h3><div id="regionsTable" style="max-height:420px;overflow:auto;"></div></div>
+      <div><h3>Города доставки</h3><div id="citiesTable"></div></div>
+    </div>
+    <p style="color:var(--ink-soft);font-size:.8rem;margin:12px 0 0;">Регион посетителя и заказа определяется по IP-адресу (сам адрес не сохраняется), города доставки — из адресов в заказах. Мобильные операторы часто выдают адреса, записанные на Москву, поэтому Москва может быть немного завышена. Регионы считаются с момента подключения. IP Geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener">DB-IP</a>.</p>
+  </div>
+
+  <div class="card" data-tab="stats">
     <h2>Воронка продаж</h2>
     <div id="funnel"></div>
     <p style="color:var(--ink-soft);font-size:.8rem;margin:12px 0 0;" id="funnelNote"></p>
@@ -721,6 +730,9 @@ async function loadStats(){
     ['Повторные покупки', c.repeatOrders, `<span class="k-delta" style="display:block;">${pct(c.repeatOrders, c.orders)} заказов · ${rub(c.repeatRevenue)}</span>`],
     ['Товаров в заказе', c.orders ? (c.items / c.orders).toFixed(1).replace('.', ',') : '—', '<span class="k-delta" style="display:block;">в среднем</span>'],
   ].map(([label, value, extra]) => `<div class="kpi"><div class="k-label">${label}</div><div class="k-value">${value}</div>${extra}</div>`).join('');
+  el('citiesTable').innerHTML = st.cities.length ? `<table><thead><tr><th>Город</th><th class="num">Заказы</th><th class="num">Выручка</th></tr></thead><tbody>${
+    st.cities.map(x => `<tr><td>${escHtml(x.city)}</td><td class="num">${x.orders}</td><td class="num">${rub(x.revenue)}</td></tr>`).join('')}</tbody></table>`
+    : '<p style="color:var(--ink-soft);font-size:.85rem;">За период нет заказов с доставкой.</p>';
   const catTotal = st.categories.reduce((s, x) => s + x.revenue, 0);
   el('statsCats').innerHTML = st.categories.length ? `<table><thead><tr><th>Категория</th><th class="num">Шт.</th><th class="num">Выручка</th><th class="num">Доля</th></tr></thead><tbody>${
     st.categories.map(x => `<tr><td>${escHtml(x.label)}</td><td class="num">${x.qty}</td><td class="num">${rub(x.revenue)}</td><td class="num">${pct(x.revenue, catTotal)}</td></tr>`).join('')}</tbody></table>`
@@ -834,6 +846,8 @@ el('saveDeliveryBtn').addEventListener('click', async () => {
 /* ===== Visitors ===== */
 const SOURCE_LABELS = { direct: 'Прямые заходы и закладки', yandex: 'Поиск Яндекса', yandex_ads: 'Яндекс Директ (реклама)', yandex_maps: 'Яндекс Карты / Бизнес',
   google: 'Google', google_ads: 'Google Реклама', vk: 'ВКонтакте', telegram: 'Telegram', avito: 'Авито' };
+const COUNTRY_NAMES = new Intl.DisplayNames(['ru'], { type: 'region' });
+const regionLabel = k => !k ? 'не определён' : k === 'RU:' ? 'Россия' : k.startsWith('RU:') ? k.slice(3) : (() => { try { return COUNTRY_NAMES.of(k); } catch(e) { return k; } })();
 const sourceLabel = k => SOURCE_LABELS[k] || (String(k).startsWith('utm:') ? 'Метка: ' + k.slice(4) : k);
 const plural = (n, one, few, many) => { const m10 = n % 10, m100 = n % 100; return m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many; };
 function shareRows(entries, label){
@@ -866,6 +880,10 @@ async function loadVisits(){
     v.sources.map(r => `<tr><td>${escHtml(r.label || sourceLabel(r.source))}</td><td class="num">${r.visitors}${visTotal && r.visitors ? ` <small style="color:var(--ink-soft);">${Math.round(r.visitors / visTotal * 100)}%</small>` : ''}</td><td class="num">${r.orders}</td><td class="num">${r.visitors ? (r.orders / r.visitors * 100).toFixed(1).replace('.', ',') + '%' : '—'}</td><td class="num">${r.revenue ? rub(r.revenue) : '—'}</td></tr>`).join('')}</tbody></table>`
     : '<p style="color:var(--ink-soft);font-size:.85rem;">Пока нет данных.</p>';
   renderFunnel(v.funnel);
+  const regVisitors = v.regions.reduce((s, r) => s + r.visitors, 0);
+  el('regionsTable').innerHTML = v.regions.length ? `<table><thead><tr><th>Регион</th><th class="num">Посетители</th><th class="num">Заказы</th><th class="num">Конверсия</th><th class="num">Выручка</th></tr></thead><tbody>${
+    v.regions.map(r => `<tr><td>${escHtml(r.label)}</td><td class="num">${r.visitors}${regVisitors && r.visitors ? ` <small style="color:var(--ink-soft);">${Math.round(r.visitors / regVisitors * 100)}%</small>` : ''}</td><td class="num">${r.orders}</td><td class="num">${r.visitors ? (r.orders / r.visitors * 100).toFixed(1).replace('.', ',') + '%' : '—'}</td><td class="num">${r.revenue ? rub(r.revenue) : '—'}</td></tr>`).join('')}</tbody></table>`
+    : '<p style="color:var(--ink-soft);font-size:.85rem;">Данные появятся с первыми посетителями после обновления сайта.</p>';
   el('visitsDevices').innerHTML = shareRows(Object.entries(v.devices).sort((a, b) => b[1] - a[1]), k => k === 'mobile' ? 'Телефоны и планшеты' : 'Компьютеры');
 }
 
@@ -1291,7 +1309,7 @@ function csvCell(v){
 el('exportOrdersBtn').addEventListener('click', () => {
   const list = filteredOrders();
   if(!list.length){ showMsg(el('globalMsg'), 'Нет заказов для выгрузки', 'error'); return; }
-  const header = ['Номер','Дата','Статус','Тип','Имя','Телефон','Email','Доставка','Город','Адрес','Стоимость доставки','Трек-номер','Комментарий клиента','Товары','Сумма товаров','Промокод','Скидка','Итого','Комментарий менеджера','Источник'];
+  const header = ['Номер','Дата','Статус','Тип','Имя','Телефон','Email','Доставка','Город','Адрес','Стоимость доставки','Трек-номер','Комментарий клиента','Товары','Сумма товаров','Промокод','Скидка','Итого','Комментарий менеджера','Источник','Регион по IP'];
   const rows = list.map(o => [
     o.number,
     new Date(o.createdAt).toLocaleString('ru-RU'),
@@ -1305,6 +1323,7 @@ el('exportOrdersBtn').addEventListener('click', () => {
     o.total,
     o.comment,
     o.source ? sourceLabel(o.source) : '',
+    o.region ? regionLabel(o.region) : '',
   ]);
   const csv = '\uFEFF' + [header, ...rows].map(r => r.map(csvCell).join(';')).join('\r\n');
   const a = document.createElement('a');
@@ -1367,7 +1386,7 @@ function renderOrders(orders){
     <tr>
       <td style="white-space:nowrap;font-weight:700;">№${o.number || o.id.slice(0,8)}</td>
       <td style="white-space:nowrap;">${new Date(o.createdAt).toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
-      <td>${o.quick ? '<span style="display:inline-block;font-size:.72rem;font-weight:700;color:#1c5e26;background:#dff3e0;padding:2px 8px;border-radius:999px;margin-bottom:4px;">В 1 клик</span><br>' : ''}${escHtml(o.name)}<br><small style="color:var(--ink-soft);">${escHtml(o.email)}${o.phone ? ' · ' + escHtml(o.phone) : ''}</small>${o.delivery ? `<br><small><b>${escHtml(deliveryLabel(o))}</b>${o.deliveryPrice ? ' · ' + escHtml(o.deliveryCost ? o.deliveryCost.toLocaleString('ru-RU') + ' ₽' : o.deliveryPrice) : ''}</small>` : ''}${o.city || o.address ? `<br><small style="color:var(--ink-soft);">${escHtml([o.city, o.address].filter(Boolean).join(', '))}</small>` : ''}${o.customerComment ? `<br><small style="color:var(--ink-soft);font-style:italic;">«${escHtml(o.customerComment)}»</small>` : ''}${o.source ? `<br><small style="color:var(--ink-soft);">Источник: ${escHtml(sourceLabel(o.source))}</small>` : ''}</td>
+      <td>${o.quick ? '<span style="display:inline-block;font-size:.72rem;font-weight:700;color:#1c5e26;background:#dff3e0;padding:2px 8px;border-radius:999px;margin-bottom:4px;">В 1 клик</span><br>' : ''}${escHtml(o.name)}<br><small style="color:var(--ink-soft);">${escHtml(o.email)}${o.phone ? ' · ' + escHtml(o.phone) : ''}</small>${o.delivery ? `<br><small><b>${escHtml(deliveryLabel(o))}</b>${o.deliveryPrice ? ' · ' + escHtml(o.deliveryCost ? o.deliveryCost.toLocaleString('ru-RU') + ' ₽' : o.deliveryPrice) : ''}</small>` : ''}${o.city || o.address ? `<br><small style="color:var(--ink-soft);">${escHtml([o.city, o.address].filter(Boolean).join(', '))}</small>` : ''}${o.customerComment ? `<br><small style="color:var(--ink-soft);font-style:italic;">«${escHtml(o.customerComment)}»</small>` : ''}${o.source ? `<br><small style="color:var(--ink-soft);">Источник: ${escHtml(sourceLabel(o.source))}</small>` : ''}${o.region ? `<br><small style="color:var(--ink-soft);">Регион по IP: ${escHtml(regionLabel(o.region))}</small>` : ''}</td>
       <td>${o.items.map(it => `${escHtml(it.name)}${it.size ? ' · ' + escHtml(it.size) : ''} × ${it.qty}`).join('<br>')}</td>
       <td style="white-space:nowrap;">${o.total.toLocaleString('ru-RU')} ₽${o.promo ? `<br><small style="color:var(--ink-soft);">${o.promo.code}: −${o.promo.discount.toLocaleString('ru-RU')} ₽</small>` : ''}${o.giftCard ? `<br><small style="color:var(--ink-soft);">сертификат ${escHtml(o.giftCard.code)}: −${o.giftCard.amount.toLocaleString('ru-RU')} ₽</small>` : ''}
         ${o.paidAt ? `<br><small style="color:#1c5e26;font-weight:700;">✓ Оплачен онлайн</small>` : o.payment && o.payment.method === 'online' ? `<br><small style="color:#b26a00;">ждёт онлайн-оплаты</small>` : ''}
