@@ -1620,11 +1620,7 @@ app.post('/api/quick-order', orderLimiter, customerOrderLimiter, (req, res) => {
    authorised with the same X-Webhook-Token secret. Without `after` it only reports the
    latest number, so a freshly started bot doesn't re-send the whole history. */
 app.get('/api/bot/orders', (req, res) => {
-  const token = Buffer.from(String(req.get('X-Webhook-Token') || ''));
-  const secret = Buffer.from(BOTORDER_SECRET);
-  if (secret.length < 16 || token.length !== secret.length || !crypto.timingSafeEqual(token, secret)) {
-    return res.status(403).json({ error: 'forbidden' });
-  }
+  if (!botAuthorized(req)) return res.status(403).json({ error: 'forbidden' });
   const store = readStore();
   const latest = store.orders.reduce((max, o) => Math.max(max, o.number || 0), 0);
   if (req.query.after === undefined) return res.json({ latest, orders: [] });
@@ -2245,6 +2241,131 @@ app.get('/api/admin/visits', requireAdmin, (req, res) => {
     } : null,
     devices: merge('devices'),
   });
+});
+
+/* ===== Admin: ad spend and payback =====
+   The owner enters what each channel cost (a Direct bill, a blogger's fee); the admin sets it
+   against the visitors, orders and revenue that channel brought. A channel is a traffic source
+   key (yandex_ads, vk, utm:blog_anna …) or a promo code (promo:ANNA10) for bloggers who give
+   a code instead of a link. */
+const AD_CHANNEL = /^(yandex_ads|yandex_maps|google_ads|vk|telegram|avito|other|utm:[a-z0-9_.-]{1,40}|promo:[A-Z0-9_-]{2,30})$/;
+function adChannelLabel(ch) {
+  if (ch === 'other') return 'Другое';
+  if (ch.startsWith('promo:')) return 'Промокод ' + ch.slice(6);
+  return trafficSourceLabel(ch);
+}
+function moscowDayList(days, endDay) {
+  const end = endDay || moscowDay(new Date().toISOString());
+  const list = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(end + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() - i);
+    list.push(d.toISOString().slice(0, 10));
+  }
+  return list;
+}
+app.get('/api/admin/ad-spend', requireAdmin, (req, res) => {
+  const days = [7, 30, 90, 365].includes(Number(req.query.days)) ? Number(req.query.days) : 30;
+  const store = readStore();
+  const dayList = moscowDayList(days), from = dayList[0];
+  const entries = (store.adSpend || []).filter(e => e.date >= from).sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+  const orders = store.orders.filter(o => o.status !== 'cancelled' && moscowDay(o.createdAt) >= from);
+  const visitorsBySource = {};
+  dayList.forEach(d => Object.entries((visits.days[d] || {}).sources || {}).forEach(([k, n]) => { visitorsBySource[k] = (visitorsBySource[k] || 0) + n; }));
+  const byChannel = {};
+  entries.forEach(e => { (byChannel[e.channel] = byChannel[e.channel] || { channel: e.channel, spend: 0 }).spend += e.amount; });
+  const channels = Object.values(byChannel).map(c => {
+    const mine = c.channel.startsWith('promo:')
+      ? orders.filter(o => o.promo && o.promo.code === c.channel.slice(6))
+      : orders.filter(o => o.source === c.channel);
+    const revenue = mine.reduce((s, o) => s + o.total, 0);
+    const visitors = c.channel.startsWith('promo:') ? null : visitorsBySource[c.channel] || 0;
+    return {
+      ...c, label: adChannelLabel(c.channel), visitors, orders: mine.length, revenue,
+      costPerOrder: mine.length ? Math.round(c.spend / mine.length) : null,
+      costPerVisitor: visitors ? Math.round(c.spend / visitors) : null,
+      drr: revenue ? c.spend / revenue : null, // доля рекламных расходов в выручке
+    };
+  }).sort((a, b) => b.spend - a.spend);
+  const spend = entries.reduce((s, e) => s + e.amount, 0);
+  const revenue = orders.reduce((s, o) => s + o.total, 0);
+  res.json({ days, from, entries: entries.map(e => ({ ...e, label: adChannelLabel(e.channel) })), channels,
+    total: { spend, revenue, orders: orders.length, drr: revenue ? spend / revenue : null } });
+});
+app.post('/api/admin/ad-spend', requireAdmin, (req, res) => {
+  const { date, note } = req.body || {};
+  const amount = Math.round(Number(req.body && req.body.amount));
+  let channel = String((req.body && req.body.channel) || '').trim();
+  if (/^utm:/i.test(channel)) channel = 'utm:' + channel.slice(4).toLowerCase();
+  if (/^promo:/i.test(channel)) channel = 'promo:' + channel.slice(6).toUpperCase();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || '')) || Number.isNaN(Date.parse(date))) return res.status(400).json({ error: 'Укажите дату' });
+  if (!AD_CHANNEL.test(channel)) return res.status(400).json({ error: 'Выберите канал: метка — латиницей, например utm:blog_anna' });
+  if (!(amount > 0 && amount <= 10000000)) return res.status(400).json({ error: 'Сумма — целое число рублей больше нуля' });
+  const store = readStore();
+  const entry = { id: crypto.randomUUID(), date, channel, amount, note: String(note || '').trim().slice(0, 200), createdAt: new Date().toISOString() };
+  (store.adSpend = store.adSpend || []).push(entry);
+  writeStore(store);
+  res.json({ entry });
+});
+app.delete('/api/admin/ad-spend/:id', requireAdmin, (req, res) => {
+  const store = readStore();
+  const before = (store.adSpend || []).length;
+  store.adSpend = (store.adSpend || []).filter(e => e.id !== req.params.id);
+  if (store.adSpend.length === before) return res.status(404).json({ error: 'Запись не найдена' });
+  writeStore(store);
+  res.json({ ok: true });
+});
+
+/* ===== Morning summary for the order bot =====
+   The order bot on Railway asks for yesterday's figures each morning and sends them to the
+   owner in Telegram (the site's server can't reach Telegram itself). Same secret as orders. */
+function botAuthorized(req) {
+  const token = Buffer.from(String(req.get('X-Webhook-Token') || ''));
+  const secret = Buffer.from(BOTORDER_SECRET);
+  return secret.length >= 16 && token.length === secret.length && crypto.timingSafeEqual(token, secret);
+}
+const tgEsc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function daySummaryText(store, day) {
+  const prev = moscowDayList(2, day)[0];
+  const dayOrders = d => store.orders.filter(o => moscowDay(o.createdAt) === d);
+  const live = list => list.filter(o => o.status !== 'cancelled');
+  const cur = live(dayOrders(day)), before = live(dayOrders(prev));
+  const v = visits.days[day] || {}, vPrev = visits.days[prev] || {};
+  const revenue = cur.reduce((s, o) => s + o.total, 0), revenuePrev = before.reduce((s, o) => s + o.total, 0);
+  const rubs = n => n.toLocaleString('ru-RU') + ' ₽';
+  const delta = (a, b) => !b ? '' : ` (${a >= b ? '+' : '−'}${Math.round(Math.abs(a - b) / b * 100)}%)`;
+  const [y, m, d] = day.split('-');
+  const lines = [`📊 <b>Two Boots за ${d}.${m}.${y}</b>`, '',
+    `👥 Посетители: <b>${v.visitors || 0}</b>${delta(v.visitors || 0, vPrev.visitors || 0)}`,
+    `🛒 Заказы: <b>${cur.length}</b>${delta(cur.length, before.length)}${cur.length ? ` · конверсия ${((cur.length / (v.visitors || 1)) * 100).toFixed(1).replace('.', ',')}%` : ''}`,
+    `💰 Выручка: <b>${rubs(revenue)}</b>${delta(revenue, revenuePrev)}${cur.length ? ` · средний чек ${rubs(Math.round(revenue / cur.length))}` : ''}`];
+  const cancelled = dayOrders(day).length - cur.length;
+  if (cancelled) lines.push(`❌ Отменено: ${cancelled}`);
+  const paid = cur.filter(o => o.paidAt);
+  if (paid.length) lines.push(`💳 Оплачено онлайн: ${paid.length} на ${rubs(paid.reduce((s, o) => s + o.total, 0))}`);
+  const spend = (store.adSpend || []).filter(e => e.date === day).reduce((s, e) => s + e.amount, 0);
+  if (spend) lines.push(`📣 Реклама: ${rubs(spend)}${revenue ? ` · ДРР ${Math.round(spend / revenue * 100)}%` : ''}`);
+  const top = (obj, n) => Object.entries(obj).sort((a, b) => b[1] - a[1]).slice(0, n);
+  const products = {};
+  cur.forEach(o => o.items.forEach(it => { products[it.name] = (products[it.name] || 0) + it.qty; }));
+  if (cur.length) lines.push('', '<b>Продано:</b>', ...top(products, 5).map(([name, q]) => `• ${tgEsc(name)} — ${q} шт.`));
+  const sources = top(v.sources || {}, 4);
+  if (sources.length) {
+    const ordersBy = {};
+    cur.forEach(o => { if (o.source) ordersBy[o.source] = (ordersBy[o.source] || 0) + 1; });
+    lines.push('', '<b>Откуда пришли:</b>', ...sources.map(([k, n]) => `• ${tgEsc(trafficSourceLabel(k))} — ${n}${ordersBy[k] ? `, заказов: ${ordersBy[k]}` : ''}`));
+  }
+  const regions = top(v.regions || {}, 4);
+  if (regions.length) lines.push('', '<b>Регионы:</b>', ...regions.map(([k, n]) => `• ${tgEsc(geoRegionLabel(k))} — ${n}`));
+  const f = v.funnel || {};
+  if (f.product || f.cart) lines.push('', `<b>Воронка:</b> ${v.visitors || 0} → товар ${f.product || 0} → корзина ${f.cart || 0} → оформление ${f.checkout || 0} → заказ ${cur.length}`);
+  return lines.join('\n');
+}
+app.get('/api/bot/summary', (req, res) => {
+  if (!botAuthorized(req)) return res.status(403).json({ error: 'forbidden' });
+  const today = moscowDay(new Date().toISOString());
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.day || '')) ? req.query.day : moscowDayList(2, today)[0];
+  res.json({ day, text: daySummaryText(readStore(), day) });
 });
 
 /* ===== Admin: articles ===== */

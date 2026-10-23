@@ -190,6 +190,25 @@
   </div>
 
   <div class="card" data-tab="stats">
+    <h2>Реклама и окупаемость</h2>
+    <p style="color:var(--ink-soft);font-size:.85rem;margin:0 0 12px;">Вносите, сколько потратили на каждый канал (счёт Директа, оплата блогеру), — таблица покажет, сколько стоил посетитель и заказ и какую долю выручки съела реклама (ДРР). Расход относится к дате, которую вы укажете.</p>
+    <form id="adForm" class="row" style="align-items:flex-end;flex-wrap:wrap;">
+      <div class="field" style="flex:none;width:150px;"><label>Дата</label><input type="date" id="adDate" required></div>
+      <div class="field" style="flex:none;width:210px;"><label>Канал</label><select id="adChannel">
+        <option value="yandex_ads">Яндекс Директ</option><option value="yandex_maps">Яндекс Карты / Бизнес</option><option value="vk">ВКонтакте</option>
+        <option value="telegram">Telegram</option><option value="avito">Авито</option><option value="google_ads">Google Реклама</option>
+        <option value="utm">Ссылка с меткой (блогер, пост)…</option><option value="promo">Промокод (блогер, тренер)…</option><option value="other">Другое</option></select></div>
+      <div class="field" style="flex:none;width:170px;" id="adTagWrap" hidden><label id="adTagLabel">Метка</label><input id="adTag" maxlength="40" placeholder="blog_anna"></div>
+      <div class="field" style="flex:none;width:130px;"><label>Сумма, ₽</label><input type="number" id="adAmount" min="1" step="1" required></div>
+      <div class="field" style="min-width:180px;"><label>Комментарий</label><input id="adNote" maxlength="200" placeholder="например: Директ, октябрь"></div>
+      <div class="field" style="flex:none;"><button class="btn-primary" type="submit">Добавить</button></div>
+    </form>
+    <div id="adMsg"></div>
+    <div id="adChannels" style="overflow-x:auto;margin-top:10px;"></div>
+    <details style="margin-top:10px;"><summary style="cursor:pointer;font-size:.88rem;">Внесённые расходы за период</summary><div id="adEntries" style="margin-top:8px;"></div></details>
+  </div>
+
+  <div class="card" data-tab="stats">
     <h2>Регионы</h2>
     <div class="stats-cols">
       <div><h3>Откуда посетители и покупатели</h3><div id="regionsTable" style="max-height:420px;overflow:auto;"></div></div>
@@ -605,6 +624,7 @@ async function loadAll(){
   await loadOrders();
   await loadStats();
   await loadVisits();
+  await loadAdSpend();
   await loadDeliveryMethods();
   await loadCategoryContent();
   await loadSearchEngines();
@@ -762,7 +782,7 @@ async function loadStats(){
 el('statsPeriod').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
   STATS_DAYS = Number(b.getAttribute('data-days'));
   el('statsPeriod').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
-  Promise.all([loadStats(), loadVisits()]).catch(e => showMsg(el('globalMsg'), e.message, 'error'));
+  Promise.all([loadStats(), loadVisits(), loadAdSpend()]).catch(e => showMsg(el('globalMsg'), e.message, 'error'));
 }));
 el('statsTableToggle').addEventListener('click', () => {
   const show = el('statsTable').hidden;
@@ -1473,6 +1493,45 @@ function renderOrders(orders){
     });
   });
 }
+
+/* ===== Ad spend ===== */
+const pctText = x => x === null ? '—' : (x * 100).toFixed(1).replace('.', ',') + '%';
+async function loadAdSpend(){
+  const d = await api('/api/admin/ad-spend?days=' + STATS_DAYS);
+  if(!el('adDate').value) el('adDate').value = new Date(Date.now() + 3 * 3600e3).toISOString().slice(0, 10);
+  el('adChannels').innerHTML = d.channels.length ? `<table><thead><tr><th>Канал</th><th class="num">Расход</th><th class="num">Посетители</th><th class="num">Цена посетителя</th><th class="num">Заказы</th><th class="num">Цена заказа</th><th class="num">Выручка</th><th class="num" title="Доля рекламных расходов в выручке">ДРР</th></tr></thead><tbody>${
+    d.channels.map(c => `<tr><td>${escHtml(c.label)}</td><td class="num">${rub(c.spend)}</td><td class="num">${c.visitors === null ? '—' : c.visitors}</td><td class="num">${c.costPerVisitor === null ? '—' : rub(c.costPerVisitor)}</td><td class="num">${c.orders}</td><td class="num">${c.costPerOrder === null ? '—' : rub(c.costPerOrder)}</td><td class="num">${c.revenue ? rub(c.revenue) : '—'}</td><td class="num" style="${c.drr !== null && c.drr > 0.3 ? 'color:#8a2418;font-weight:700;' : ''}">${pctText(c.drr)}</td></tr>`).join('')
+  }</tbody><tfoot><tr><td><b>Всего</b></td><td class="num"><b>${rub(d.total.spend)}</b></td><td></td><td></td><td class="num">${d.total.orders}</td><td class="num">${d.total.orders ? rub(Math.round(d.total.spend / d.total.orders)) : '—'}</td><td class="num">${rub(d.total.revenue)}</td><td class="num"><b>${pctText(d.total.drr)}</b></td></tr></tfoot></table>
+    <p style="color:var(--ink-soft);font-size:.8rem;margin:8px 0 0;">«Всего» сравнивает все расходы со всей выручкой, включая заказы без рекламы. ДРР выше 30% подсвечен — такой канал скорее всего работает в минус.</p>`
+    : '<p style="color:var(--ink-soft);font-size:.85rem;">За период расходов не внесено.</p>';
+  el('adEntries').innerHTML = d.entries.length ? `<table><thead><tr><th>Дата</th><th>Канал</th><th class="num">Сумма</th><th>Комментарий</th><th></th></tr></thead><tbody>${
+    d.entries.map(e => `<tr><td>${e.date.split('-').reverse().join('.')}</td><td>${escHtml(e.label)}</td><td class="num">${rub(e.amount)}</td><td>${escHtml(e.note || '')}</td><td><button type="button" class="btn-danger btn-sm" data-ad-del="${e.id}">Удалить</button></td></tr>`).join('')}</tbody></table>`
+    : '<p style="color:var(--ink-soft);font-size:.85rem;">Пусто.</p>';
+}
+el('adChannel').addEventListener('change', () => {
+  const v = el('adChannel').value;
+  el('adTagWrap').hidden = !(v === 'utm' || v === 'promo');
+  el('adTagLabel').textContent = v === 'promo' ? 'Промокод' : 'Метка (utm_source)';
+  el('adTag').placeholder = v === 'promo' ? 'ANNA10' : 'blog_anna';
+});
+el('adForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const v = el('adChannel').value;
+  const channel = v === 'utm' ? 'utm:' + el('adTag').value.trim() : v === 'promo' ? 'promo:' + el('adTag').value.trim() : v;
+  try{
+    await api('/api/admin/ad-spend', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date: el('adDate').value, channel, amount: el('adAmount').value, note: el('adNote').value }) });
+    el('adAmount').value = ''; el('adNote').value = '';
+    el('adMsg').innerHTML = '';
+    await loadAdSpend();
+  }catch(err){ el('adMsg').innerHTML = `<p style="color:#8a2418;font-size:.85rem;">${escHtml(err.message)}</p>`; }
+});
+el('adEntries').addEventListener('click', async e => {
+  const id = e.target.getAttribute('data-ad-del');
+  if(!id || !confirm('Удалить эту запись о расходе?')) return;
+  try{ await api('/api/admin/ad-spend/' + id, { method: 'DELETE' }); await loadAdSpend(); }
+  catch(err){ el('adMsg').innerHTML = `<p style="color:#8a2418;font-size:.85rem;">${escHtml(err.message)}</p>`; }
+});
 
 /* ===== Search engines ===== */
 function renderIndexNow(se){
