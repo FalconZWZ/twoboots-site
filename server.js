@@ -172,7 +172,7 @@ const BOTORDER_SECRET = process.env.BOTORDER_SECRET || '';
 
 function orderNotifyText(order) {
   const itemsList = order.items.map(it => `${it.name}${it.size ? ' (' + it.size + ')' : ''} — ${it.qty} шт. × ${it.price.toLocaleString('ru-RU')} ₽`).join('\n');
-  return `Новый заказ №${order.number}${order.quick ? ' (в 1 клик)' : ''}\nИмя: ${order.name}\nТелефон: ${order.phone}\n${orderDeliveryLines(order)}\n${itemsList}\n\n${orderPromoLine(order)}Итого: ${order.total.toLocaleString('ru-RU')} ₽`;
+  return `Новый заказ №${order.number}${order.quick ? ' (в 1 клик)' : ''}\nИмя: ${order.name}\nТелефон: ${order.phone}\n${orderDeliveryLines(order)}\n${itemsList}\n\n${orderPromoLine(order)}Итого: ${order.total.toLocaleString('ru-RU')} ₽${order.source ? `\nИсточник: ${trafficSourceLabel(order.source)}` : ''}`;
 }
 
 // The order as the order-desk bot shows it: field name → text
@@ -187,6 +187,7 @@ function botOrderFields(order) {
     ...(order.delivery ? { 'Доставка': `${deliveryLabel(order)}${[order.city, order.address].filter(Boolean).length ? ' — ' + [order.city, order.address].filter(Boolean).join(', ') : ''}${order.deliveryPrice ? ' · ' + order.deliveryPrice : ''}` } : {}),
     ...(order.giftCard ? { 'Сертификат': `${order.giftCard.code} (−${order.giftCard.amount.toLocaleString('ru-RU')} ₽)` } : {}),
     ...(order.customerComment ? { 'Комментарий': order.customerComment } : {}),
+    ...(order.source ? { 'Источник': trafficSourceLabel(order.source) } : {}),
   };
 }
 
@@ -1363,7 +1364,7 @@ app.post('/api/promo/check', promoLimiter, (req, res) => {
 /* ===== Orders ===== */
 // What a customer may see of their own order: everything except the manager's internal note.
 function customerOrder(order) {
-  const { comment, ...rest } = order;
+  const { comment, source, ...rest } = order;
   return rest;
 }
 
@@ -1451,6 +1452,7 @@ app.post('/api/orders', orderLimiter, customerOrderLimiter, requireUser, async (
     city,
     address,
     ...(customerComment ? { customerComment } : {}),
+    ...(orderSource(req.body.source) ? { source: orderSource(req.body.source) } : {}),
     ...(req.body.payOnline === true && paymentsEnabled() ? { payment: { method: 'online', status: 'new' } } : {}),
     createdAt: new Date().toISOString(),
   };
@@ -1526,6 +1528,7 @@ app.post('/api/quick-order', orderLimiter, customerOrderLimiter, (req, res) => {
     status: 'new',
     name: name.trim(), phone: phone.trim(), email: null, city: '', address: '',
     consentAt: new Date().toISOString(),
+    ...(orderSource(req.body.source) ? { source: orderSource(req.body.source) } : {}),
     createdAt: new Date().toISOString(),
   };
   store.orders.push(order);
@@ -1825,7 +1828,7 @@ const moscowDay = iso => new Date(new Date(iso).getTime() + 3 * 3600 * 1000).toI
 
 app.get('/api/admin/stats', requireAdmin, (req, res) => {
   const days = [7, 30, 90, 365].includes(Number(req.query.days)) ? Number(req.query.days) : 30;
-  const { orders, users } = readStore();
+  const { orders, users, products: catalog, categories } = readStore();
   const today = moscowDay(new Date().toISOString());
   const dayList = [];
   for (let i = days - 1; i >= 0; i--) {
@@ -1844,8 +1847,23 @@ app.get('/api/admin/stats', requireAdmin, (req, res) => {
   const summary = list => {
     const ok = live(list);
     const revenue = ok.reduce((s, o) => s + o.total, 0);
-    return { orders: ok.length, revenue, avgCheck: ok.length ? Math.round(revenue / ok.length) : 0, cancelled: list.length - ok.length };
+    const paid = ok.filter(o => o.paidAt);
+    const repeat = ok.filter(isRepeatOrder);
+    return {
+      orders: ok.length, revenue, avgCheck: ok.length ? Math.round(revenue / ok.length) : 0, cancelled: list.length - ok.length,
+      paidOnline: paid.length, paidOnlineSum: paid.reduce((s, o) => s + o.total, 0),
+      repeatOrders: repeat.length, repeatRevenue: repeat.reduce((s, o) => s + o.total, 0),
+      items: ok.reduce((s, o) => s + o.items.reduce((n, it) => n + it.qty, 0), 0),
+    };
   };
+  // A repeat order: the same customer (account, or phone for one-click orders) ordered before
+  const customerKey = o => o.userId || String(o.phone || '').replace(/\D/g, '').slice(-10) || null;
+  const firstOrderAt = {};
+  orders.filter(o => o.status !== 'cancelled').forEach(o => {
+    const k = customerKey(o);
+    if (k && (!firstOrderAt[k] || o.createdAt < firstOrderAt[k])) firstOrderAt[k] = o.createdAt;
+  });
+  const isRepeatOrder = o => { const k = customerKey(o); return !!k && firstOrderAt[k] < o.createdAt; };
 
   const byDay = Object.fromEntries(dayList.map(d => [d, { date: d, orders: 0, revenue: 0 }]));
   live(inPeriod).forEach(o => { const b = byDay[moscowDay(o.createdAt)]; if (b) { b.orders++; b.revenue += o.total; } });
@@ -1854,6 +1872,13 @@ app.get('/api/admin/stats', requireAdmin, (req, res) => {
   live(inPeriod).forEach(o => o.items.forEach(it => {
     const p = products[it.id] || (products[it.id] = { id: it.id, name: it.name, qty: 0, revenue: 0 });
     p.qty += it.qty; p.revenue += it.price * it.qty;
+  }));
+  const byCategory = {};
+  live(inPeriod).forEach(o => o.items.forEach(it => {
+    const p = catalog.find(x => x.id === it.id);
+    const cat = String(it.id).startsWith('gift-') ? 'gift' : p && categories[p.cat] ? p.cat : 'other';
+    const c = byCategory[cat] || (byCategory[cat] = { cat, label: cat === 'gift' ? 'Подарочные сертификаты' : categories[cat] || 'Другое', qty: 0, revenue: 0 });
+    c.qty += it.qty; c.revenue += it.price * it.qty;
   }));
   const promos = {};
   live(inPeriod).filter(o => o.promo).forEach(o => {
@@ -1868,6 +1893,7 @@ app.get('/api/admin/stats', requireAdmin, (req, res) => {
     previous: summary(inPrev),
     byDay: dayList.map(d => byDay[d]),
     topProducts: Object.values(products).sort((a, b) => b.revenue - a.revenue).slice(0, 10),
+    categories: Object.values(byCategory).sort((a, b) => b.revenue - a.revenue),
     promos: Object.values(promos).sort((a, b) => b.orders - a.orders),
     delivery: count(live(inPeriod), o => o.quick ? 'quick' : deliveryLabel(o)),
     statuses: count(inPeriod, o => o.status),
@@ -1896,12 +1922,24 @@ function loadVisits() {
 }
 const visits = loadVisits();
 let visitorsSeenToday = new Set(visits.today.seen);
+// Funnel stages reached today, per stage: the visitor hashes, so each person counts once a day
+let funnelSeenToday = Object.fromEntries(Object.entries(visits.today.funnel || {}).map(([k, list]) => [k, new Set(list)]));
+const FUNNEL_STAGES = ['product', 'cart', 'checkout'];
+function reachFunnel(stats, visitor, stage) {
+  const seen = funnelSeenToday[stage] || (funnelSeenToday[stage] = new Set());
+  if (seen.has(visitor)) return;
+  seen.add(visitor);
+  stats.funnel = stats.funnel || {};
+  stats.funnel[stage] = (stats.funnel[stage] || 0) + 1;
+  if (!visits.funnelSince) visits.funnelSince = visits.today.day;
+}
 const onlineNow = new Map(); // visitor hash → last activity, ms
 let visitsDirty = false;
 
 function saveVisits() {
   if (!visitsDirty) return;
   visits.today.seen = [...visitorsSeenToday];
+  visits.today.funnel = Object.fromEntries(Object.entries(funnelSeenToday).map(([k, set]) => [k, [...set]]));
   const tmp = VISITS_FILE + '.tmp';
   try {
     fs.writeFileSync(tmp, JSON.stringify(visits));
@@ -1917,8 +1955,9 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
 function visitDay() {
   const day = moscowDay(new Date().toISOString());
   if (visits.today.day !== day) {
-    visits.today = { day, salt: crypto.randomBytes(16).toString('hex'), seen: [] };
+    visits.today = { day, salt: crypto.randomBytes(16).toString('hex'), seen: [], funnel: {} };
     visitorsSeenToday = new Set();
+    funnelSeenToday = {};
     const oldest = new Date(Date.now() - VISIT_DAYS_KEPT * 86400000).toISOString().slice(0, 10);
     for (const d of Object.keys(visits.days)) if (d < oldest) delete visits.days[d];
   }
@@ -1930,12 +1969,44 @@ function visitSource(ref) {
   let host = '';
   try { host = new URL(String(ref)).hostname.replace(/^www\./, ''); } catch (e) { return 'direct'; }
   if (!host || host.endsWith('two-boots.ru')) return 'direct';
-  if (/(^|\.)yandex\.|(^|\.)ya\.ru$/.test(host)) return 'yandex';
+  if (/(^|\.)yandex\.|(^|\.)ya\.ru$/.test(host)) {
+    try { if (/^\/(maps|profile|sprav)/.test(new URL(String(ref)).pathname)) return 'yandex_maps'; } catch (e) {}
+    return 'yandex';
+  }
   if (/(^|\.)google\./.test(host)) return 'google';
   if (/(^|\.)(vk\.com|vk\.ru|vkontakte\.ru)$/.test(host)) return 'vk';
   if (/(^|\.)(t\.me|telegram\.org|web\.telegram\.org)$/.test(host)) return 'telegram';
   if (/(^|\.)(avito\.ru)$/.test(host)) return 'avito';
   return host.slice(0, 60);
+}
+
+// Where a visit came from: ad and campaign tags in the landing URL win over the referrer.
+// yclid (or a Yandex utm_source with a paid utm_medium) is Yandex Direct; any other utm_source
+// is shown as a campaign of its own, e.g. "utm:vk_post" for ?utm_source=vk_post.
+function trafficSource(ref, landing) {
+  let q = null;
+  try { q = new URL(String(landing || '/'), SITE_ORIGIN).searchParams; } catch (e) { /* bad URL: referrer only */ }
+  if (q) {
+    const src = (q.get('utm_source') || '').toLowerCase().replace(/[^a-z0-9_.-]/g, '').slice(0, 40);
+    const medium = (q.get('utm_medium') || '').toLowerCase();
+    if (q.has('yclid') || (/yandex|direct/.test(src) && /cpc|ppc|cpm|paid|ads?$/.test(medium))) return 'yandex_ads';
+    if (q.has('gclid')) return 'google_ads';
+    if (/maps|business|sprav/.test(src)) return 'yandex_maps';
+    if (src) return 'utm:' + src;
+  }
+  return visitSource(ref);
+}
+const TRAFFIC_SOURCE_LABELS = { direct: 'Прямые заходы и закладки', yandex: 'Поиск Яндекса', yandex_ads: 'Яндекс Директ (реклама)',
+  yandex_maps: 'Яндекс Карты / Бизнес', google: 'Google', google_ads: 'Google Реклама', vk: 'ВКонтакте', telegram: 'Telegram', avito: 'Авито' };
+function trafficSourceLabel(key) {
+  if (!key) return 'не известно';
+  if (TRAFFIC_SOURCE_LABELS[key]) return TRAFFIC_SOURCE_LABELS[key];
+  return key.startsWith('utm:') ? 'Метка: ' + key.slice(4) : key;
+}
+// The source the storefront remembered for this buyer (last non-direct visit within 30 days)
+function orderSource(raw) {
+  if (!raw || typeof raw !== 'object') return undefined;
+  return trafficSource(String(raw.ref || '').slice(0, 500), String(raw.landing || '/').slice(0, 500));
 }
 
 // Page key: the path, plus the category for catalog pages; search text is never stored
@@ -1956,9 +2027,11 @@ app.post('/api/hit', hitLimiter, (req, res) => {
   const stats = visitDay();
   const visitor = crypto.createHash('sha256').update(visits.today.salt + '|' + req.ip + '|' + ua).digest('hex').slice(0, 20);
   onlineNow.set(visitor, Date.now());
+  if (body.event === 'cart' || body.event === 'checkout') { reachFunnel(stats, visitor, body.event); visitsDirty = true; return; }
   if (body.ping) return;
   const page = visitPage(body.path);
   if (!page) return;
+  if (page.startsWith('/product/')) reachFunnel(stats, visitor, 'product');
   stats.views++;
   stats.pages[page] = (stats.pages[page] || 0) + 1;
   if (!visitorsSeenToday.has(visitor)) {
@@ -1966,7 +2039,7 @@ app.post('/api/hit', hitLimiter, (req, res) => {
     stats.visitors++;
     const device = MOBILE_UA.test(ua) ? 'mobile' : 'desktop';
     stats.devices[device] = (stats.devices[device] || 0) + 1;
-    const source = visitSource(body.ref);
+    const source = trafficSource(body.ref, body.path);
     stats.sources[source] = (stats.sources[source] || 0) + 1;
   }
   visitsDirty = true;
@@ -2014,8 +2087,20 @@ app.get('/api/admin/visits', requireAdmin, (req, res) => {
     curDays.forEach(d => Object.entries((visits.days[d] || {})[key] || {}).forEach(([k, n]) => { acc[k] = (acc[k] || 0) + n; }));
     return acc;
   };
-  const orders = store.orders.filter(o => o.status !== 'cancelled' && moscowDay(o.createdAt) >= curDays[0]).length;
+  const periodOrders = store.orders.filter(o => o.status !== 'cancelled' && moscowDay(o.createdAt) >= curDays[0]);
+  const orders = periodOrders.length;
   const visitors = sum(curDays, 'visitors');
+  // visitors, orders and revenue per source; orders from before sources were recorded show as "unknown"
+  const bySource = {};
+  Object.entries(merge('sources')).forEach(([k, n]) => { bySource[k] = { source: k, visitors: n, orders: 0, revenue: 0 }; });
+  periodOrders.forEach(o => {
+    const k = o.source || 'unknown';
+    const row = bySource[k] || (bySource[k] = { source: k, visitors: 0, orders: 0, revenue: 0 });
+    row.orders++; row.revenue += o.total;
+  });
+  // the funnel only counts days since it started, so the visitor count is taken from the same days
+  const funnelDays = curDays.filter(d => visits.funnelSince && d >= visits.funnelSince);
+  const funnelStage = stage => funnelDays.reduce((s, d) => s + (((visits.days[d] || {}).funnel || {})[stage] || 0), 0);
   res.json({
     days,
     online: visitorsOnline(),
@@ -2025,7 +2110,14 @@ app.get('/api/admin/visits', requireAdmin, (req, res) => {
     byDay: curDays.map(d => ({ date: d, visitors: (visits.days[d] || {}).visitors || 0, views: (visits.days[d] || {}).views || 0 })),
     pages: Object.entries(merge('pages')).sort((a, b) => b[1] - a[1]).slice(0, 10)
       .map(([key, views]) => ({ key, label: visitPageLabel(key, store), views })),
-    sources: Object.entries(merge('sources')).sort((a, b) => b[1] - a[1]).map(([source, visitors]) => ({ source, visitors })),
+    sources: Object.values(bySource).sort((a, b) => b.visitors - a.visitors || b.orders - a.orders)
+      .map(r => ({ ...r, label: r.source === 'unknown' ? 'Не известно (заказы до учёта источников)' : trafficSourceLabel(r.source) })),
+    funnel: visits.funnelSince ? {
+      since: visits.funnelSince,
+      visitors: funnelDays.reduce((s, d) => s + ((visits.days[d] || {}).visitors || 0), 0),
+      product: funnelStage('product'), cart: funnelStage('cart'), checkout: funnelStage('checkout'),
+      orders: periodOrders.filter(o => moscowDay(o.createdAt) >= visits.funnelSince).length,
+    } : null,
     devices: merge('devices'),
   });
 });
