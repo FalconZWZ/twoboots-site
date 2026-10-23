@@ -346,6 +346,11 @@ function roleFor(username) {
 // adds collections introduced later. Used at startup and after restoring a backup.
 function normalizeStore(store) {
   let changed = false;
+  // Search engines: site-verification codes from the admin and the IndexNow key (made once)
+  if (!store.searchEngines || !store.searchEngines.indexNowKey) {
+    store.searchEngines = { google: '', bing: '', mailru: '', ...(store.searchEngines || {}), indexNowKey: crypto.randomBytes(16).toString('hex') };
+    changed = true;
+  }
   if (!store.admins || store.admins.length === 0) {
     store.admins = [{ username: ADMIN_USER, passwordHash: hashPassword(ADMIN_PASSWORD), role: 'super' }];
     changed = true;
@@ -530,6 +535,73 @@ function requireAdmin(req, res, next) {
   if (req.session.mustChangePassword) return res.status(403).json(MUST_CHANGE);
   next();
 }
+/* ===== Search engines =====
+   Verification meta tags for Google Search Console, Bing Webmaster and Mail.ru, and IndexNow:
+   when products, articles or category texts change in the admin, the changed pages are sent to
+   Yandex and to IndexNow (Bing and its partners) so they are re-indexed in hours, not weeks. */
+const INDEXNOW_ENDPOINTS = process.env.INDEXNOW_ENDPOINTS !== undefined
+  ? process.env.INDEXNOW_ENDPOINTS.split(',').map(s => s.trim()).filter(Boolean)
+  : process.env.NODE_ENV === 'test' ? [] : ['https://yandex.com/indexnow', 'https://api.indexnow.org/indexnow'];
+const INDEXNOW_DELAY_MS = Number(process.env.INDEXNOW_DELAY_MS) || 30000;
+let indexNowSnapshot = null;   // page path → fingerprint of what the page shows
+let indexNowTimer = null;
+let indexNowLast = null;       // { at, urls, results: { endpoint host: status } } for the admin
+
+// What each public page shows, hashed: a change in the hash means the page changed
+function pageFingerprints(store) {
+  const h = v => crypto.createHash('sha1').update(JSON.stringify(v)).digest('hex').slice(0, 16);
+  const map = {};
+  store.products.filter(p => !p.hidden).forEach(p => {
+    map['/product/' + p.id] = h([p.name, p.price, p.discountPercent, p.desc, p.img, p.images, p.stock, p.specs, p.color, p.size, p.sizes]);
+  });
+  publishedArticles(store.articles).forEach(a => { map['/blog/' + a.slug] = h([a.title, a.description, a.body, a.cover]); });
+  Object.keys(store.categories || {}).forEach(cat => {
+    map['/catalog?cat=' + cat] = h([store.categories[cat], (store.categoryContent || {})[cat],
+      store.products.filter(p => p.cat === cat && !p.hidden).map(p => [p.id, p.name, p.price, p.discountPercent, p.img])]);
+  });
+  return map;
+}
+async function submitIndexNow(paths) {
+  const key = readStore().searchEngines.indexNowKey;
+  const urlList = [...new Set(paths)].slice(0, 10000).map(p => SITE_ORIGIN + p);
+  if (!urlList.length || !INDEXNOW_ENDPOINTS.length) return null;
+  const body = JSON.stringify({ host: new URL(SITE_ORIGIN).host, key, keyLocation: `${SITE_ORIGIN}/${key}.txt`, urlList });
+  const results = {};
+  await Promise.all(INDEXNOW_ENDPOINTS.map(async url => {
+    const name = new URL(url).host;
+    try {
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json; charset=utf-8' }, body, signal: AbortSignal.timeout(15000) });
+      results[name] = r.status;
+    } catch (e) { results[name] = 'нет связи'; console.error('IndexNow', name, e.message); }
+  }));
+  indexNowLast = { at: new Date().toISOString(), urls: urlList.length, results };
+  return indexNowLast;
+}
+// Called after admin changes; waits for a quiet moment, then sends only the pages that changed
+function scheduleIndexNow() {
+  clearTimeout(indexNowTimer);
+  indexNowTimer = setTimeout(() => {
+    const now = pageFingerprints(readStore());
+    const before = indexNowSnapshot || {};
+    const changed = [...Object.keys(now).filter(p => now[p] !== before[p]), ...Object.keys(before).filter(p => !(p in now))];
+    indexNowSnapshot = now;
+    if (changed.length) submitIndexNow(changed).catch(e => console.error('IndexNow:', e.message));
+  }, INDEXNOW_DELAY_MS);
+  indexNowTimer.unref();
+}
+app.use('/api/admin', (req, res, next) => {
+  if (req.method !== 'GET' && /^\/(products|articles|category-content|restore)/.test(req.path)) {
+    res.on('finish', () => { if (res.statusCode < 400) scheduleIndexNow(); });
+  }
+  next();
+});
+// A verification code may be pasted alone or as the whole <meta> tag from the search engine
+function verificationCode(raw) {
+  const v = String(raw || '').trim();
+  const m = /content=["']([^"']+)["']/i.exec(v);
+  return (m ? m[1] : v).replace(/[^A-Za-z0-9_\-=.]/g, '').slice(0, 120);
+}
+
 function requireSuperAdmin(req, res, next) {
   if (req.session && req.session.isAdmin && req.session.mustChangePassword) return res.status(403).json(MUST_CHANGE);
   if (req.session && req.session.isAdmin && req.session.role === 'super') return next();
@@ -3150,6 +3222,7 @@ function pageSeo(pathname, query) {
   return { status: 404, title: 'Страница не найдена — Two Boots', url };
 }
 
+const SEARCH_VERIFICATION = () => readStore().searchEngines || {};
 function renderIndex(seo) {
   const title = escHtml(seo.title);
   const desc = escHtml(seo.description || DEFAULT_DESCRIPTION);
@@ -3168,10 +3241,39 @@ function renderIndex(seo) {
   // "<" escaped so product text can never close the <script> tag early.
   if (seo.jsonLd) extra += `<script type="application/ld+json">${JSON.stringify(seo.jsonLd).replace(/</g, '\\u003c')}</script>\n`;
   extra += `<meta name="build" content="${BUILD_ID}">\n`;
+  const se = SEARCH_VERIFICATION();
+  if (se.google) extra += `<meta name="google-site-verification" content="${escHtml(se.google)}">\n`;
+  if (se.bing) extra += `<meta name="msvalidate.01" content="${escHtml(se.bing)}">\n`;
+  if (se.mailru) extra += `<meta name="pmail-verification" content="${escHtml(se.mailru)}">\n`;
   html = html.replace('</head>', () => extra + '</head>');
   if (seo.bodyHtml) html = html.replace('<main id="app"></main>', () => `<main id="app">${seo.bodyHtml}</main>`);
   return html;
 }
+
+app.get('/:file.txt', (req, res, next) => {
+  const key = readStore().searchEngines.indexNowKey;
+  if (req.params.file !== key) return next();
+  res.type('text/plain').send(key);
+});
+app.get('/api/admin/search-engines', requireAdmin, (req, res) => {
+  const { google, bing, mailru, indexNowKey } = readStore().searchEngines;
+  res.json({ google, bing, mailru, indexNowKey, keyUrl: `${SITE_ORIGIN}/${indexNowKey}.txt`, sitemap: `${SITE_ORIGIN}/sitemap.xml`, last: indexNowLast, endpoints: INDEXNOW_ENDPOINTS.map(u => new URL(u).host) });
+});
+app.put('/api/admin/search-engines', requireAdmin, (req, res) => {
+  const store = readStore();
+  for (const k of ['google', 'bing', 'mailru']) if (req.body[k] !== undefined) store.searchEngines[k] = verificationCode(req.body[k]);
+  writeStore(store);
+  const { google, bing, mailru } = store.searchEngines;
+  res.json({ google, bing, mailru });
+});
+// Sends every page in the sitemap — after connecting a search engine or a big catalog change
+app.post('/api/admin/search-engines/indexnow', requireAdmin, async (req, res) => {
+  if (!INDEXNOW_ENDPOINTS.length) return res.status(400).json({ error: 'Отправка отключена на этом сервере' });
+  const store = readStore();
+  const paths = ['/', '/catalog', ...Object.keys(pageFingerprints(store))];
+  indexNowSnapshot = pageFingerprints(store);
+  res.json({ last: await submitIndexNow(paths) });
+});
 
 app.get('*', (req, res) => {
   const seo = pageSeo(req.path, req.query);
@@ -3179,6 +3281,7 @@ app.get('*', (req, res) => {
   res.status(seo.status || 200).set('Cache-Control', 'no-cache').type('html').send(renderIndex(seo));
 });
 
+indexNowSnapshot = pageFingerprints(readStore());
 app.listen(port, () => {
   console.log(`Two Boots site running on port ${port}`);
   console.log(`Data dir: ${DATA_DIR}`);

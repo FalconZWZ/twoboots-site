@@ -16,11 +16,12 @@ const BOT_SECRET = 'test-bot-secret-0123456789';
 
 // A stand-in for the YooKassa API: creates payments and reports whatever status the test sets.
 const http = require('node:http');
-const fakeYk = { payments: {}, requests: [], port: 0 };
+const fakeYk = { payments: {}, requests: [], indexnow: [], port: 0 }; // also stands in for IndexNow
 const ykServer = http.createServer((req, res) => {
   let body = '';
   req.on('data', c => { body += c; });
   req.on('end', () => {
+    if (req.url === '/indexnow') { fakeYk.indexnow.push(JSON.parse(body)); res.writeHead(202); return res.end(); }
     fakeYk.requests.push({ method: req.method, url: req.url, auth: req.headers.authorization, key: req.headers['idempotence-key'], body });
     const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
     if (req.headers.authorization !== 'Basic ' + Buffer.from('shop-1:secret-1').toString('base64')) return send(401, { description: 'bad auth' });
@@ -76,7 +77,8 @@ before(async () => {
   const env = { ...process.env, PORT: String(PORT), DATA_DIR: dataDir, SESSION_SECRET: 'test-secret', BOTORDER_SECRET: BOT_SECRET, NODE_ENV: 'test',
     // every test order comes from 127.0.0.1; the per-customer limit is still the real one
     ORDERS_PER_IP_15MIN: '1000',
-    YOOKASSA_SHOP_ID: 'shop-1', YOOKASSA_SECRET_KEY: 'secret-1', YOOKASSA_API_URL: `http://127.0.0.1:${fakeYk.port}` };
+    YOOKASSA_SHOP_ID: 'shop-1', YOOKASSA_SECRET_KEY: 'secret-1', YOOKASSA_API_URL: `http://127.0.0.1:${fakeYk.port}`,
+    INDEXNOW_ENDPOINTS: `http://127.0.0.1:${fakeYk.port}/indexnow`, INDEXNOW_DELAY_MS: '300' };
   for (const k of ['SMTP_HOST', 'BOTORDER_URL', 'TELEGRAM_BOT_TOKEN', 'WHATSAPP_CALLMEBOT_APIKEY']) delete env[k];
   server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = '';
@@ -826,4 +828,40 @@ test('order sources, sales funnel and sales breakdown in the admin', async () =>
   await client()('/api/quick-order', { method: 'POST', body: { productId: 'speedjump-blue', qty: 1, name: 'Источник', phone: '89115554433', consent: true } });
   const st2 = (await admin('/api/admin/stats?days=7')).data;
   assert.equal(st2.current.repeatOrders, st.current.repeatOrders + 1);
+});
+
+test('search engines: verification tags, IndexNow key file, changed pages are sent', async () => {
+  const admin = await adminClient();
+  const se = (await admin('/api/admin/search-engines')).data;
+  assert.match(se.indexNowKey, /^[0-9a-f]{32}$/);
+  const key = await client()('/' + se.indexNowKey + '.txt');
+  assert.equal(key.status, 200);
+  assert.equal(key.data, se.indexNowKey);
+  assert.equal((await client()('/0123456789abcdef0123456789abcdef.txt')).status, 404);
+
+  // a whole meta tag pasted from Google works as well as the bare code
+  const saved = (await admin('/api/admin/search-engines', { method: 'PUT', body: { google: '<meta name="google-site-verification" content="AbC-123_x" />', bing: '0FED12"><script>' } })).data;
+  assert.equal(saved.google, 'AbC-123_x');
+  assert.equal(saved.bing, '0FED12script');
+  const page = (await client()('/catalog')).data;
+  assert.ok(page.includes('<meta name="google-site-verification" content="AbC-123_x">'));
+  assert.ok(page.includes('<meta name="msvalidate.01" content="0FED12script">'));
+  assert.ok(!page.includes('pmail-verification'));
+
+  // editing one product sends that product (and its category page), not the whole site;
+  // changes made by earlier tests are sent first
+  await new Promise(r => setTimeout(r, 600));
+  const before = fakeYk.indexnow.length;
+  assert.equal((await admin('/api/admin/products/speedjump-red', { method: 'PATCH', body: { discountPercent: 7 } })).status, 200);
+  for (let i = 0; i < 40 && fakeYk.indexnow.length === before; i++) await new Promise(r => setTimeout(r, 100));
+  const sent = fakeYk.indexnow[fakeYk.indexnow.length - 1];
+  assert.ok(sent, 'IndexNow request sent');
+  assert.equal(sent.key, se.indexNowKey);
+  assert.equal(sent.keyLocation, `https://www.two-boots.ru/${se.indexNowKey}.txt`);
+  assert.ok(sent.urlList.includes('https://www.two-boots.ru/product/speedjump-red'));
+  assert.ok(sent.urlList.length <= 3, sent.urlList.join(' '));
+
+  const all = (await admin('/api/admin/search-engines/indexnow', { method: 'POST' })).data;
+  assert.ok(all.last.urls > 10);
+  assert.equal(Object.values(all.last.results)[0], 202);
 });

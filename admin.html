@@ -325,6 +325,24 @@
   </div>
 
   <div class="card" data-tab="settings">
+    <h2>Поисковые системы</h2>
+    <p style="color:var(--ink-soft);font-size:.85rem;margin:0 0 12px;">Яндекс уже подключён. Чтобы сайт находили в Google, Bing и Mail.ru, добавьте его в их кабинеты, выберите подтверждение <b>метатегом</b> и вставьте сюда код (можно весь тег целиком). Затем в кабинете нажмите «Подтвердить» и добавьте карту сайта: <code id="seSitemap"></code></p>
+    <div class="row">
+      <div class="field"><label><a href="https://search.google.com/search-console" target="_blank" rel="noopener">Google Search Console</a> — код подтверждения</label><input id="seGoogle" maxlength="300" placeholder="google-site-verification"></div>
+      <div class="field"><label><a href="https://www.bing.com/webmasters" target="_blank" rel="noopener">Bing Webmaster</a> — код msvalidate.01</label><input id="seBing" maxlength="300" placeholder="msvalidate.01"></div>
+      <div class="field"><label><a href="https://webmaster.mail.ru" target="_blank" rel="noopener">Mail.ru для вебмастеров</a> — код</label><input id="seMailru" maxlength="300" placeholder="pmail-verification"></div>
+    </div>
+    <div class="row" style="align-items:center;margin-top:4px;">
+      <button type="button" class="btn-primary btn-sm" id="seSaveBtn">Сохранить коды</button>
+      <span id="seMsg" style="font-size:.85rem;"></span>
+    </div>
+    <h3 style="font-size:.95rem;margin:18px 0 6px;">Быстрая переиндексация (IndexNow)</h3>
+    <p style="color:var(--ink-soft);font-size:.85rem;margin:0 0 8px;">Когда вы меняете товары, статьи или тексты категорий, сайт сам сообщает Яндексу и Bing, какие страницы обновились, — обычно они переиндексируются за часы, а не недели. Ничего настраивать не нужно.</p>
+    <div id="seIndexNow" style="font-size:.85rem;margin-bottom:8px;"></div>
+    <button type="button" class="btn-ghost btn-sm" id="seSendAllBtn">Отправить все страницы сейчас</button>
+  </div>
+
+  <div class="card" data-tab="settings">
     <h2>Администраторы</h2>
     <div id="adminsList"></div>
     <form id="adminForm" class="row" style="margin-top:12px;">
@@ -580,6 +598,7 @@ async function loadAll(){
   await loadVisits();
   await loadDeliveryMethods();
   await loadCategoryContent();
+  await loadSearchEngines();
   loadVisitorsNow();
   await loadPromos();
   await loadAdminReviews();
@@ -1435,6 +1454,37 @@ function renderOrders(orders){
     });
   });
 }
+
+/* ===== Search engines ===== */
+function renderIndexNow(se){
+  const l = se.last;
+  el('seIndexNow').innerHTML = !se.endpoints.length ? 'Отправка отключена на этом сервере.'
+    : l ? `Последняя отправка: ${new Date(l.at).toLocaleString('ru-RU')}, страниц: ${l.urls} — ${Object.entries(l.results).map(([host, code]) =>
+        `${host.includes('yandex') ? 'Яндекс' : 'Bing и др.'}: ${code === 200 || code === 202 ? '<span style="color:#1c5e26;">принято</span>' : `<span style="color:#8a2418;">${escHtml(String(code))}</span>`}`).join(', ')}`
+    : 'С последнего перезапуска сервера отправок ещё не было.';
+}
+async function loadSearchEngines(){
+  const se = await api('/api/admin/search-engines');
+  el('seGoogle').value = se.google || ''; el('seBing').value = se.bing || ''; el('seMailru').value = se.mailru || '';
+  el('seSitemap').textContent = se.sitemap;
+  renderIndexNow(se);
+}
+el('seSaveBtn').addEventListener('click', async () => {
+  try{
+    const se = await api('/api/admin/search-engines', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ google: el('seGoogle').value, bing: el('seBing').value, mailru: el('seMailru').value }) });
+    el('seGoogle').value = se.google; el('seBing').value = se.bing; el('seMailru').value = se.mailru;
+    el('seMsg').innerHTML = '<span style="color:#1c5e26;">Сохранено — коды уже на сайте, можно подтверждать</span>';
+  }catch(e){ el('seMsg').innerHTML = `<span style="color:#8a2418;">${escHtml(e.message)}</span>`; }
+});
+el('seSendAllBtn').addEventListener('click', async () => {
+  el('seSendAllBtn').disabled = true;
+  try{
+    const r = await api('/api/admin/search-engines/indexnow', { method: 'POST' });
+    renderIndexNow({ endpoints: Object.keys(r.last.results), last: r.last });
+  }catch(e){ el('seIndexNow').innerHTML = `<span style="color:#8a2418;">${escHtml(e.message)}</span>`; }
+  el('seSendAllBtn').disabled = false;
+});
 
 async function loadAdmins(){
   const { admins } = await api('/api/admin/admins');
