@@ -344,6 +344,8 @@ function roleFor(username) {
 // Brings a store up to the current shape: seeds the admin list from env vars if there is none
 // (fresh install, or a store.json from before multi-admin support), backfills admin roles and
 // adds collections introduced later. Used at startup and after restoring a backup.
+// The starter articles shipped before new ones could be added to existing stores
+const FIRST_STARTER_ARTICLES = ['kak-vybrat-chehly-dlya-lezviy', 'chto-vzyat-na-trenirovku-i-sorevnovaniya', 'uhod-za-lezviyami-konkov'];
 function normalizeStore(store) {
   let changed = false;
   // Search engines: site-verification codes from the admin and the IndexNow key (made once)
@@ -371,11 +373,18 @@ function normalizeStore(store) {
   if (!Array.isArray(store.giftCards)) { store.giftCards = []; changed = true; }
   if (!Array.isArray(store.deliveryMethods)) { store.deliveryMethods = DEFAULT_DELIVERY_METHODS.map(cleanDeliveryMethod); changed = true; }
   // Starter articles arrive as drafts: the owner reads them and publishes from the admin.
-  if (!store.articles) {
-    const now = new Date().toISOString();
-    store.articles = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'articles.json'), 'utf8'))
-      .map(a => ({ id: crypto.randomUUID(), ...a, cover: null, published: false, createdAt: now, updatedAt: now }));
-    changed = true;
+  // New ones added to data/articles.json later arrive the same way; one the owner deleted
+  // is remembered in starterArticles and doesn't come back.
+  {
+    const starter = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'articles.json'), 'utf8'));
+    const seen = new Set(store.starterArticles || (store.articles ? FIRST_STARTER_ARTICLES : []));
+    const fresh = starter.filter(a => !seen.has(a.slug) && !(store.articles || []).some(x => x.slug === a.slug));
+    if (fresh.length || !store.articles || !store.starterArticles) {
+      const now = new Date().toISOString();
+      store.articles = [...(store.articles || []), ...fresh.map(a => ({ id: crypto.randomUUID(), ...a, cover: null, published: false, createdAt: now, updatedAt: now }))];
+      store.starterArticles = [...new Set([...seen, ...starter.map(a => a.slug)])];
+      changed = true;
+    }
   }
   if (Array.isArray(store.products) && linkColorModels(store)) changed = true;
   // Starter texts and FAQ for the category pages; the owner edits them in the admin.
