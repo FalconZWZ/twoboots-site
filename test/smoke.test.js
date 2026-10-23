@@ -254,7 +254,7 @@ test('visitor counter: counts people and pages, skips bots and admins, keeps no 
   const v = (await admin('/api/admin/visits?days=7')).data;
   assert.equal(v.current.visitors, 1);
   assert.equal(v.current.views, 2);
-  assert.deepEqual(v.sources, [{ source: 'yandex', visitors: 1 }]);
+  assert.deepEqual(v.sources.filter(r => r.visitors), [{ source: 'yandex', label: 'Поиск Яндекса', visitors: 1, orders: 0, revenue: 0 }]);
   assert.deepEqual(v.devices, { mobile: 1 });
   assert.ok(v.pages.some(p => p.key === '/catalog?cat=bags' && /^Каталог: /.test(p.label)));
   assert.ok(!JSON.stringify(v).includes('секрет'));
@@ -787,4 +787,43 @@ test('colour models are rebuilt once from names with the colour at the end (no b
   const live = (await client()('/api/data')).data.products.find(p => p.id === orange.id);
   assert.equal(live.group, 'kotik-3d-igrushka-two-boots');
   assert.ok(!('groupOff' in live));
+});
+
+test('order sources, sales funnel and sales breakdown in the admin', async () => {
+  const ua = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0) Funnel test' };
+  const hit = body => fetch(BASE + '/api/hit', { method: 'POST', headers: { 'Content-Type': 'application/json', ...ua }, body: JSON.stringify(body) });
+  await hit({ path: '/?yclid=777&utm_source=yandex', ref: '' });
+  await hit({ path: '/product/speedjump-red' });
+  await hit({ path: '/product/speedjump-blue' }); // a second product page is still one person at this step
+  await hit({ event: 'cart' });
+  await hit({ event: 'checkout' });
+  await hit({ event: 'checkout' });
+
+  const r = await client()('/api/quick-order', { method: 'POST', body: {
+    productId: 'speedjump-red', qty: 1, name: 'Источник', phone: '+7 911 555-44-33', consent: true,
+    source: { ref: '', landing: '/catalog?utm_source=yandex&utm_medium=cpc' },
+  } });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.order.source, 'yandex_ads');
+
+  const admin = await adminClient();
+  const v = (await admin('/api/admin/visits?days=7')).data;
+  const ads = v.sources.find(s => s.source === 'yandex_ads');
+  assert.equal(ads.label, 'Яндекс Директ (реклама)');
+  assert.equal(ads.visitors, 1);
+  assert.equal(ads.orders, 1);
+  assert.ok(ads.revenue > 0);
+  assert.ok(v.funnel);
+  assert.equal(v.funnel.product, 1);
+  assert.equal(v.funnel.cart, 1);
+  assert.equal(v.funnel.checkout, 1);
+  assert.ok(v.funnel.orders >= 1 && v.funnel.visitors >= 1);
+
+  const st = (await admin('/api/admin/stats?days=7')).data;
+  assert.ok(st.categories.some(c => c.cat === 'ropes' && c.revenue > 0));
+  for (const k of ['paidOnline', 'paidOnlineSum', 'repeatOrders', 'repeatRevenue', 'items']) assert.equal(typeof st.current[k], 'number', k);
+  // a second order from the same phone is a repeat purchase
+  await client()('/api/quick-order', { method: 'POST', body: { productId: 'speedjump-blue', qty: 1, name: 'Источник', phone: '89115554433', consent: true } });
+  const st2 = (await admin('/api/admin/stats?days=7')).data;
+  assert.equal(st2.current.repeatOrders, st.current.repeatOrders + 1);
 });

@@ -990,6 +990,7 @@ function addToCart(id, qty=1, size=null){
   updateCartUI();
   trackGoal('cart_add');
   trackEcommerce('add', p, qty, size);
+  sendHit({ event: 'cart' });
   showToast('Добавлено в корзину — ' + p.name);
 }
 function removeFromCart(key){
@@ -1380,6 +1381,7 @@ document.getElementById('cartFoot').addEventListener('click', e => {
   }
   if(e.target.id !== 'checkoutBtn') return;
   trackGoal('checkout_start');
+  sendHit({ event: 'checkout' });
   if(!CURRENT_USER){
     showToast('Войдите или зарегистрируйтесь — и сразу вернёмся к оформлению заказа');
     RESUME_CHECKOUT = true;
@@ -1424,6 +1426,7 @@ document.getElementById('cartFoot').addEventListener('submit', async e => {
         giftCode: APPLIED_GIFT && !cart.every(isGiftLine) ? APPLIED_GIFT.code : undefined,
         payOnline: PAYMENTS_ONLINE && CHECKOUT.pay !== 'later',
         delivery: CHECKOUT.delivery, city: CHECKOUT.city, address: CHECKOUT.address, comment: CHECKOUT.comment,
+        source: orderSource(),
       })
     });
     const data = await res.json();
@@ -2467,6 +2470,27 @@ function countVisit(){
   const landing = lastCountedUrl === null;
   lastCountedUrl = location.href;
   sendHit({ path: location.pathname + location.search, ref: landing ? document.referrer : '' });
+  if(landing) rememberSource();
+}
+// Where this buyer came from, sent with the order so the admin sees which ads and links sell.
+// The last visit from outside (a search, an ad, a link with utm tags) is kept for 30 days;
+// a direct visit never overwrites it.
+const SOURCE_KEY = 'tb_source', SOURCE_TTL = 30 * 86400000;
+function rememberSource(){
+  const ref = document.referrer, landing = location.pathname + location.search;
+  let external = /[?&](utm_source|yclid|gclid)=/.test(location.search);
+  try{ if(ref && new URL(ref).hostname.replace(/^www\./, '') !== location.hostname.replace(/^www\./, '')) external = true; }catch(e){}
+  try{
+    const saved = JSON.parse(localStorage.getItem(SOURCE_KEY) || 'null');
+    if(external || !saved || Date.now() - saved.at > SOURCE_TTL) localStorage.setItem(SOURCE_KEY, JSON.stringify({ ref, landing, at: Date.now() }));
+  }catch(e){}
+}
+function orderSource(){
+  try{
+    const saved = JSON.parse(localStorage.getItem(SOURCE_KEY) || 'null');
+    if(saved && Date.now() - saved.at <= SOURCE_TTL) return { ref: saved.ref, landing: saved.landing };
+  }catch(e){}
+  return undefined;
 }
 setInterval(() => { if(document.visibilityState === 'visible') sendHit({ ping: true }); }, 60000);
 function trackPurchase(order){
@@ -2680,6 +2704,7 @@ function bindPageEvents(path, params){
               consent: document.getElementById('qo-consent').checked,
               promoCode: document.getElementById('qo-promo').value || undefined,
               size: selectedSize() || undefined,
+              source: orderSource(),
             })
           });
           const data = await res.json();

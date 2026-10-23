@@ -62,6 +62,11 @@
   .chart-x{display:flex;justify-content:space-between;padding-left:52px;font-size:.72rem;color:var(--ink-soft);margin-top:4px;}
   .chart-tip{position:absolute;pointer-events:none;background:var(--ink);color:#fff;font-size:.78rem;padding:6px 10px;border-radius:8px;white-space:nowrap;transform:translate(-50%,-100%);z-index:5;}
   .stats-cols{display:grid;grid-template-columns:1.4fr 1fr;gap:18px;margin-top:14px;}
+  .funnel-row{display:grid;grid-template-columns:190px 1fr 190px;gap:12px;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);font-size:.88rem;}
+  .funnel-bar{height:22px;background:#eef1f5;border-radius:6px;overflow:hidden;}
+  .funnel-bar i{display:block;height:100%;background:var(--accent,#1f6feb);border-radius:6px;min-width:2px;}
+  .funnel-drop{color:var(--ink-soft);font-size:.78rem;}
+  @media (max-width:760px){ .funnel-row{grid-template-columns:1fr;gap:4px;} }
   .stats-cols h3{font-size:.9rem;margin:0 0 8px;}
   .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
   @media (max-width:760px){ .kpis{grid-template-columns:1fr 1fr;} .stats-cols{grid-template-columns:1fr;} .kpi .k-value{font-size:1.1rem;} }
@@ -150,6 +155,7 @@
       </div>
     </div>
     <div class="kpis" id="statsKpis"></div>
+    <div class="kpis" id="statsKpis2"></div>
     <div style="display:flex;justify-content:space-between;align-items:baseline;">
       <h3 style="font-size:.9rem;margin:0;" id="statsChartTitle">Выручка по дням</h3>
       <button type="button" class="btn-ghost btn-sm" id="statsTableToggle">Показать таблицей</button>
@@ -157,7 +163,8 @@
     <div class="chart" id="statsChart"></div>
     <div id="statsTable" hidden style="max-height:260px;overflow:auto;"></div>
     <div class="stats-cols">
-      <div><h3>Популярные товары</h3><div id="statsTop"></div></div>
+      <div><h3>Популярные товары</h3><div id="statsTop"></div>
+        <h3 style="margin-top:16px;">Продажи по категориям</h3><div id="statsCats"></div></div>
       <div>
         <h3>Способы получения</h3><div id="statsDelivery" style="margin-bottom:14px;"></div>
         <h3>Промокоды</h3><div id="statsPromos"></div>
@@ -173,11 +180,19 @@
     <div class="stats-cols">
       <div><h3>Популярные страницы</h3><div id="visitsPages"></div></div>
       <div>
-        <h3>Откуда приходят</h3><div id="visitsSources" style="margin-bottom:14px;"></div>
         <h3>Устройства</h3><div id="visitsDevices"></div>
       </div>
     </div>
+    <h3 style="margin-top:18px;">Откуда приходят и кто покупает</h3>
+    <div id="visitsSources" style="overflow-x:auto;"></div>
+    <p style="color:var(--ink-soft);font-size:.8rem;margin:8px 0 0;">Источник заказа — последний заход с другого сайта или по рекламе за 30 дней до покупки. Чтобы отличать свои ссылки, добавляйте к ним метку: например, в профиле ВКонтакте <code>https://www.two-boots.ru/?utm_source=vk</code>, в Яндекс Бизнесе <code>?utm_source=yandex_maps</code>.</p>
     <p style="color:var(--ink-soft);font-size:.8rem;margin:14px 0 0;"><span id="visitsSince"></span> Считаются люди в браузерах; поисковые роботы и вы сами, пока вошли в админку, не учитываются. Подробная статистика — в Яндекс Метрике.</p>
+  </div>
+
+  <div class="card" data-tab="stats">
+    <h2>Воронка продаж</h2>
+    <div id="funnel"></div>
+    <p style="color:var(--ink-soft);font-size:.8rem;margin:12px 0 0;" id="funnelNote"></p>
   </div>
 
   <div class="card" data-tab="orders">
@@ -681,6 +696,16 @@ async function loadStats(){
     ['Средний чек', c.orders ? rub(c.avgCheck) : '—', c.avgCheck, p.avgCheck, ''],
     ['Новые клиенты', st.newCustomers, null, null, '<span class="k-delta">зарегистрировались</span>'],
   ].map(([label, value, cur, prev, extra]) => `<div class="kpi"><div class="k-label">${label}</div><div class="k-value">${value}</div>${cur === null ? '' : deltaHtml(cur, prev)}${extra}</div>`).join('');
+  const pct = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
+  el('statsKpis2').innerHTML = [
+    ['Оплачено онлайн', c.paidOnline ? rub(c.paidOnlineSum) : '—', `<span class="k-delta" style="display:block;">заказов: ${c.paidOnline} · ${pct(c.paidOnline, c.orders)}</span>`],
+    ['Повторные покупки', c.repeatOrders, `<span class="k-delta" style="display:block;">${pct(c.repeatOrders, c.orders)} заказов · ${rub(c.repeatRevenue)}</span>`],
+    ['Товаров в заказе', c.orders ? (c.items / c.orders).toFixed(1).replace('.', ',') : '—', '<span class="k-delta" style="display:block;">в среднем</span>'],
+  ].map(([label, value, extra]) => `<div class="kpi"><div class="k-label">${label}</div><div class="k-value">${value}</div>${extra}</div>`).join('');
+  const catTotal = st.categories.reduce((s, x) => s + x.revenue, 0);
+  el('statsCats').innerHTML = st.categories.length ? `<table><thead><tr><th>Категория</th><th class="num">Шт.</th><th class="num">Выручка</th><th class="num">Доля</th></tr></thead><tbody>${
+    st.categories.map(x => `<tr><td>${escHtml(x.label)}</td><td class="num">${x.qty}</td><td class="num">${rub(x.revenue)}</td><td class="num">${pct(x.revenue, catTotal)}</td></tr>`).join('')}</tbody></table>`
+    : '<p style="color:var(--ink-soft);font-size:.85rem;">Нет продаж за период.</p>';
 
   const buckets = bucketize(st.byDay, STATS_DAYS);
   el('statsChartTitle').textContent = STATS_DAYS <= 31 ? 'Выручка по дням' : STATS_DAYS <= 90 ? 'Выручка по неделям' : 'Выручка по месяцам';
@@ -788,7 +813,9 @@ el('saveDeliveryBtn').addEventListener('click', async () => {
 });
 
 /* ===== Visitors ===== */
-const SOURCE_LABELS = { direct: 'Прямые заходы и закладки', yandex: 'Яндекс', google: 'Google', vk: 'ВКонтакте', telegram: 'Telegram', avito: 'Авито' };
+const SOURCE_LABELS = { direct: 'Прямые заходы и закладки', yandex: 'Поиск Яндекса', yandex_ads: 'Яндекс Директ (реклама)', yandex_maps: 'Яндекс Карты / Бизнес',
+  google: 'Google', google_ads: 'Google Реклама', vk: 'ВКонтакте', telegram: 'Telegram', avito: 'Авито' };
+const sourceLabel = k => SOURCE_LABELS[k] || (String(k).startsWith('utm:') ? 'Метка: ' + k.slice(4) : k);
 const plural = (n, one, few, many) => { const m10 = n % 10, m100 = n % 100; return m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many; };
 function shareRows(entries, label){
   const total = entries.reduce((s, [, n]) => s + n, 0);
@@ -815,8 +842,30 @@ async function loadVisits(){
   el('visitsPages').innerHTML = v.pages.length ? `<table><thead><tr><th>Страница</th><th class="num">Просмотры</th></tr></thead><tbody>${
     v.pages.map(pg => `<tr><td><a href="${escHtml(pg.key)}" target="_blank" rel="noopener" style="color:inherit;">${escHtml(pg.label)}</a></td><td class="num">${pg.views}</td></tr>`).join('')}</tbody></table>`
     : '<p style="color:var(--ink-soft);font-size:.85rem;">Пока нет данных.</p>';
-  el('visitsSources').innerHTML = shareRows(v.sources.map(s => [s.source, s.visitors]), k => SOURCE_LABELS[k] || k);
+  const visTotal = v.sources.reduce((s, r) => s + r.visitors, 0);
+  el('visitsSources').innerHTML = v.sources.length ? `<table><thead><tr><th>Источник</th><th class="num">Посетители</th><th class="num">Заказы</th><th class="num">Конверсия</th><th class="num">Выручка</th></tr></thead><tbody>${
+    v.sources.map(r => `<tr><td>${escHtml(r.label || sourceLabel(r.source))}</td><td class="num">${r.visitors}${visTotal && r.visitors ? ` <small style="color:var(--ink-soft);">${Math.round(r.visitors / visTotal * 100)}%</small>` : ''}</td><td class="num">${r.orders}</td><td class="num">${r.visitors ? (r.orders / r.visitors * 100).toFixed(1).replace('.', ',') + '%' : '—'}</td><td class="num">${r.revenue ? rub(r.revenue) : '—'}</td></tr>`).join('')}</tbody></table>`
+    : '<p style="color:var(--ink-soft);font-size:.85rem;">Пока нет данных.</p>';
+  renderFunnel(v.funnel);
   el('visitsDevices').innerHTML = shareRows(Object.entries(v.devices).sort((a, b) => b[1] - a[1]), k => k === 'mobile' ? 'Телефоны и планшеты' : 'Компьютеры');
+}
+
+// Visitors → product page → cart → checkout → order, with the share lost at each step
+function renderFunnel(f){
+  if(!f || !f.visitors){
+    el('funnel').innerHTML = '<p style="color:var(--ink-soft);font-size:.88rem;">Воронка начнёт считаться с первых посетителей после обновления сайта.</p>';
+    el('funnelNote').textContent = '';
+    return;
+  }
+  const steps = [['Зашли на сайт', f.visitors], ['Смотрели товар', f.product], ['Положили в корзину', f.cart], ['Начали оформление', f.checkout], ['Оформили заказ', f.orders]];
+  el('funnel').innerHTML = steps.map(([label, n], i) => {
+    const prev = i ? steps[i - 1][1] : null;
+    const drop = prev ? Math.max(0, Math.round((1 - n / prev) * 100)) : null;
+    return `<div class="funnel-row"><div><b>${label}</b></div>
+      <div class="funnel-bar" title="${n}"><i style="width:${Math.min(100, n / f.visitors * 100)}%"></i></div>
+      <div class="num">${n} · ${(n / f.visitors * 100).toFixed(1).replace('.', ',')}%${drop !== null && prev ? `<div class="funnel-drop">ушли ${drop}% с прошлого шага</div>` : ''}</div></div>`;
+  }).join('');
+  el('funnelNote').textContent = `Каждый человек считается на шаге один раз в день. Воронка считается с ${dayLabel(f.since)} ${f.since.slice(0, 4)}; заказы — все, кроме отменённых, за те же дни. Самый большой процент «ушли» — место, которое стоит улучшать первым.`;
 }
 
 // Small live counter under the title: today's visitors and who is on the site now
@@ -1223,7 +1272,7 @@ function csvCell(v){
 el('exportOrdersBtn').addEventListener('click', () => {
   const list = filteredOrders();
   if(!list.length){ showMsg(el('globalMsg'), 'Нет заказов для выгрузки', 'error'); return; }
-  const header = ['Номер','Дата','Статус','Тип','Имя','Телефон','Email','Доставка','Город','Адрес','Стоимость доставки','Трек-номер','Комментарий клиента','Товары','Сумма товаров','Промокод','Скидка','Итого','Комментарий менеджера'];
+  const header = ['Номер','Дата','Статус','Тип','Имя','Телефон','Email','Доставка','Город','Адрес','Стоимость доставки','Трек-номер','Комментарий клиента','Товары','Сумма товаров','Промокод','Скидка','Итого','Комментарий менеджера','Источник'];
   const rows = list.map(o => [
     o.number,
     new Date(o.createdAt).toLocaleString('ru-RU'),
@@ -1236,6 +1285,7 @@ el('exportOrdersBtn').addEventListener('click', () => {
     o.promo ? o.promo.discount : '',
     o.total,
     o.comment,
+    o.source ? sourceLabel(o.source) : '',
   ]);
   const csv = '\uFEFF' + [header, ...rows].map(r => r.map(csvCell).join(';')).join('\r\n');
   const a = document.createElement('a');
@@ -1298,7 +1348,7 @@ function renderOrders(orders){
     <tr>
       <td style="white-space:nowrap;font-weight:700;">№${o.number || o.id.slice(0,8)}</td>
       <td style="white-space:nowrap;">${new Date(o.createdAt).toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
-      <td>${o.quick ? '<span style="display:inline-block;font-size:.72rem;font-weight:700;color:#1c5e26;background:#dff3e0;padding:2px 8px;border-radius:999px;margin-bottom:4px;">В 1 клик</span><br>' : ''}${escHtml(o.name)}<br><small style="color:var(--ink-soft);">${escHtml(o.email)}${o.phone ? ' · ' + escHtml(o.phone) : ''}</small>${o.delivery ? `<br><small><b>${escHtml(deliveryLabel(o))}</b>${o.deliveryPrice ? ' · ' + escHtml(o.deliveryCost ? o.deliveryCost.toLocaleString('ru-RU') + ' ₽' : o.deliveryPrice) : ''}</small>` : ''}${o.city || o.address ? `<br><small style="color:var(--ink-soft);">${escHtml([o.city, o.address].filter(Boolean).join(', '))}</small>` : ''}${o.customerComment ? `<br><small style="color:var(--ink-soft);font-style:italic;">«${escHtml(o.customerComment)}»</small>` : ''}</td>
+      <td>${o.quick ? '<span style="display:inline-block;font-size:.72rem;font-weight:700;color:#1c5e26;background:#dff3e0;padding:2px 8px;border-radius:999px;margin-bottom:4px;">В 1 клик</span><br>' : ''}${escHtml(o.name)}<br><small style="color:var(--ink-soft);">${escHtml(o.email)}${o.phone ? ' · ' + escHtml(o.phone) : ''}</small>${o.delivery ? `<br><small><b>${escHtml(deliveryLabel(o))}</b>${o.deliveryPrice ? ' · ' + escHtml(o.deliveryCost ? o.deliveryCost.toLocaleString('ru-RU') + ' ₽' : o.deliveryPrice) : ''}</small>` : ''}${o.city || o.address ? `<br><small style="color:var(--ink-soft);">${escHtml([o.city, o.address].filter(Boolean).join(', '))}</small>` : ''}${o.customerComment ? `<br><small style="color:var(--ink-soft);font-style:italic;">«${escHtml(o.customerComment)}»</small>` : ''}${o.source ? `<br><small style="color:var(--ink-soft);">Источник: ${escHtml(sourceLabel(o.source))}</small>` : ''}</td>
       <td>${o.items.map(it => `${escHtml(it.name)}${it.size ? ' · ' + escHtml(it.size) : ''} × ${it.qty}`).join('<br>')}</td>
       <td style="white-space:nowrap;">${o.total.toLocaleString('ru-RU')} ₽${o.promo ? `<br><small style="color:var(--ink-soft);">${o.promo.code}: −${o.promo.discount.toLocaleString('ru-RU')} ₽</small>` : ''}${o.giftCard ? `<br><small style="color:var(--ink-soft);">сертификат ${escHtml(o.giftCard.code)}: −${o.giftCard.amount.toLocaleString('ru-RU')} ₽</small>` : ''}
         ${o.paidAt ? `<br><small style="color:#1c5e26;font-weight:700;">✓ Оплачен онлайн</small>` : o.payment && o.payment.method === 'online' ? `<br><small style="color:#b26a00;">ждёт онлайн-оплаты</small>` : ''}
