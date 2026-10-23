@@ -889,3 +889,41 @@ test('regions: visitors and orders by region from the IP, delivery cities', asyn
   assert.ok(Array.isArray(st.cities));
   st.cities.forEach(c => assert.match(c.city, /^[A-ZА-ЯЁ]/));
 });
+
+test('ad spend: channels set against visitors, orders and revenue; morning summary for the bot', async () => {
+  const admin = await adminClient();
+  const today = new Date(Date.now() + 3 * 3600e3).toISOString().slice(0, 10);
+  const add = body => admin('/api/admin/ad-spend', { method: 'POST', body });
+  assert.equal((await add({ date: today, channel: 'utm:Блог', amount: 100 })).status, 400, 'tag must be latin');
+  assert.equal((await add({ date: today, channel: 'yandex_ads', amount: 0 })).status, 400);
+  assert.equal((await add({ date: 'вчера', channel: 'yandex_ads', amount: 100 })).status, 400);
+  const e1 = (await add({ date: today, channel: 'yandex_ads', amount: 3000, note: 'Директ' })).data.entry;
+  await add({ date: today, channel: 'utm:Blog_Anna', amount: 1500 });
+  const e3 = (await add({ date: today, channel: 'promo:anna10', amount: 500 })).data.entry;
+  assert.equal(e3.channel, 'promo:ANNA10');
+
+  const d = (await admin('/api/admin/ad-spend?days=7')).data;
+  const direct = d.channels.find(c => c.channel === 'yandex_ads');
+  assert.equal(direct.spend, 3000);
+  assert.equal(direct.label, 'Яндекс Директ (реклама)');
+  assert.ok(direct.orders >= 1, 'the order from the Direct ad in an earlier test');
+  assert.equal(direct.costPerOrder, Math.round(3000 / direct.orders));
+  assert.ok(direct.drr > 0);
+  assert.equal(d.channels.find(c => c.channel === 'utm:blog_anna').label, 'Метка: blog_anna');
+  assert.equal(d.channels.find(c => c.channel === 'promo:ANNA10').visitors, null);
+  assert.equal(d.total.spend, 5000);
+  assert.equal((await admin('/api/admin/ad-spend/' + e1.id, { method: 'DELETE' })).status, 200);
+  assert.equal((await admin('/api/admin/ad-spend?days=7')).data.total.spend, 2000);
+
+  const bot = headers => fetch(BASE + '/api/bot/summary?day=' + today, { headers });
+  assert.equal((await bot({})).status, 403);
+  assert.equal((await bot({ 'X-Webhook-Token': 'wrong-secret-0123456789ab' })).status, 403);
+  const sum = await (await bot({ 'X-Webhook-Token': BOT_SECRET })).json();
+  assert.equal(sum.day, today);
+  assert.match(sum.text, /Two Boots за \d\d\.\d\d\.\d{4}/);
+  assert.match(sum.text, /Заказы: <b>\d+<\/b>/);
+  assert.match(sum.text, /Реклама: 2[\s ]000 ₽/);
+  assert.ok(!/<(?!\/?b>)/.test(sum.text), 'only <b> tags, everything else escaped');
+  const yesterday = await (await fetch(BASE + '/api/bot/summary', { headers: { 'X-Webhook-Token': BOT_SECRET } })).json();
+  assert.notEqual(yesterday.day, today);
+});
