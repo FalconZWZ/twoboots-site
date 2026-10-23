@@ -1436,7 +1436,7 @@ app.post('/api/promo/check', promoLimiter, (req, res) => {
 /* ===== Orders ===== */
 // What a customer may see of their own order: everything except the manager's internal note.
 function customerOrder(order) {
-  const { comment, source, ...rest } = order;
+  const { comment, source, region, ...rest } = order;
   return rest;
 }
 
@@ -1525,6 +1525,7 @@ app.post('/api/orders', orderLimiter, customerOrderLimiter, requireUser, async (
     address,
     ...(customerComment ? { customerComment } : {}),
     ...(orderSource(req.body.source) ? { source: orderSource(req.body.source) } : {}),
+    region: geoRegion(req.ip),
     ...(req.body.payOnline === true && paymentsEnabled() ? { payment: { method: 'online', status: 'new' } } : {}),
     createdAt: new Date().toISOString(),
   };
@@ -1601,6 +1602,7 @@ app.post('/api/quick-order', orderLimiter, customerOrderLimiter, (req, res) => {
     name: name.trim(), phone: phone.trim(), email: null, city: '', address: '',
     consentAt: new Date().toISOString(),
     ...(orderSource(req.body.source) ? { source: orderSource(req.body.source) } : {}),
+    region: geoRegion(req.ip),
     createdAt: new Date().toISOString(),
   };
   store.orders.push(order);
@@ -1966,6 +1968,14 @@ app.get('/api/admin/stats', requireAdmin, (req, res) => {
     byDay: dayList.map(d => byDay[d]),
     topProducts: Object.values(products).sort((a, b) => b.revenue - a.revenue).slice(0, 10),
     categories: Object.values(byCategory).sort((a, b) => b.revenue - a.revenue),
+    cities: Object.values(live(inPeriod).reduce((acc, o) => {
+      // "г. москва ", "Москва" and "МОСКВА" are one city
+      const name = String(o.city || '').replace(/^\s*(г\.?|город)\s+/i, '').trim().toLowerCase().replace(/ё/g, 'е');
+      if (!name) return acc;
+      const row = acc[name] || (acc[name] = { city: name.replace(/(^|[\s-])\S/g, ch => ch.toUpperCase()), orders: 0, revenue: 0 });
+      row.orders++; row.revenue += o.total;
+      return acc;
+    }, {})).sort((a, b) => b.orders - a.orders || b.revenue - a.revenue).slice(0, 15),
     promos: Object.values(promos).sort((a, b) => b.orders - a.orders),
     delivery: count(live(inPeriod), o => o.quick ? 'quick' : deliveryLabel(o)),
     statuses: count(inPeriod, o => o.status),
@@ -2081,6 +2091,37 @@ function orderSource(raw) {
   return trafficSource(String(raw.ref || '').slice(0, 500), String(raw.landing || '/').slice(0, 500));
 }
 
+/* IP → region, for "where visitors and buyers are". The table (data/geoip-v4.bin.gz, made by
+   tools/build-geoip.py from DB-IP Lite) keeps Russia by region and other countries by country.
+   Only the region is kept; the IP itself is never stored. IPv6 and unknown ranges give ''. */
+const GEO = (() => {
+  try {
+    const buf = require('zlib').gunzipSync(fs.readFileSync(path.join(__dirname, 'data', 'geoip-v4.bin.gz')));
+    const headLen = buf.readUInt32LE(0);
+    const { labels } = JSON.parse(buf.subarray(4, 4 + headLen).toString('utf8'));
+    const off = 4 + headLen, n = (buf.length - off) / 6;
+    const starts = new Uint32Array(n), ids = new Uint16Array(n);
+    for (let i = 0; i < n; i++) { starts[i] = buf.readUInt32LE(off + 4 * i); ids[i] = buf.readUInt16LE(off + 4 * n + 2 * i); }
+    return { labels, starts, ids };
+  } catch (e) { console.error('Таблица регионов по IP не загружена:', e.message); return null; }
+})();
+function geoRegion(ip) {
+  const m = /^(?:::ffff:)?(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(String(ip || ''));
+  if (!GEO || !m) return '';
+  const v = ((+m[1] * 256 + +m[2]) * 256 + +m[3]) * 256 + +m[4];
+  let lo = 0, hi = GEO.starts.length - 1, found = -1;
+  while (lo <= hi) { const mid = (lo + hi) >> 1; if (GEO.starts[mid] <= v) { found = mid; lo = mid + 1; } else hi = mid - 1; }
+  const label = found < 0 ? '' : GEO.labels[GEO.ids[found]];
+  return label === 'ZZ' ? '' : label;
+}
+const countryNames = new Intl.DisplayNames(['ru'], { type: 'region' });
+function geoRegionLabel(key) {
+  if (!key) return 'Не определено';
+  if (key === 'RU:') return 'Россия (регион не известен)';
+  if (key.startsWith('RU:')) return key.slice(3);
+  try { return countryNames.of(key) || key; } catch (e) { return key; }
+}
+
 // Page key: the path, plus the category for catalog pages; search text is never stored
 function visitPage(raw) {
   let u;
@@ -2113,6 +2154,9 @@ app.post('/api/hit', hitLimiter, (req, res) => {
     stats.devices[device] = (stats.devices[device] || 0) + 1;
     const source = trafficSource(body.ref, body.path);
     stats.sources[source] = (stats.sources[source] || 0) + 1;
+    const region = geoRegion(req.ip);
+    stats.regions = stats.regions || {};
+    stats.regions[region] = (stats.regions[region] || 0) + 1;
   }
   visitsDirty = true;
 });
@@ -2170,6 +2214,13 @@ app.get('/api/admin/visits', requireAdmin, (req, res) => {
     const row = bySource[k] || (bySource[k] = { source: k, visitors: 0, orders: 0, revenue: 0 });
     row.orders++; row.revenue += o.total;
   });
+  // visitors, orders and revenue per region (by IP); regions are counted from the day this started
+  const byRegion = {};
+  Object.entries(merge('regions')).forEach(([k, n]) => { byRegion[k] = { region: k, visitors: n, orders: 0, revenue: 0 }; });
+  periodOrders.filter(o => o.region !== undefined).forEach(o => {
+    const row = byRegion[o.region] || (byRegion[o.region] = { region: o.region, visitors: 0, orders: 0, revenue: 0 });
+    row.orders++; row.revenue += o.total;
+  });
   // the funnel only counts days since it started, so the visitor count is taken from the same days
   const funnelDays = curDays.filter(d => visits.funnelSince && d >= visits.funnelSince);
   const funnelStage = stage => funnelDays.reduce((s, d) => s + (((visits.days[d] || {}).funnel || {})[stage] || 0), 0);
@@ -2184,6 +2235,8 @@ app.get('/api/admin/visits', requireAdmin, (req, res) => {
       .map(([key, views]) => ({ key, label: visitPageLabel(key, store), views })),
     sources: Object.values(bySource).sort((a, b) => b.visitors - a.visitors || b.orders - a.orders)
       .map(r => ({ ...r, label: r.source === 'unknown' ? 'Не известно (заказы до учёта источников)' : trafficSourceLabel(r.source) })),
+    regions: Object.values(byRegion).sort((a, b) => b.visitors - a.visitors || b.orders - a.orders)
+      .map(r => ({ ...r, label: geoRegionLabel(r.region) })),
     funnel: visits.funnelSince ? {
       since: visits.funnelSince,
       visitors: funnelDays.reduce((s, d) => s + ((visits.days[d] || {}).visitors || 0), 0),
