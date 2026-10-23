@@ -658,7 +658,7 @@ test('articles: drafts hidden, published ones rendered and escaped', async () =>
 
   const admin = await adminClient();
   const drafts = (await admin('/api/admin/articles')).data.articles;
-  assert.equal(drafts.length, 3);
+  assert.equal(drafts.length, 6);
 
   const form = new FormData();
   form.append('title', 'Тест <script>'); form.append('description', 'desc');
@@ -926,4 +926,33 @@ test('ad spend: channels set against visitors, orders and revenue; morning summa
   assert.ok(!/<(?!\/?b>)/.test(sum.text), 'only <b> tags, everything else escaped');
   const yesterday = await (await fetch(BASE + '/api/bot/summary', { headers: { 'X-Webhook-Token': BOT_SECRET } })).json();
   assert.notEqual(yesterday.day, today);
+});
+
+test('new starter articles reach a store that had only the first ones; a deleted one stays deleted', async () => {
+  const AdmZip = require('adm-zip');
+  const admin = await adminClient();
+  const restoreWith = async edit => {
+    const zip = new AdmZip((await admin('/api/admin/backup')).data);
+    const store = JSON.parse(zip.readAsText('store.json'));
+    edit(store);
+    zip.updateFile('store.json', Buffer.from(JSON.stringify(store)));
+    const f = new FormData(); f.append('backup', new Blob([zip.toBuffer()]), 'b.zip');
+    assert.equal((await admin('/api/admin/restore', { method: 'POST', form: f })).status, 200);
+    return (await admin('/api/admin/articles')).data.articles.map(a => a.slug);
+  };
+  const first = ['kak-vybrat-chehly-dlya-lezviy', 'chto-vzyat-na-trenirovku-i-sorevnovaniya', 'uhod-za-lezviyami-konkov'];
+  // a store from before: the three first starters, one of them deleted by the owner
+  let slugs = await restoreWith(st => {
+    st.articles = st.articles.filter(a => first.includes(a.slug) && a.slug !== 'uhod-za-lezviyami-konkov');
+    delete st.starterArticles;
+  });
+  assert.ok(slugs.includes('kak-vybrat-chemodan-dlya-figurista'));
+  assert.ok(slugs.includes('chto-podarit-figuristke'));
+  assert.ok(!slugs.includes('uhod-za-lezviyami-konkov'), 'deleted before — not brought back');
+  const fresh = (await admin('/api/admin/articles')).data.articles.find(a => a.slug === 'chto-podarit-figuristke');
+  assert.equal(fresh.published, false, 'arrives as a draft');
+  // the owner deletes a new one: it doesn't come back on the next start
+  assert.equal((await admin('/api/admin/articles/' + fresh.id, { method: 'DELETE' })).status, 200);
+  slugs = await restoreWith(() => {});
+  assert.ok(!slugs.includes('chto-podarit-figuristke'));
 });
