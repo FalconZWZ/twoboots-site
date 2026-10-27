@@ -875,9 +875,24 @@ let DELIVERY = []; // enabled delivery methods, set up by the owner in the admin
 let PAYMENTS_ONLINE = false; // the shop takes online payment (YooKassa is set up)
 let CATEGORY_CONTENT = {}; // {cat: {html, faq: [{q, a}]}} — text and FAQ under a category's products
 
+// A slow or flaky connection (mobile internet) must not leave the page blank: each request
+// gets a time limit, and the catalog is asked for again a couple of times before giving up.
+async function fetchJson(url, timeoutMs){
+  const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = ctrl && setTimeout(() => ctrl.abort(), timeoutMs);
+  try{
+    const res = await fetch(url, ctrl ? { signal: ctrl.signal, cache: 'no-store' } : { cache: 'no-store' });
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    return await res.json();
+  }finally{ if(timer) clearTimeout(timer); }
+}
 async function loadData(){
-  const res = await fetch('/api/data');
-  const data = await res.json();
+  let data = null, lastError = null;
+  for(const [wait, limit] of [[0, 10000], [1500, 15000], [4000, 25000]]){
+    if(wait) await new Promise(r => setTimeout(r, wait));
+    try{ data = await fetchJson('/api/data', limit); break; }catch(e){ lastError = e; }
+  }
+  if(!data) throw lastError || new Error('no data');
   CATEGORIES = data.categories;
   PRODUCTS = data.products;
   ARTICLES = data.articles || [];
@@ -2940,8 +2955,20 @@ async function readJson(res){
 })();
 
 (async () => {
-  app.innerHTML = `<section class="block"><div class="wrap"><p style="color:var(--ink-soft);">Загрузка каталога…</p></div></section>`;
-  await Promise.all([loadData(), loadMe()]);
+  // The server already rendered this page; it stays on screen until the catalog arrives,
+  // and stays usable (plain links) if the catalog can't be loaded at all.
+  const serverRendered = app.innerHTML.trim() !== '';
+  if(!serverRendered) app.innerHTML = `<section class="block"><div class="wrap"><p style="color:var(--ink-soft);">Загрузка каталога…</p></div></section>`;
+  try{
+    await Promise.all([loadData(), loadMe()]);
+  }catch(e){
+    const note = `<div class="wrap" role="alert" style="margin:16px auto;padding:14px 16px;border-radius:12px;background:#fff4d6;color:#6b4e00;display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;">
+      <span>Не удалось загрузить каталог — похоже, связь нестабильна.</span>
+      <button type="button" class="btn btn-primary" onclick="location.reload()">Повторить</button></div>`;
+    app.insertAdjacentHTML('afterbegin', note);
+    if(!serverRendered) app.querySelector('.block') && app.querySelector('.block').remove();
+    return;
+  }
   restoreCart();
   adoptAccountCart();
   mergeAccountFavorites();
