@@ -223,6 +223,7 @@ test('the order bot pulls new orders with its secret, and nothing without it', a
   assert.equal(next.orders[0].number, r.data.order.number);
   assert.equal(next.orders[0].fields.name, 'Бот');
   assert.match(next.orders[0].fields['Заказ'], /в 1 клик/);
+  assert.equal(next.orders[0].fields.order_number, String(next.orders[0].number), 'the bot dedupes by it');
   assert.deepEqual((await (await pull(`?after=${next.latest}`, BOT_SECRET)).json()).orders, []);
 });
 

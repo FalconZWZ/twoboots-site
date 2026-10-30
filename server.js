@@ -178,6 +178,8 @@ function orderNotifyText(order) {
 // The order as the order-desk bot shows it: field name → text
 function botOrderFields(order) {
   return {
+    // the bot uses it as the request's number, so an order it gets both ways is sent out once
+    order_number: String(order.number),
     'Заказ': `№${order.number}${order.quick ? ' (в 1 клик)' : ''}`,
     name: order.name,
     phone: order.phone,
