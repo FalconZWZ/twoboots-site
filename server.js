@@ -1125,6 +1125,30 @@ app.get('/api/admin/data', requireAdmin, (req, res) => {
 
 /* ===== Customer accounts ===== */
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// A Russian phone number, however it is typed: «8 (926) 349-75-86», «+79263497586» …
+// Placeholder numbers people type to get past the form — a long run of one digit
+// (+7 960 000-00-00) or a counting sequence (+7 912 345-67-89) — are refused.
+const PHONE_ERROR = 'Проверьте номер телефона: нужен настоящий российский номер, 11 цифр с +7 или 8 — по нему мы подтверждаем заказ';
+function phoneDigits(raw) {
+  let d = String(raw || '').replace(/\D/g, '');
+  if (d.length === 11 && d[0] === '8') d = '7' + d.slice(1);
+  if (d.length === 10 && d[0] === '9') d = '7' + d;
+  return d;
+}
+function phoneProblem(raw) {
+  const d = phoneDigits(raw);
+  if (!/^7[3489]\d{9}$/.test(d)) return PHONE_ERROR;
+  const national = d.slice(1), subscriber = d.slice(4);
+  if (/(\d)\1{5}/.test(national)) return PHONE_ERROR;
+  if ('01234567890'.includes(subscriber) || '09876543210'.includes(subscriber)) return PHONE_ERROR;
+  return null;
+}
+// Stored the same way everywhere: +7 (926) 349-75-86
+function formatPhone(raw) {
+  const d = phoneDigits(raw);
+  return `+7 (${d.slice(1, 4)}) ${d.slice(4, 7)}-${d.slice(7, 9)}-${d.slice(9, 11)}`;
+}
+
 // 152-ФЗ: every form that collects personal data needs an explicit, unticked-by-default consent.
 const CONSENT_ERROR = 'Нужно согласие на обработку персональных данных';
 
@@ -1134,6 +1158,7 @@ app.post('/api/register', registerLimiter, (req, res) => {
   if (!password || password.length < 6) return res.status(400).json({ error: 'Пароль должен быть не короче 6 символов' });
   if (!name || !name.trim()) return res.status(400).json({ error: 'Укажите ФИО' });
   if (!phone || !phone.trim()) return res.status(400).json({ error: 'Укажите номер телефона' });
+  if (phoneProblem(phone)) return res.status(400).json({ error: phoneProblem(phone) });
   if (req.body.consent !== true) return res.status(400).json({ error: CONSENT_ERROR });
   const store = readStore();
   const normalizedEmail = email.trim().toLowerCase();
@@ -1144,7 +1169,7 @@ app.post('/api/register', registerLimiter, (req, res) => {
     id: crypto.randomUUID(),
     email: email.trim(),
     passwordHash: hashPassword(password),
-    name, phone: phone || '', city: city || '', address: address || '',
+    name, phone: formatPhone(phone), city: city || '', address: address || '',
     consentAt: new Date().toISOString(),
     // separate, optional consent to reminders and news (38-ФЗ «О рекламе»)
     ...(req.body.marketing === true ? { marketingConsentAt: new Date().toISOString() } : {}),
@@ -1233,11 +1258,12 @@ app.put('/api/me', requireUser, (req, res) => {
   const { name, phone, city, address } = req.body || {};
   if (name !== undefined && !name.trim()) return res.status(400).json({ error: 'Укажите ФИО' });
   if (phone !== undefined && !phone.trim()) return res.status(400).json({ error: 'Укажите номер телефона' });
+  if (phone !== undefined && phoneProblem(phone)) return res.status(400).json({ error: phoneProblem(phone) });
   const store = readStore();
   const user = store.users.find(u => u.id === req.session.userId);
   if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
   if (name !== undefined) user.name = name;
-  if (phone !== undefined) user.phone = phone;
+  if (phone !== undefined) user.phone = formatPhone(phone);
   if (city !== undefined) user.city = city;
   if (address !== undefined) user.address = address;
   if (req.body.marketing === true) { user.marketingConsentAt = user.marketingConsentAt || new Date().toISOString(); delete user.noEmails; }
@@ -1469,6 +1495,9 @@ app.post('/api/orders', orderLimiter, customerOrderLimiter, requireUser, async (
   if (!user.name || !user.name.trim() || !user.phone || !user.phone.trim() || !user.email) {
     return res.status(400).json({ error: 'Заполните имя, телефон и email в профиле, чтобы оформить заказ' });
   }
+  if (phoneProblem(user.phone)) {
+    return res.status(400).json({ error: 'Укажите в профиле настоящий номер телефона — по нему мы подтверждаем заказ' });
+  }
   // Accounts registered before the consent checkbox existed give it with their next order.
   if (!user.consentAt) {
     if (req.body.consent !== true) return res.status(400).json({ error: CONSENT_ERROR });
@@ -1582,6 +1611,7 @@ app.post('/api/quick-order', orderLimiter, customerOrderLimiter, (req, res) => {
   const { productId, qty, name, phone, size: requestedSize } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Укажите имя' });
   if (!phone || !phone.trim()) return res.status(400).json({ error: 'Укажите номер телефона' });
+  if (phoneProblem(phone)) return res.status(400).json({ error: phoneProblem(phone) });
   if (req.body.consent !== true) return res.status(400).json({ error: CONSENT_ERROR });
   const store = readStore();
   const product = store.products.find(p => p.id === productId && !p.hidden);
@@ -1610,7 +1640,7 @@ app.post('/api/quick-order', orderLimiter, customerOrderLimiter, (req, res) => {
     ...(promo ? { promo: { code: promo.code, discount } } : {}),
     total: subtotal - discount,
     status: 'new',
-    name: name.trim(), phone: phone.trim(), email: null, city: '', address: '',
+    name: name.trim(), phone: formatPhone(phone), email: null, city: '', address: '',
     consentAt: new Date().toISOString(),
     ...(orderSource(req.body.source) ? { source: orderSource(req.body.source) } : {}),
     region: geoRegion(req.ip),

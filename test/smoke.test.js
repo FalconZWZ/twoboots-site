@@ -168,9 +168,9 @@ test('catalog API lists visible products', async () => {
 
 test('customer: register, order with delivery, see it, cancel it', async () => {
   const req = client();
-  const noConsent = await req('/api/register', { method: 'POST', body: { name: 'Тест', email: 'buyer@test.ru', password: 'secret1', phone: '+7 900 000-00-01' } });
+  const noConsent = await req('/api/register', { method: 'POST', body: { name: 'Тест', email: 'buyer@test.ru', password: 'secret1', phone: '+7 900 401-27-01' } });
   assert.equal(noConsent.status, 400);
-  const reg = await req('/api/register', { method: 'POST', body: { name: 'Тест', email: 'buyer@test.ru', password: 'secret1', phone: '+7 900 000-00-01', consent: true } });
+  const reg = await req('/api/register', { method: 'POST', body: { name: 'Тест', email: 'buyer@test.ru', password: 'secret1', phone: '+7 900 401-27-01', consent: true } });
   assert.equal(reg.status, 200);
 
   const noSize = await req('/api/orders', { method: 'POST', body: { items: [{ id: 'street-guard', qty: 1 }], delivery: 'pickup' } });
@@ -201,8 +201,8 @@ test('customer: register, order with delivery, see it, cancel it', async () => {
 
 test('quick order needs consent and gets the next number', async () => {
   const req = client();
-  assert.equal((await req('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'Катя', phone: '+7 911 000-00-02' } })).status, 400);
-  const r = await req('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'Катя', phone: '+7 911 000-00-02', consent: true, qty: 3 } });
+  assert.equal((await req('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'Катя', phone: '+7 911 402-27-02' } })).status, 400);
+  const r = await req('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'Катя', phone: '+7 911 402-27-02', consent: true, qty: 3 } });
   assert.equal(r.status, 200);
   assert.equal(r.data.order.total, 390 * 3);
   assert.equal(r.data.order.quick, true);
@@ -215,7 +215,7 @@ test('the order bot pulls new orders with its secret, and nothing without it', a
 
   const start = await (await pull('', BOT_SECRET)).json();
   assert.deepEqual(start.orders, [], 'a fresh bot only learns the latest number');
-  const r = await client()('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'Бот', phone: '+7 900 000-00-03', consent: true } });
+  const r = await client()('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'Бот', phone: '+7 900 403-27-03', consent: true } });
   assert.equal(r.status, 200);
 
   const next = await (await pull(`?after=${start.latest}`, BOT_SECRET)).json();
@@ -282,7 +282,7 @@ test('delivery: methods from the admin, price in the total, free threshold, trac
   assert.ok(!(await client()('/api/data')).data.deliveryMethods.some(m => m.id === 'wb'), 'disabled methods are not offered');
 
   const req = client();
-  await req('/api/register', { method: 'POST', body: { name: 'Доставка', email: 'ship@test.ru', password: 'secret1', phone: '+7 901 000-00-04', consent: true } });
+  await req('/api/register', { method: 'POST', body: { name: 'Доставка', email: 'ship@test.ru', password: 'secret1', phone: '+7 901 404-27-04', consent: true } });
   const order = body => req('/api/orders', { method: 'POST', body: { items: [{ id: 'dry-glide', qty: 1 }], ...body } });
   assert.equal((await order({ delivery: 'wb', city: 'Казань', address: 'ПВЗ' })).status, 400, 'disabled method');
   assert.equal((await order({ delivery: 'ozon', city: 'Казань' })).data.error, 'Укажите адрес пункта выдачи');
@@ -300,10 +300,10 @@ test('delivery: methods from the admin, price in the total, free threshold, trac
   assert.equal(third.status, 429, 'no more than 2 orders an hour per customer');
   assert.match(third.data.error, /не больше 2 заказов в час/);
   // the same phone can't get round it with a one-click order
-  assert.equal((await req('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'Д', phone: '8 (901) 000-00-04', consent: true } })).status, 429);
+  assert.equal((await req('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'Д', phone: '8 (901) 404-27-04', consent: true } })).status, 429);
 
   const req2 = client();
-  await req2('/api/register', { method: 'POST', body: { name: 'Доставка 2', email: 'ship2@test.ru', password: 'secret1', phone: '+7 901 000-00-05', consent: true } });
+  await req2('/api/register', { method: 'POST', body: { name: 'Доставка 2', email: 'ship2@test.ru', password: 'secret1', phone: '+7 901 405-27-05', consent: true } });
   const order2 = body => req2('/api/orders', { method: 'POST', body: { items: [{ id: 'dry-glide', qty: 1 }], ...body } });
   const avito = await order2({ delivery: 'avito', city: 'Пермь', address: 'ignored' });
   assert.equal(avito.status, 200);
@@ -327,9 +327,9 @@ test('delivery: methods from the admin, price in the total, free threshold, trac
 test('account cart and favorites; cart reminder only with consent, once, with a working unsubscribe link', async () => {
   const crypto = require('node:crypto');
   const optIn = client(), optOut = client();
-  const reg = await optIn('/api/register', { method: 'POST', body: { name: 'Корзина', email: 'cart@test.ru', password: 'secret1', phone: '+7 902 000-00-07', consent: true, marketing: true } });
+  const reg = await optIn('/api/register', { method: 'POST', body: { name: 'Корзина', email: 'cart@test.ru', password: 'secret1', phone: '+7 902 407-27-07', consent: true, marketing: true } });
   assert.equal(reg.data.user.marketing, true);
-  await optOut('/api/register', { method: 'POST', body: { name: 'Без писем', email: 'nomail@test.ru', password: 'secret1', phone: '+7 902 000-00-08', consent: true } });
+  await optOut('/api/register', { method: 'POST', body: { name: 'Без писем', email: 'nomail@test.ru', password: 'secret1', phone: '+7 902 408-27-08', consent: true } });
 
   for (const c of [optIn, optOut]) {
     assert.equal((await c('/api/cart', { method: 'PUT', body: { items: [{ id: 'dry-glide', qty: 2 }, { id: 'street-guard', qty: 1, size: 'M' }] } })).status, 200);
@@ -364,7 +364,7 @@ test('review request after shipping or completion, once; partner code report and
   assert.equal((await admin('/api/admin/promos', { method: 'POST', body: { code: 'COACH10', type: 'percent', value: 10, partner: 'Тренер Мария', commission: 15 } })).status, 200);
 
   const buyer = client();
-  await buyer('/api/register', { method: 'POST', body: { name: 'Отзыв', email: 'review@test.ru', password: 'secret1', phone: '+7 903 000-00-09', consent: true } });
+  await buyer('/api/register', { method: 'POST', body: { name: 'Отзыв', email: 'review@test.ru', password: 'secret1', phone: '+7 903 409-27-09', consent: true } });
   const a = (await buyer('/api/orders', { method: 'POST', body: { items: [{ id: 'dry-glide', qty: 2 }], delivery: 'pickup', promoCode: 'COACH10' } })).data.order;
   const b = (await buyer('/api/orders', { method: 'POST', body: { items: [{ id: 'grip-lace', qty: 1 }], delivery: 'pickup' } })).data.order;
   assert.equal(a.promo.code, 'COACH10');
@@ -402,15 +402,15 @@ test('stock quantity: limits orders, goes out at 0, comes back on cancel; catalo
   assert.ok(!('quantity' in await pub()), 'exact stock stays private');
 
   const quick = (qty, phone) => client()('/api/quick-order', { method: 'POST', body: { productId: ID, qty, name: 'Склад', phone, consent: true } });
-  const tooMany = await quick(4, '+7 904 000-00-10');
+  const tooMany = await quick(4, '+7 904 410-27-10');
   assert.equal(tooMany.status, 400);
   assert.match(tooMany.data.error, /осталось только 3/);
-  const first = await quick(2, '+7 904 000-00-11');
+  const first = await quick(2, '+7 904 411-27-11');
   assert.equal(first.status, 200);
   assert.equal((await pub()).left, 1);
-  assert.equal((await quick(1, '+7 904 000-00-12')).status, 200);
+  assert.equal((await quick(1, '+7 904 412-27-12')).status, 200);
   assert.equal((await pub()).stock, 'out', 'sold out at 0');
-  assert.equal((await quick(1, '+7 904 000-00-13')).status, 400);
+  assert.equal((await quick(1, '+7 904 413-27-13')).status, 400);
 
   assert.equal((await admin('/api/admin/orders/' + first.data.order.id, { method: 'PATCH', body: { status: 'cancelled' } })).status, 200);
   const back = await pub();
@@ -456,7 +456,7 @@ test('stock quantity: limits orders, goes out at 0, comes back on cancel; catalo
 test('gift certificates: buy without delivery, issue once, pay in parts, refund on cancel', async () => {
   const admin = await adminClient();
   const giver = client();
-  await giver('/api/register', { method: 'POST', body: { name: 'Даритель', email: 'giver@test.ru', password: 'secret1', phone: '+7 905 000-00-14', consent: true } });
+  await giver('/api/register', { method: 'POST', body: { name: 'Даритель', email: 'giver@test.ru', password: 'secret1', phone: '+7 905 414-27-14', consent: true } });
   assert.equal((await giver('/api/orders', { method: 'POST', body: { items: [{ id: 'gift-1234', qty: 1 }] } })).status, 400, 'only the offered amounts');
   assert.match((await giver('/api/orders', { method: 'POST', body: { items: [{ id: 'gift-3000', qty: 1 }], promoCode: 'TEST10' } })).data.error, /не действуют на подарочные/);
   const bought = await giver('/api/orders', { method: 'POST', body: { items: [{ id: 'gift-3000', qty: 1 }], comment: 'для Маши' } });
@@ -475,7 +475,7 @@ test('gift certificates: buy without delivery, issue once, pay in parts, refund 
   assert.equal(check.data.balance, 3000);
 
   const friend = client();
-  await friend('/api/register', { method: 'POST', body: { name: 'Маша', email: 'masha@test.ru', password: 'secret1', phone: '+7 905 000-00-15', consent: true } });
+  await friend('/api/register', { method: 'POST', body: { name: 'Маша', email: 'masha@test.ru', password: 'secret1', phone: '+7 905 415-27-15', consent: true } });
   const spend = await friend('/api/orders', { method: 'POST', body: { items: [{ id: 'dry-glide', qty: 1 }, { id: 'gift-1000', qty: 1 }], delivery: 'pickup', giftCode: code } });
   assert.equal(spend.status, 200, JSON.stringify(spend.data));
   assert.equal(spend.data.order.giftCard.amount, 1490, 'pays the goods, not the certificate in the same cart');
@@ -513,7 +513,7 @@ test('category texts and FAQ: shown, pre-rendered with FAQPage markup, editable'
 test('online payment: redirect to YooKassa, paid only when YooKassa says so, certificates issued', async () => {
   assert.equal((await client()('/api/data')).data.payments.online, true);
   const buyer = client();
-  await buyer('/api/register', { method: 'POST', body: { name: 'Оплата', email: 'pay@test.ru', password: 'secret1', phone: '+7 906 000-00-16', consent: true } });
+  await buyer('/api/register', { method: 'POST', body: { name: 'Оплата', email: 'pay@test.ru', password: 'secret1', phone: '+7 906 416-27-16', consent: true } });
   const placed = await buyer('/api/orders', { method: 'POST', body: { items: [{ id: 'dry-glide', qty: 1 }], delivery: 'pickup', payOnline: true } });
   assert.equal(placed.status, 200, JSON.stringify(placed.data));
   assert.match(placed.data.paymentUrl, /^https:\/\/yoomoney\.example\/checkout/);
@@ -634,12 +634,12 @@ test('admin: auth, promo code, stock, review moderation', async () => {
   const check = await shopper('/api/promo/check', { method: 'POST', body: { code: 'TEST10', items: [{ id: 'grip-lace', qty: 1 }] } });
   assert.equal(check.status, 200);
   assert.equal(check.data.discount, 39);
-  const quick = await shopper('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'П', phone: '+7 999 000-00-06', consent: true, promoCode: 'test10' } });
+  const quick = await shopper('/api/quick-order', { method: 'POST', body: { productId: 'grip-lace', name: 'П', phone: '+7 999 406-27-06', consent: true, promoCode: 'test10' } });
   assert.equal(quick.data.order.total, 351);
 
   // out of stock can't be ordered
   assert.equal((await admin('/api/admin/products/warm-leg', { method: 'PATCH', body: { stock: 'out' } })).status, 200);
-  assert.equal((await shopper('/api/quick-order', { method: 'POST', body: { productId: 'warm-leg', name: 'П', phone: '+7 999 000-00-06', consent: true } })).status, 400);
+  assert.equal((await shopper('/api/quick-order', { method: 'POST', body: { productId: 'warm-leg', name: 'П', phone: '+7 999 406-27-06', consent: true } })).status, 400);
   assert.equal((await shopper('/api/restock', { method: 'POST', body: { productId: 'warm-leg', email: 'wait@test.ru', consent: true } })).status, 200);
 
   // review is hidden until approved
@@ -956,4 +956,23 @@ test('new starter articles reach a store that had only the first ones; a deleted
   assert.equal((await admin('/api/admin/articles/' + fresh.id, { method: 'DELETE' })).status, 200);
   slugs = await restoreWith(() => {});
   assert.ok(!slugs.includes('chto-podarit-figuristke'));
+});
+
+test('phone numbers: real ones in any spelling are kept in one format, placeholders are refused', async () => {
+  const quick = phone => client()('/api/quick-order', { method: 'POST', body: { productId: 'speedjump-red', qty: 1, name: 'Телефон', phone, consent: true } });
+  for (const fake of ['+79600000000', '+7 960 000-00-00', '+7 912 345-67-89', '+7 999 999-99-99', '12345', '+1 202 555 0100']) {
+    const r = await quick(fake);
+    assert.equal(r.status, 400, fake);
+    assert.match(r.data.error, /номер телефона/);
+  }
+  const ok = await quick('8 (926) 349-75-86');
+  assert.equal(ok.status, 200);
+  assert.equal(ok.data.order.phone, '+7 (926) 349-75-86');
+
+  const reg = await client()('/api/register', { method: 'POST', body: { email: 'fake-phone@example.ru', password: 'secret123', name: 'Заглушка', phone: '+7 960 000-00-00', consent: true } });
+  assert.equal(reg.status, 400);
+  const user = client();
+  assert.equal((await user('/api/register', { method: 'POST', body: { email: 'real-phone@example.ru', password: 'secret123', name: 'Настоящий', phone: '9263497586', consent: true } })).status, 200);
+  assert.equal((await user('/api/me')).data.user.phone, '+7 (926) 349-75-86');
+  assert.equal((await user('/api/me', { method: 'PUT', body: { phone: '+7 900 000-00-00' } })).status, 400);
 });
