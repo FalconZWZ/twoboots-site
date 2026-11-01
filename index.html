@@ -1782,13 +1782,41 @@ function cardDots(p){
   return `<div class="card-dots" title="${list.length} цветов">${list.slice(0, 6).map(v => `<i style="--dot:${colorHex(v)}"></i>`).join('')}${list.length > 6 ? `<span>+${list.length - 6}</span>` : ''}</div>`;
 }
 
+// The size or variant that tells a product apart from others of its model: its «Размер»,
+// or its only choice in «Размеры для выбора» («60 ячеек» / «120 ячеек» as two products)
+const variantLabel = v => v.size || (Array.isArray(v.sizes) && v.sizes.length === 1 ? String(v.sizes[0]) : '');
+// Other products of the same model (and colour, when there is one) with a different size or
+// variant; suitcases without a model are matched by colour, as before models existed
+function sizeVariants(p){
+  const label = variantLabel(p);
+  if(!label) return [];
+  const sameColor = v => !p.color || !v.color || v.color === p.color;
+  const list = PRODUCTS.filter(v => variantLabel(v) && (
+    (p.group && v.group === p.group && sameColor(v)) || (p.color && p.size && v.color === p.color && v.size)));
+  const byLabel = {};
+  list.forEach(v => { const k = variantLabel(v); if(!byLabel[k] || v.id === p.id) byLabel[k] = v; });
+  const variants = Object.values(byLabel);
+  if(variants.length < 2) return [];
+  const order = ['XXS','XS','S','M','L','XL','XXL'];
+  const rank = v => { const l = variantLabel(v), i = order.indexOf(l.toUpperCase()); return i !== -1 ? i : parseFloat(l.replace(',', '.')) || 999; };
+  return variants.sort((a, b) => rank(a) - rank(b));
+}
+// «Размер» for sizes, «Длина» for centimetres, «Количество ячеек» for «60 ячеек», else «Вариант»
+function variantTitle(labels){
+  if(labels.every(l => /^(XXS|XS|S|M|L|XL|XXL|\d{2}([.,]\d)?)$/i.test(l))) return 'Размер';
+  const units = labels.map(l => (/^\d+([.,]\d+)?\s*([а-яё]+)\.?$/i.exec(l) || [])[2]).map(u => u && u.toLowerCase());
+  if(units[0] && units.every(u => u === units[0])) return /^(см|мм|м)$/.test(units[0]) ? 'Длина' : 'Количество ' + units[0];
+  return 'Вариант';
+}
 function pdpSizeBlock(p){
   const group = (label, buttons) => `<div class="option-group"><span class="label">${label}</span><div class="swatches" id="sizeSwatches">${buttons}</div></div>`;
-  if(p.color && p.size){
-    const order = ['XS','S','M','L','XL','XXL'];
-    const rank = sz => { const i = order.indexOf(sz); return i === -1 ? 99 : i; };
-    const variants = PRODUCTS.filter(v => v.color === p.color && v.size).sort((a, b) => rank(a.size) - rank(b.size));
-    return group('Размер', variants.map(v => `<button class="swatch ${v.id === p.id ? 'active' : ''}" data-variant="${v.id}">${v.size}</button>`).join(''));
+  const variants = sizeVariants(p);
+  if(variants.length){
+    const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+    // the current product's own choice keeps data-size, so «В корзину» knows what was picked
+    const own = hasSizeChoice(p) ? ` data-size="${esc(variantLabel(p))}"` : '';
+    return group(variantTitle(variants.map(variantLabel)), variants.map(v =>
+      `<button class="swatch ${v.id === p.id ? 'active' : ''}" data-variant="${v.id}"${v.id === p.id ? own : ''}>${esc(variantLabel(v))}</button>`).join(''));
   }
   if(hasSizeChoice(p)){
     const single = p.sizes.length === 1;
