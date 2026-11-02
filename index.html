@@ -176,6 +176,12 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   }
   .nav-links a:hover{color:var(--ink);}
   .nav-links a.active{color:var(--ink);background:var(--surface);box-shadow:var(--shadow);}
+  /* the catalog's sections sit in the menu like the other links */
+  .nav-cats{display:contents;}
+  /* the logo already leads home and «О бренде» is in the footer: on a wide screen they'd crowd the menu */
+  @media (min-width:681px){ .nav-links .nav-menu-only{display:none;} }
+  @media (min-width:681px) and (max-width:1180px){ .nav-links .nav-cat{display:none;} }
+  @media (min-width:1181px) and (max-width:1440px){ .nav-links{gap:2px;} .nav-links a{padding:10px 10px;font-size:.88rem;} }
 
   .header-actions{display:flex;align-items:center;gap:10px;}
   .icon-btn{
@@ -218,7 +224,7 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   .share-row a:hover,.share-row button:hover{border-color:var(--ink-soft);}
   .header-phone{font-weight:700;font-size:.92rem;white-space:nowrap;margin-right:6px;color:var(--ink);}
   .header-phone:hover{color:var(--accent);}
-  @media (max-width:1100px){ .header-phone{display:none;} }
+  @media (max-width:1320px){ .header-phone{display:none;} }
   @media (max-width:370px){
     .site-header .wrap{gap:8px;}
     .header-actions{gap:6px;}
@@ -243,7 +249,11 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   }
   .chat-fab-menu a span.dot{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:none;}
   .chat-fab-menu a span.dot svg{width:16px;height:16px;fill:#fff;}
-  @media (max-width:560px){ body.cookie-bar-open .chat-fab{bottom:170px;} .chat-fab{right:14px;bottom:14px;} }
+  @media (max-width:560px){
+    body.cookie-bar-open .chat-fab{bottom:170px;} .chat-fab{right:12px;bottom:12px;}
+    .chat-fab-toggle{width:48px;height:48px;box-shadow:0 6px 16px rgba(0,0,0,.16);}
+    .chat-fab-toggle svg{width:22px;height:22px;}
+  }
 
   /* ===== Catalog search & sort ===== */
   .catalog-tools{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:-8px 0 24px;}
@@ -485,7 +495,7 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   .gal-thumb{flex:none;width:72px;height:72px;padding:0;border-radius:12px;overflow:hidden;border:2px solid transparent;background:var(--surface);cursor:pointer;}
   .gal-thumb img{width:100%;height:100%;object-fit:cover;display:block;}
   .gal-thumb.active{border-color:var(--ink);}
-  .pdp-info h1{font-size:clamp(1.7rem,3vw,2.3rem);margin-bottom:14px;}
+  .pdp-info h1{font-size:clamp(1.5rem,2.4vw,2rem);margin-bottom:12px;}
   .pdp-price{font-size:1.7rem;margin:14px 0 20px;}
   .pdp-desc{color:var(--ink-soft);margin-bottom:24px;max-width:60ch;white-space:pre-line;}
   .spec-list{display:flex;flex-direction:column;gap:10px;margin-bottom:28px;}
@@ -707,10 +717,12 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
       <span class="brand-word"><span class="cap">T</span><span class="low">w</span><span class="cap o-accent">O</span> <span class="low">b</span><span class="cap o-accent">OO</span><span class="low">ts</span></span>
     </a>
     <nav class="nav-links" id="navLinks">
-      <a href="/" data-route="/">Главная</a>
+      <a href="/" data-route="/" class="nav-menu-only">Главная</a>
       <a href="/catalog" data-route="/catalog">Каталог</a>
-      <a href="/about" data-route="/about">О бренде</a>
+      <span id="navCats" class="nav-cats"></span>
+      <a href="/gift" data-route="/gift">Сертификаты</a>
       <a href="/blog" data-route="/blog" id="navBlog" hidden>Статьи</a>
+      <a href="/about" data-route="/about" class="nav-menu-only">О бренде</a>
       <a href="/contact" data-route="/contact">Контакты</a>
       <a href="/favorites" data-route="/favorites" class="nav-fav">Избранное <span id="favCountMenu"></span></a>
     </nav>
@@ -907,6 +919,16 @@ async function loadData(){
   document.getElementById('navBlog').hidden = !ARTICLES.length;
   document.getElementById('footerBlog').hidden = !ARTICLES.length;
   renderFooterCatalogLinks();
+  renderNavCategories();
+}
+// Short names for the menu: «Сумки и чемоданы» → «Чемоданы»
+const NAV_CAT_NAMES = { bags: 'Чемоданы', ropes: 'Скакалки', blades: 'Чехлы', access: 'Аксессуары', toys: 'Игрушки', formom: 'Для мам' };
+function renderNavCategories(){
+  const el = document.getElementById('navCats');
+  if(!el) return;
+  // the sections with the most products first, at most three — the rest are a click away in «Каталог»
+  const cats = categoriesWithProducts().sort((a, b) => PRODUCTS.filter(p => p.cat === b).length - PRODUCTS.filter(p => p.cat === a).length).slice(0, 3);
+  el.innerHTML = cats.map(cat => `<a href="/catalog?cat=${cat}" data-route="/catalog?cat=${cat}" class="nav-cat">${escText(NAV_CAT_NAMES[cat] || CATEGORIES[cat])}</a>`).join('');
 }
 function renderFooterCatalogLinks(){
   const el = document.getElementById('footerCatalogLinks');
@@ -1942,10 +1964,6 @@ function pageProduct(id){
           ${p.rating ? `<div class="pdp-rating">${starsHtml(p.rating.avg)}<span>${p.rating.avg.toString().replace('.', ',')}</span><a href="#reviews" data-scroll-reviews>${p.rating.count} ${reviewsWord(p.rating.count)}</a></div>` : ''}
           <div class="pdp-price" id="pdpPrice">${p.discountPercent ? `<span class="price-old" style="font-size:1.1rem;margin-right:10px;">${fmt(p.price)} ₽</span>` : ''}<span class="price">${fmt(effectivePrice(p))} ₽</span></div>
           <div class="pdp-stock ${p.stock || 'in'}">${({ order: 'Под заказ — срок уточнит менеджер', out: 'Нет в наличии' })[p.stock] || (p.left > 0 ? `В наличии — осталось ${p.left} шт.` : 'В наличии')}</div>
-          <p class="pdp-desc">${p.desc}</p>
-          <ul class="spec-list">
-            ${p.specs.map(([k,v]) => `<li><b>${k}:</b> ${v}</li>`).join('')}
-          </ul>
           ${pdpColorBlock(p)}
           ${pdpSizeBlock(p)}
           <div class="qty-row">
@@ -1962,7 +1980,6 @@ function pageProduct(id){
             `}
             ${favButton(p.id, 'fav-inline btn btn-ghost')}
           </div>
-          ${shareRow(p)}
           ${isOrderable(p) ? '' : `
           <form id="restockForm" class="contact-card" style="margin-top:14px;max-width:460px;">
             <div style="font-weight:700;margin-bottom:10px;">Сообщить о поступлении</div>
@@ -1973,6 +1990,11 @@ function pageProduct(id){
             ${consentField('rs-consent')}
             <div id="restockMsg"></div>
           </form>`}
+          <p class="pdp-desc" style="margin-top:28px;">${p.desc}</p>
+          <ul class="spec-list">
+            ${p.specs.map(([k,v]) => `<li><b>${k}:</b> ${v}</li>`).join('')}
+          </ul>
+          ${shareRow(p)}
           <div style="margin-top:10px;"><a href="/catalog?cat=${p.cat}" style="font-size:.88rem;text-decoration:underline;color:var(--ink-soft);">Похожие модели</a></div>
         </div>
       </div>
@@ -2630,8 +2652,11 @@ function render(){
   closeMenu();
   closeCart();
 
+  const sectionKey = path === '/catalog' && params.get('cat') ? '/catalog?cat=' + params.get('cat')
+    : path.startsWith('/product/') && productById(path.slice(9)) ? '/catalog?cat=' + productById(path.slice(9)).cat : null;
+  const sectionLink = sectionKey && document.querySelector(`.nav-links a[data-route="${sectionKey}"]`);
   document.querySelectorAll('.nav-links a').forEach(a => {
-    a.classList.toggle('active', a.getAttribute('data-route') === routeKey);
+    a.classList.toggle('active', sectionLink ? a === sectionLink : a.getAttribute('data-route') === routeKey);
   });
 
   bindPageEvents(path, params);
