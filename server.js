@@ -725,17 +725,22 @@ const publicProduct = ratings => p => {
     ...(quantity !== undefined && quantity <= 5 && p.stock !== 'order' ? { left: quantity } : {}),
   };
 };
-app.get('/api/data', (req, res) => {
-  const { categories, products, reviews, articles, deliveryMethods, categoryContent } = readStore();
+// The public catalog: served at /api/data and also built into every page, so a page shows
+// the shop even when a flaky connection loses the second request
+function publicData(store) {
+  const { categories, products, reviews, articles, deliveryMethods, categoryContent } = store;
   const ratings = productRatings(reviews);
-  res.json({
+  return {
     categories,
     categoryContent: publicCategoryContent(categories, categoryContent),
     payments: { online: paymentsEnabled() },
     deliveryMethods: deliveryMethods.filter(m => m.enabled).map(publicDeliveryMethod),
     articles: publishedArticles(articles).map(articleSummary),
     products: products.filter(p => !p.hidden).map(publicProduct(ratings)),
-  });
+  };
+}
+app.get('/api/data', (req, res) => {
+  res.json(publicData(readStore()));
 });
 
 /* ===== Articles ===== */
@@ -3456,6 +3461,8 @@ function renderIndex(seo) {
   // "<" escaped so product text can never close the <script> tag early.
   if (seo.jsonLd) extra += `<script type="application/ld+json">${JSON.stringify(seo.jsonLd).replace(/</g, '\\u003c')}</script>\n`;
   extra += `<meta name="build" content="${BUILD_ID}">\n`;
+  // "<" escaped so product text can never close the <script> tag early
+  extra += `<script>window.__CATALOG__=${JSON.stringify(publicData(readStore())).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')}</script>\n`;
   const se = SEARCH_VERIFICATION();
   if (se.google) extra += `<meta name="google-site-verification" content="${escHtml(se.google)}">\n`;
   if (se.bing) extra += `<meta name="msvalidate.01" content="${escHtml(se.bing)}">\n`;
