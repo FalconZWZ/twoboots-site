@@ -904,8 +904,10 @@ async function fetchJson(url, timeoutMs){
   }finally{ if(timer) clearTimeout(timer); }
 }
 async function loadData(){
-  let data = null, lastError = null;
-  for(const [wait, limit] of [[0, 10000], [1500, 15000], [4000, 25000]]){
+  // the server builds the catalog into the page; it is asked for separately only if it's missing
+  let data = window.__CATALOG__ && Array.isArray(window.__CATALOG__.products) ? window.__CATALOG__ : null, lastError = null;
+  window.__CATALOG__ = null; // a later loadData (none today) would fetch fresh data
+  if(!data) for(const [wait, limit] of [[0, 10000], [1500, 15000], [4000, 25000]]){
     if(wait) await new Promise(r => setTimeout(r, wait));
     try{ data = await fetchJson('/api/data', limit); break; }catch(e){ lastError = e; }
   }
@@ -939,9 +941,9 @@ function renderFooterCatalogLinks(){
 
 let CURRENT_USER = null;
 async function loadMe(){
+  // a hung request must not hold the page: after 4 s it opens as for a guest
   try{
-    const res = await fetch('/api/me');
-    const data = await res.json();
+    const data = await fetchJson('/api/me', 4000);
     CURRENT_USER = data.loggedIn ? data.user : null;
   }catch(e){ CURRENT_USER = null; }
 }
