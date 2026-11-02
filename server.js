@@ -3307,7 +3307,7 @@ const BUILD_ID = crypto.createHash('sha1').update(INDEX_HTML).digest('hex').slic
 const ADMIN_BUILD_ID = crypto.createHash('sha1').update(fs.readFileSync(path.join(__dirname, 'admin.html'))).digest('hex').slice(0, 12);
 app.get('/api/version', (req, res) => res.set('Cache-Control', 'no-store').json({ build: BUILD_ID, admin: ADMIN_BUILD_ID }));
 const DEFAULT_DESCRIPTION = 'Two Boots — экипировка для фигурного катания: чехлы для лезвий, сумки и чемоданы, скакалки и аксессуары.';
-const CATALOG_DESCRIPTION = 'Чехлы для лезвий, сумки и чемоданы, скакалки и аксессуары для фигурного катания.';
+const CATALOG_DESCRIPTION = 'Экипировка и подарки для фигуристов: чемоданы, скакалки и другое — с доставкой по всей России.';
 
 // Product descriptions may be several paragraphs with "•" lists; search snippets get one line
 function plainDescription(text) {
