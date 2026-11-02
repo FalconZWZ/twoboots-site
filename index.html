@@ -380,13 +380,12 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   .hero-stats .stat span{color:var(--ink-faint);font-size:.82rem;}
   .hero-art{
     position:relative;aspect-ratio:1/1;border-radius:var(--radius-l);
-    background:
-      radial-gradient(circle at 30% 30%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 60%),
-      var(--surface);
+    background:#fff; /* product photos are shot on white */
     border:1px solid var(--border);display:flex;align-items:center;justify-content:center;overflow:hidden;
   }
   .hero-art .rings{position:absolute;inset:0;}
   .hero-art .mark{width:56%;position:relative;z-index:1;}
+  .hero-art img{width:100%;height:100%;object-fit:contain;display:block;background:#fff;}
 
   /* ===== Sections generic ===== */
   section.block{padding:56px 0;}
@@ -451,7 +450,7 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   }
   .price-old{color:var(--ink-faint);text-decoration:line-through;font-family:var(--font-mono);font-size:.85rem;}
   .product-body{padding:18px;display:flex;flex-direction:column;gap:8px;flex:1;}
-  .product-body h3{font-size:.98rem;font-weight:700;}
+  .product-body h3{font-size:.98rem;font-weight:700;overflow-wrap:break-word;-webkit-hyphens:auto;hyphens:auto;}
   .product-foot{display:flex;align-items:center;justify-content:space-between;margin-top:auto;padding-top:10px;}
   .product-foot .price{font-size:1.05rem;}
   .add-btn{
@@ -663,7 +662,7 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   @media (max-width:980px){
     .footer-grid{grid-template-columns:1fr 1fr;row-gap:32px;}
     .hero .wrap{grid-template-columns:1fr;}
-    .hero-art{max-width:420px;margin:0 auto;order:-1;}
+    .hero-art{max-width:420px;width:100%;margin:0 auto;}
     .cat-grid{grid-template-columns:repeat(2,1fr);}
     .trust-strip{grid-template-columns:1fr;}
     .product-grid{grid-template-columns:repeat(2,1fr);}
@@ -691,6 +690,12 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
     .value-grid,.steps{grid-template-columns:1fr;}
     .cta-band{padding:36px 24px;flex-direction:column;text-align:center;}
     .hero-stats{gap:22px;}
+    .product-body h3{font-size:.9rem;line-height:1.3;}
+  }
+  @media (max-width:480px){
+    /* two cards side by side leave ~140px for a name: long words like «Алюминиевый» must fit */
+    .product-body h3{font-size:.8rem;}
+    .hero-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;}
   }
 </style>
 </head>
@@ -906,7 +911,7 @@ async function loadData(){
 function renderFooterCatalogLinks(){
   const el = document.getElementById('footerCatalogLinks');
   if(!el) return;
-  el.innerHTML = Object.keys(CATEGORIES).map(cat => `<li><a href="/catalog?cat=${cat}">${CATEGORIES[cat]}</a></li>`).join('')
+  el.innerHTML = categoriesWithProducts().map(cat => `<li><a href="/catalog?cat=${cat}">${CATEGORIES[cat]}</a></li>`).join('')
     + '<li><a href="/gift">Подарочные сертификаты</a></li>';
 }
 
@@ -1578,8 +1583,21 @@ async function loadArticleBody(slug){
   }
 }
 
+// 1 модель, 2 модели, 5 моделей
+const plural = (n, one, few, many) => { const m10 = n % 10, m100 = n % 100; return m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many; };
+// Categories that have something to show — an empty one would lead to an empty page
+const categoriesWithProducts = () => Object.keys(CATEGORIES).filter(cat => PRODUCTS.some(p => p.cat === cat));
 function pageHome(){
-  const featured = PRODUCTS.filter(p => ['two-boots-silver-m','speedjump-purple','dry-glide','two-boots-black-m'].includes(p.id));
+  // the picked bestsellers that are on sale now, topped up with one product of each other model
+  const picked = ['two-boots-silver-m','speedjump-purple','dry-glide','two-boots-black-m'].map(productById).filter(Boolean);
+  const modelOf = p => p.group || p.id;
+  const featured = picked.slice();
+  for(const p of PRODUCTS){
+    if(featured.length >= 4) break;
+    if(!featured.some(f => modelOf(f) === modelOf(p))) featured.push(p);
+  }
+  const models = new Set(PRODUCTS.map(modelOf)).size;
+  const shownCats = categoriesWithProducts();
   const saleItems = PRODUCTS.filter(p => p.discountPercent > 0);
   return `
   <section class="hero">
@@ -1587,18 +1605,18 @@ function pageHome(){
       <div>
         <span class="eyebrow">Экипировка для фигурного катания</span>
         <h1>Всё, что едет<br>на каток <em>в одной сумке</em></h1>
-        <p class="hero-lede">Two Boots делает чехлы, чемоданы, скакалки и мелкую экипировку для фигуристов и их тренеров — от первой шайбы до соревновательного сезона.</p>
+        <p class="hero-lede">Чемоданы на сборы, скоростные скакалки и полезные мелочи для фигуристов и их тренеров — от первого выхода на лёд до соревновательного сезона. Доставка по всей России.</p>
         <div class="hero-ctas">
           <a href="/catalog" class="btn btn-primary">Смотреть каталог</a>
           <a href="/about" class="btn btn-ghost">О бренде</a>
         </div>
         <div class="hero-stats">
-          <div class="stat"><b>12+</b><span>моделей в каталоге</span></div>
-          <div class="stat"><b>1–3 дня</b><span>отправка по РФ</span></div>
-          <div class="stat"><b>${Object.keys(CATEGORIES).length}</b><span>категори${Object.keys(CATEGORIES).length === 1 ? 'я' : 'и'} экипировки</span></div>
+          <div class="stat"><b>${models}</b><span>${plural(models, 'модель', 'модели', 'моделей')} в каталоге</span></div>
+          <div class="stat"><b>${shownCats.length}</b><span>${plural(shownCats.length, 'категория', 'категории', 'категорий')} экипировки</span></div>
+          <div class="stat"><b>РФ</b><span>доставка по всей России</span></div>
         </div>
       </div>
-      <div class="hero-art"><div class="mark">${brandMark(260)}</div></div>
+      <div class="hero-art"><img src="/images/hero-suitcases.jpg" alt="Алюминиевые чемоданы Two Boots для фигуристов — чёрный и серебристый" width="1200" height="1200" fetchpriority="high"></div>
     </div>
   </section>
 
@@ -1616,7 +1634,7 @@ function pageHome(){
     <div class="wrap">
       <div class="section-head"><h2>Категории</h2></div>
       <div class="cat-grid">
-        ${Object.keys(CATEGORIES).map(catTile).join('')}
+        ${shownCats.map(catTile).join('')}
       </div>
     </div>
   </section>
@@ -1636,15 +1654,15 @@ function pageHome(){
       <div class="trust-strip">
         <div class="trust-item">
           <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 4v5c0 5-3.5 7.5-7 9-3.5-1.5-7-4-7-9V7l7-4Z"/></svg>
-          <div><h4>Проверено на льду</h4><p>Модели тестируются на реальных тренировках, а не только на фото.</p></div>
+          <div><h4>Подскажем с выбором</h4><p>Напишите в чат или позвоните — поможем с размером и цветом.</p></div>
         </div>
         <div class="trust-item">
           <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h13v9H3zM16 10h3l2 3v3h-5z"/><circle cx="7.5" cy="18" r="1.6"/><circle cx="17.5" cy="18" r="1.6"/></svg>
-          <div><h4>Отправка в день заказа</h4><p>Заказы до 15:00 уходят в тот же день, доставка по всей России.</p></div>
+          <div><h4>Доставка по всей России</h4><p>СДЭК и Почта России — способы и сроки на странице <a href="/delivery">«Доставка и оплата»</a>.</p></div>
         </div>
         <div class="trust-item">
           <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
-          <div><h4>Разработано с тренерами</h4><p>Формы и размеры чехлов и сумок согласованы с тренерским составом.</p></div>
+          <div><h4>Оплата как удобно</h4><p>Картой онлайн на сайте или при получении заказа.</p></div>
         </div>
       </div>
     </div>
@@ -1718,12 +1736,16 @@ function pageCatalog(params){
   const q = params.get('q') || '';
   const sort = CATALOG_SORTS[params.get('sort')] ? params.get('sort') : '';
   const list = catalogList(activeCat, q, sort);
-  const pills = ['all', ...Object.keys(CATEGORIES)];
+  // only categories with something in them (and the one a link points to, even if empty now)
+  const shownCats = categoriesWithProducts();
+  if(activeCat !== 'all' && !shownCats.includes(activeCat)) shownCats.push(activeCat);
+  const pills = ['all', ...shownCats];
+  const catNames = shownCats.map(c => CATEGORIES[c].toLowerCase()).join(', ');
   return `
   <section class="block" style="padding-top:44px;">
     <div class="wrap">
       <div class="section-head">
-        <div><h2>Каталог</h2><p>Чехлы, чемоданы, скакалки и аксессуары для фигурного катания.</p></div>
+        <div><h2>Каталог</h2><p>Всё для фигуристов${catNames ? ': ' + catNames : ''}.</p></div>
       </div>
       <div class="filter-row" id="filterRow">
         ${pills.map(c => `<button class="pill ${c===activeCat?'active':''}" data-cat="${c}">${c==='all' ? 'Все' : CATEGORIES[c]}</button>`).join('')}
@@ -2556,7 +2578,7 @@ function render(){
     const cat = CATEGORIES[params.get('cat')];
     const canonical = catalogUrl(cat ? params.get('cat') : null);
     if(cat) setMeta(`${cat} — Two Boots`, `${cat} для фигурного катания — каталог Two Boots.`, canonical);
-    else setMeta('Каталог — Two Boots', 'Чехлы для лезвий, сумки и чемоданы, скакалки и аксессуары для фигурного катания.', canonical);
+    else setMeta('Каталог — Two Boots', 'Экипировка и подарки для фигуристов: чемоданы, скакалки и другое — с доставкой по всей России.', canonical);
   } else if(path.startsWith('/product/')){
     const p = productById(path.replace('/product/',''));
     html = pageProduct(path.replace('/product/',''));
