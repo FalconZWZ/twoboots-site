@@ -1811,7 +1811,8 @@ function colorHex(p){
 // Other colours of the same model; for models sold in sizes (suitcases M/XL) — of the same size
 function colorVariants(p){
   if(!p.group || !p.color) return [];
-  const list = PRODUCTS.filter(v => v.group === p.group && v.color && (!p.size || v.size === p.size));
+  // same size or variant: the 30-cell colours, not the 60 and 120 of the same model
+  const list = PRODUCTS.filter(v => v.group === p.group && v.color && variantLabel(v) === variantLabel(p));
   return list.length > 1 ? list : [];
 }
 function pdpColorBlock(p){

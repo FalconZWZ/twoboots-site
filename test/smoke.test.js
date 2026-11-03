@@ -792,6 +792,44 @@ test('colour models are rebuilt once from names with the colour at the end (no b
   assert.ok(!('groupOff' in live));
 });
 
+test('colours of the 30-cell «КотоСоты» are added once from the shipped photos', async () => {
+  const AdmZip = require('adm-zip');
+  const admin = await adminClient();
+  const restoreWith = async edit => {
+    const zip = new AdmZip((await admin('/api/admin/backup')).data);
+    const store = JSON.parse(zip.readAsText('store.json'));
+    edit(store);
+    zip.updateFile('store.json', Buffer.from(JSON.stringify(store)));
+    const f = new FormData(); f.append('backup', new Blob([zip.toBuffer()]), 'b.zip');
+    assert.equal((await admin('/api/admin/restore', { method: 'POST', form: f })).status, 200);
+    return (await client()('/api/data')).data.products;
+  };
+  let products = await restoreWith(st => {
+    st.products.push(
+      { id: 'koto-30', cat: 'access', name: 'Органайзер для маркеров «КотоСоты» 30 ячеек— бело-фиолетовый', price: 900, sizes: ['30 ячеек'], group: 'kotosoty', specs: [], desc: 'Цвет: бело-фиолетовый. 30 ячеек.', img: '/uploads/koto.jpg', images: ['/uploads/koto2.jpg'], quantity: 4 },
+      { id: 'koto-60', cat: 'access', name: 'Органайзер для маркеров «КотоСоты» 60 ячеек— бело-фиолетовый', price: 1500, sizes: ['60 ячеек'], group: 'kotosoty', specs: [], desc: '' },
+    );
+    delete st.seededColors;
+  });
+  const koto = products.filter(p => p.group === 'kotosoty');
+  const thirty = koto.filter(p => (p.sizes || []).includes('30 ячеек'));
+  assert.deepEqual(thirty.map(p => p.color), ['бело-фиолетовый', 'чёрно-белый', 'бело-синий', 'бело-красный', 'бело-чёрный', 'бело-зелёный']);
+  const green = thirty.find(p => p.color === 'бело-зелёный');
+  assert.equal(green.name, 'Органайзер для маркеров «КотоСоты» 30 ячеек — бело-зелёный');
+  assert.equal(green.price, 900);
+  assert.equal(green.img, '/images/kotosoty/kotosoty-30-belo-zelenyy.jpg');
+  assert.ok(!green.images, 'the purple gallery stays with the purple one');
+  assert.equal(green.desc, 'Цвет: бело-зелёный. 30 ячеек.');
+  assert.ok(!koto.find(p => p.id === 'koto-60').color, 'the 60-cell one is left as it was');
+  assert.equal((await fetch(BASE + green.img)).status, 200);
+  assert.equal((await client()('/product/' + green.id)).status, 200);
+
+  // once: a colour the owner deletes doesn't come back on the next start
+  assert.equal((await admin('/api/admin/products/' + green.id, { method: 'DELETE' })).status, 200);
+  products = await restoreWith(() => {});
+  assert.equal(products.filter(p => p.group === 'kotosoty' && p.color).length, 5);
+});
+
 test('order sources, sales funnel and sales breakdown in the admin', async () => {
   const ua = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0) Funnel test' };
   const hit = body => fetch(BASE + '/api/hit', { method: 'POST', headers: { 'Content-Type': 'application/json', ...ua }, body: JSON.stringify(body) });

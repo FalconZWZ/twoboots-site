@@ -348,6 +348,22 @@ function roleFor(username) {
 // adds collections introduced later. Used at startup and after restoring a backup.
 // The starter articles shipped before new ones could be added to existing stores
 const FIRST_STARTER_ARTICLES = ['kak-vybrat-chehly-dlya-lezviy', 'chto-vzyat-na-trenirovku-i-sorevnovaniya', 'uhod-za-lezviyami-konkov'];
+// Colours of an existing product, added once from photos shipped in images/: a copy of the
+// product per colour (price, description, stock, model) with its own photo. The source gets its
+// own colour so the product page can switch between them. Runs only while the source exists and
+// only once (remembered in seededColors), so a colour the owner deletes doesn't come back.
+const PRODUCT_COLOR_SEEDS = [{
+  key: 'kotosoty-30',
+  match: p => /котосот/i.test(p.name || '') && /(^|\D)30\s*яче/i.test(`${p.name} ${p.size || ''} ${(p.sizes || []).join(' ')}`),
+  color: 'бело-фиолетовый',
+  colors: [
+    ['чёрно-белый', '/images/kotosoty/kotosoty-30-cherno-belyy.jpg'],
+    ['бело-синий', '/images/kotosoty/kotosoty-30-belo-siniy.jpg'],
+    ['бело-красный', '/images/kotosoty/kotosoty-30-belo-krasnyy.jpg'],
+    ['бело-чёрный', '/images/kotosoty/kotosoty-30-belo-chernyy.jpg'],
+    ['бело-зелёный', '/images/kotosoty/kotosoty-30-belo-zelenyy.jpg'],
+  ],
+}];
 function normalizeStore(store) {
   let changed = false;
   // Search engines: site-verification codes from the admin and the IndexNow key (made once)
@@ -388,6 +404,7 @@ function normalizeStore(store) {
       changed = true;
     }
   }
+  if (Array.isArray(store.products) && seedProductColors(store)) changed = true;
   if (Array.isArray(store.products) && linkColorModels(store)) changed = true;
   // Starter texts and FAQ for the category pages; the owner edits them in the admin.
   if (!store.categoryContent) {
@@ -405,6 +422,37 @@ function normalizeStore(store) {
   const store = readStore();
   if (normalizeStore(store)) writeStore(store);
 }
+function seedProductColors(store) {
+  let changed = false;
+  const done = new Set(store.seededColors || []);
+  PRODUCT_COLOR_SEEDS.filter(seed => !done.has(seed.key)).forEach(seed => {
+    const idx = store.products.findIndex(seed.match);
+    if (idx === -1) return;
+    const src = store.products[idx];
+    if (!src.color) src.color = seed.color;
+    const base = String(src.name).replace(/\s*[—–]\s*[^—–]*$/, '').trim() || modelBaseName(src);
+    if (!src.group || src.group === slugify(src.name)) src.group = slugify(base);
+    delete src.groupOff;
+    const { id, img, images, hidden, draftCopy, lowStockAlerted, colorHex, ...rest } = src;
+    const srcColor = new RegExp(src.color.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    const copies = seed.colors.map(([color, photo]) => {
+      const name = `${base} — ${color}`;
+      let newId = slugify(name);
+      while (store.products.some(p => p.id === newId)) newId += '-' + crypto.randomBytes(2).toString('hex');
+      const copy = JSON.parse(JSON.stringify(rest).replace(srcColor, color));
+      Object.assign(copy, { id: newId, name, color, group: src.group, img: photo });
+      if (src.hidden) copy.hidden = true;
+      store.products.push(copy); // pushed one by one so the next id check sees it
+      return copy;
+    });
+    store.products = store.products.filter(p => !copies.includes(p));
+    store.products.splice(idx + 1, 0, ...copies); // right after the original in the list
+    store.seededColors = [...done.add(seed.key)];
+    changed = true;
+  });
+  return changed;
+}
+
 // Colour variants: products named the same apart from their colour — «Скакалка скоростная
 // Two Boots (красный)», «Котик 3D … Two Boots Белый» — are one model (group). Runs on start and
 // whenever a product is saved: a coloured product without a model (or with one that is just its
