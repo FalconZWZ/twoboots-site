@@ -830,6 +830,52 @@ test('colours of the 30-cell «КотоСоты» are added once from the shippe
   assert.equal(products.filter(p => p.group === 'kotosoty' && p.color).length, 5);
 });
 
+test('pre-order: an out-of-stock product the admin marked can still be ordered, marked and without touching stock', async () => {
+  const admin = await adminClient();
+  const form = fields => { const f = new FormData(); for (const [k, v] of Object.entries(fields)) f.append(k, v); return f; };
+  const made = await admin('/api/admin/products', { method: 'POST', form: form({ cat: 'access', name: 'Тестовый предзаказ', price: '700', quantity: '0', preorder: 'true', preorderNote: 'Отправка через 2 недели' }) });
+  assert.equal(made.status, 200, JSON.stringify(made.data));
+  const ID = made.data.id;
+  const pub = async () => (await client()('/api/data')).data.products.find(p => p.id === ID);
+  const shown = await pub();
+  assert.equal(shown.stock, 'preorder');
+  assert.equal(shown.preorderNote, 'Отправка через 2 недели');
+  assert.ok(!('preorder' in shown) && !('left' in shown) && !('quantity' in shown));
+  assert.match((await client()('/product/' + ID)).data, /schema\.org\/PreOrder/);
+
+  const quick = await client()('/api/quick-order', { method: 'POST', body: { productId: ID, qty: 2, name: 'Пред', phone: '+7 904 431-27-31', consent: true } });
+  assert.equal(quick.status, 200, JSON.stringify(quick.data));
+  assert.equal(quick.data.order.items[0].name, 'Тестовый предзаказ — предзаказ');
+  assert.equal(quick.data.order.items[0].preorder, true);
+
+  const buyer = client();
+  assert.equal((await buyer('/api/login', { method: 'POST', body: { email: 'buyer@test.ru', password: 'secret1' } })).status, 200);
+  const cartOrder = await buyer('/api/orders', { method: 'POST', body: { items: [{ id: ID, qty: 1 }], delivery: 'pickup' } });
+  assert.equal(cartOrder.status, 200, JSON.stringify(cartOrder.data));
+  assert.equal(cartOrder.data.order.items[0].preorder, true);
+
+  const raw = async () => (await admin('/api/admin/data')).data.products.find(p => p.id === ID);
+  assert.equal((await raw()).quantity, 0, 'pre-orders don\'t take from the shelf');
+  assert.equal((await admin('/api/admin/orders/' + quick.data.order.id, { method: 'PATCH', body: { status: 'cancelled' } })).status, 200);
+  assert.equal((await raw()).quantity, 0, 'and cancelling one gives nothing back');
+
+  // a form from an admin tab without the pre-order fields keeps them
+  await admin('/api/admin/products/' + ID, { method: 'PUT', form: form({ cat: 'access', name: 'Тестовый предзаказ', price: '750', quantity: '0' }) });
+  assert.equal((await pub()).stock, 'preorder');
+
+  // in stock again: an ordinary order
+  await admin('/api/admin/products/' + ID, { method: 'PATCH', body: { quantity: 3 } });
+  assert.ok(!(await pub()).stock);
+  const normal = await client()('/api/quick-order', { method: 'POST', body: { productId: ID, qty: 1, name: 'Пред', phone: '+7 904 433-27-33', consent: true } });
+  assert.equal(normal.data.order.items[0].name, 'Тестовый предзаказ');
+  assert.equal((await raw()).quantity, 2);
+
+  // switched off: sold out means sold out
+  await admin('/api/admin/products/' + ID, { method: 'PUT', form: form({ cat: 'access', name: 'Тестовый предзаказ', price: '750', quantity: '0', preorder: 'false' }) });
+  assert.equal((await pub()).stock, 'out');
+  assert.equal((await client()('/api/quick-order', { method: 'POST', body: { productId: ID, qty: 1, name: 'Пред', phone: '+7 904 434-27-34', consent: true } })).status, 400);
+});
+
 test('order sources, sales funnel and sales breakdown in the admin', async () => {
   const ua = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0) Funnel test' };
   const hit = body => fetch(BASE + '/api/hit', { method: 'POST', headers: { 'Content-Type': 'application/json', ...ua }, body: JSON.stringify(body) });

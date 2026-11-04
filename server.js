@@ -766,11 +766,12 @@ app.put('/api/admin/category-content/:cat', requireAdmin, (req, res) => {
 /* ===== Public data API ===== */
 // The shop window never shows exact stock — only «осталось N» when 5 or fewer are left.
 const publicProduct = ratings => p => {
-  const { quantity, lowStockAlerted, draftCopy, groupOff, ...rest } = p;
+  const { quantity, lowStockAlerted, draftCopy, groupOff, preorder, preorderNote, ...rest } = p;
   return {
     ...rest,
     ...(ratings[p.id] ? { rating: ratings[p.id] } : {}),
-    ...(quantity !== undefined && quantity <= 5 && p.stock !== 'order' ? { left: quantity } : {}),
+    ...(isPreorder(p) ? { stock: 'preorder', preorderNote: preorderNote || PREORDER_NOTE_DEFAULT }
+      : quantity !== undefined && quantity <= 5 && p.stock !== 'order' ? { left: quantity } : {}),
   };
 };
 // The public catalog: served at /api/data and also built into every page, so a page shows
@@ -938,6 +939,12 @@ const SITE_ORIGIN = 'https://www.two-boots.ru';
 // Availability: no field = in stock, 'order' = made/brought to order, 'out' = can't be ordered.
 const STOCK_VALUES = ['order', 'out'];
 function normStock(v) { return STOCK_VALUES.includes(v) ? v : undefined; }
+// Pre-order: a product the admin marked «Предзаказ» can still be ordered while it is out of
+// stock. Such a line is marked «предзаказ» in the order and doesn't touch the shelf count.
+const isPreorder = p => !!p && p.stock === 'out' && !!p.preorder;
+const canOrder = p => !!p && (p.stock !== 'out' || !!p.preorder);
+const PREORDER_SUFFIX = ' — предзаказ';
+const PREORDER_NOTE_DEFAULT = 'Отправим, как только товар поступит, — срок подтвердит менеджер';
 
 function unitPrice(product) {
   return product.discountPercent
@@ -965,6 +972,7 @@ function syncStockWithQuantity(p) {
 function moveStock(store, items, direction) {
   const low = [];
   for (const it of items) {
+    if (it.preorder) continue; // nothing was taken from the shelf for it
     const p = store.products.find(x => x.id === it.id);
     if (!p || p.quantity === undefined) continue;
     p.quantity = Math.max(0, p.quantity + direction * it.qty);
@@ -1374,12 +1382,14 @@ function priceItems(store, items) {
     }
     const product = store.products.find(p => p.id === item.id && !p.hidden);
     if (!product) continue;
-    if (product.stock === 'out') return { error: `«${product.name}» сейчас нет в наличии — уберите его из корзины` };
+    if (!canOrder(product)) return { error: `«${product.name}» сейчас нет в наличии — уберите его из корзины` };
     const size = orderSize(product, item.size);
     if (size === false) return { error: `Выберите размер для «${product.name}»` };
     const qty = Math.max(1, Math.min(99, Number(item.qty) || 1));
     const price = unitPrice(product);
-    lines.push({ id: product.id, name: product.name, size, price, qty });
+    lines.push(isPreorder(product)
+      ? { id: product.id, name: product.name + PREORDER_SUFFIX, size, price, qty, preorder: true }
+      : { id: product.id, name: product.name, size, price, qty });
     subtotal += price * qty;
   }
   const short = stockShortage(store, lines);
@@ -1473,7 +1483,7 @@ function sendGiftCodesEmail(order, email) {
 // '' if the shelf has enough of every counted product for these lines, else what is missing
 function stockShortage(store, lines) {
   const wanted = {};
-  lines.forEach(l => { wanted[l.id] = (wanted[l.id] || 0) + l.qty; });
+  lines.filter(l => !l.preorder).forEach(l => { wanted[l.id] = (wanted[l.id] || 0) + l.qty; });
   for (const [id, qty] of Object.entries(wanted)) {
     const p = store.products.find(x => x.id === id);
     if (p && p.quantity !== undefined && p.stock !== 'order' && qty > p.quantity) {
@@ -1669,12 +1679,13 @@ app.post('/api/quick-order', orderLimiter, customerOrderLimiter, (req, res) => {
   const store = readStore();
   const product = store.products.find(p => p.id === productId && !p.hidden);
   if (!product) return res.status(404).json({ error: 'Товар не найден' });
-  if (product.stock === 'out') return res.status(400).json({ error: 'Этого товара сейчас нет в наличии' });
+  if (!canOrder(product)) return res.status(400).json({ error: 'Этого товара сейчас нет в наличии' });
   const size = orderSize(product, requestedSize);
   if (size === false) return res.status(400).json({ error: 'Выберите размер' });
 
   const qtyNum = Math.max(1, Math.min(99, Number(qty) || 1));
-  const short = stockShortage(store, [{ id: product.id, qty: qtyNum }]);
+  const preorder = isPreorder(product);
+  const short = stockShortage(store, [{ id: product.id, qty: qtyNum, preorder }]);
   if (short) return res.status(400).json({ error: short });
   const price = unitPrice(product);
   const subtotal = price * qtyNum;
@@ -1688,7 +1699,8 @@ app.post('/api/quick-order', orderLimiter, customerOrderLimiter, (req, res) => {
     number: store.orderSeq,
     userId: null,
     quick: true,
-    items: [{ id: product.id, name: product.name, size, price, qty: qtyNum }],
+    items: [preorder ? { id: product.id, name: product.name + PREORDER_SUFFIX, size, price, qty: qtyNum, preorder: true }
+      : { id: product.id, name: product.name, size, price, qty: qtyNum }],
     subtotal,
     ...(promo ? { promo: { code: promo.code, discount } } : {}),
     total: subtotal - discount,
@@ -2728,7 +2740,7 @@ function sendCartReminders(now = Date.now()) {
     if (age < CART_REMIND_AFTER_MS || age > CART_REMIND_UNTIL_MS) continue;
     if (store.orders.some(o => o.userId === user.id && o.createdAt > c.updatedAt)) continue;
     const lines = c.items.map(l => {
-      const p = store.products.find(x => x.id === l.id && !x.hidden && x.stock !== 'out');
+      const p = store.products.find(x => x.id === l.id && !x.hidden && canOrder(x));
       return p && `${p.name}${l.size ? ' (' + l.size + ')' : ''} — ${l.qty} шт.`;
     }).filter(Boolean);
     c.remindedAt = new Date(now).toISOString();
@@ -2902,6 +2914,8 @@ function parseProductBody(body) {
     sizes: parseSizes(body.sizes).length ? parseSizes(body.sizes) : undefined,
     related: parseRelated(body.related),
     hidden: body.hidden === 'true' || body.hidden === true || undefined,
+    preorder: body.preorder === 'true' || body.preorder === true || undefined,
+    preorderNote: String(body.preorderNote || '').trim().slice(0, 160) || undefined,
   };
 }
 
@@ -3033,6 +3047,7 @@ app.put('/api/admin/products/:id', requireAdmin, productUpload, async (req, res)
   // A form without the Model / swatch fields (an admin tab opened before they existed) keeps them.
   if (req.body.group === undefined) data.group = existing.group;
   if (req.body.colorHex === undefined) data.colorHex = existing.colorHex;
+  if (req.body.preorder === undefined) { data.preorder = existing.preorder; data.preorderNote = existing.preorderNote; }
   const updated = { ...existing, ...data };
   if (!data.color) delete updated.color;
   if (!data.size) delete updated.size;
@@ -3435,7 +3450,7 @@ function pageSeo(pathname, query) {
           ...productReviewsLd(store, p.id),
           offers: {
             '@type': 'Offer', url, priceCurrency: 'RUB', price: unitPrice(p),
-            availability: `https://schema.org/${({ order: 'BackOrder', out: 'OutOfStock' })[p.stock] || 'InStock'}`, itemCondition: 'https://schema.org/NewCondition',
+            availability: `https://schema.org/${isPreorder(p) ? 'PreOrder' : ({ order: 'BackOrder', out: 'OutOfStock' })[p.stock] || 'InStock'}`, itemCondition: 'https://schema.org/NewCondition',
           },
         },
         {
