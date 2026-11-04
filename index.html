@@ -296,6 +296,9 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
     font-size:.72rem;font-weight:700;background:var(--surface);color:var(--ink-soft);border:1px solid var(--border);
   }
   .stock-badge.out{color:var(--accent);}
+  .stock-badge.preorder{color:#7a4fc4;border-color:#d9c8f3;}
+  .pdp-stock.preorder{color:#7a4fc4;}
+  .cart-preorder{font-size:.76rem;font-weight:600;color:#7a4fc4;margin:2px 0 4px;}
   .pdp-stock{margin:6px 0 14px;font-size:.9rem;font-weight:600;}
   .pdp-stock.in{color:#1c7a3a;}
   .pdp-stock.order{color:var(--ink-soft);}
@@ -968,7 +971,8 @@ function effectivePrice(p){
   return p.discountPercent ? Math.round(p.price * (1 - p.discountPercent/100)) : p.price;
 }
 
-const STOCK_LABEL = { order: 'Под заказ', out: 'Нет в наличии' };
+const STOCK_LABEL = { order: 'Под заказ', out: 'Нет в наличии', preorder: 'Предзаказ' };
+const isPreorder = p => !!p && p.stock === 'preorder';
 const isOrderable = p => p.stock !== 'out';
 
 const hasSizeChoice = p => !!(p.sizes && p.sizes.length);
@@ -1002,7 +1006,7 @@ function crossSellFor(base, limit, maxPrice = 0){
   for(let i = 0; queues.some(q => i < q.length); i++) queues.forEach(q => { if(q[i]) auto.push(q[i]); });
   const seen = new Set();
   return [...picked, ...auto].filter(p => {
-    if(exclude.has(p.id) || seen.has(p.id) || !isOrderable(p)) return false;
+    if(exclude.has(p.id) || seen.has(p.id) || !isOrderable(p) || isPreorder(p)) return false;
     if(cheapFirst && effectivePrice(p) > maxPrice) return false;
     seen.add(p.id);
     return true;
@@ -1035,7 +1039,7 @@ function addToCart(id, qty=1, size=null){
   trackGoal('cart_add');
   trackEcommerce('add', p, qty, size);
   sendHit({ event: 'cart' });
-  showToast('Добавлено в корзину — ' + p.name);
+  showToast((isPreorder(p) ? 'Предзаказ добавлен в корзину — ' : 'Добавлено в корзину — ') + p.name);
 }
 function removeFromCart(key){
   const gone = cart.find(l => lineKey(l.id, l.size) === key);
@@ -1243,7 +1247,7 @@ function updateCartUI(){
     return `<div class="cart-line">
       <div class="thumb">${productImage(p) ? `<img src="${productImage(p)}" alt="${p.name}" loading="lazy" decoding="async" style="width:100%;height:100%;object-fit:cover;border-radius:10px;">` : catIcon(p.cat)}</div>
       <div class="info">
-        <h5>${p.name}${l.size && l.size !== p.size ? ' · ' + l.size : ''}</h5>
+        <h5>${p.name}${l.size && l.size !== p.size ? ' · ' + l.size : ''}</h5>${isPreorder(p) ? '<div class="cart-preorder">Предзаказ — ' + escText(p.preorderNote || '') + '</div>' : ''}
         <div class="row"><span>${l.qty} × ${fmt(l.price)} ₽</span><a class="remove" data-remove="${key}">Удалить</a></div>
       </div>
     </div>`;
@@ -1966,7 +1970,7 @@ function pageProduct(id){
           <h1 style="margin-top:10px;">${p.name}</h1>
           ${p.rating ? `<div class="pdp-rating">${starsHtml(p.rating.avg)}<span>${p.rating.avg.toString().replace('.', ',')}</span><a href="#reviews" data-scroll-reviews>${p.rating.count} ${reviewsWord(p.rating.count)}</a></div>` : ''}
           <div class="pdp-price" id="pdpPrice">${p.discountPercent ? `<span class="price-old" style="font-size:1.1rem;margin-right:10px;">${fmt(p.price)} ₽</span>` : ''}<span class="price">${fmt(effectivePrice(p))} ₽</span></div>
-          <div class="pdp-stock ${p.stock || 'in'}">${({ order: 'Под заказ — срок уточнит менеджер', out: 'Нет в наличии' })[p.stock] || (p.left > 0 ? `В наличии — осталось ${p.left} шт.` : 'В наличии')}</div>
+          <div class="pdp-stock ${p.stock || 'in'}">${({ order: 'Под заказ — срок уточнит менеджер', out: 'Нет в наличии', preorder: 'Нет в наличии — можно оформить предзаказ. ' + escText(p.preorderNote || '') })[p.stock] || (p.left > 0 ? `В наличии — осталось ${p.left} шт.` : 'В наличии')}</div>
           ${pdpColorBlock(p)}
           ${pdpSizeBlock(p)}
           <div class="qty-row">
@@ -1977,8 +1981,8 @@ function pageProduct(id){
           </div>
           <div class="pdp-actions">
             ${isOrderable(p) ? `
-            <button class="btn btn-primary" id="pdpAdd">Добавить в корзину</button>
-            <button class="btn btn-ghost" id="pdpBuyOneClick">Купить в 1 клик</button>` : `
+            <button class="btn btn-primary" id="pdpAdd">${isPreorder(p) ? 'Оформить предзаказ' : 'Добавить в корзину'}</button>
+            <button class="btn btn-ghost" id="pdpBuyOneClick">${isPreorder(p) ? 'Предзаказ в 1 клик' : 'Купить в 1 клик'}</button>` : `
             <button class="btn btn-primary" disabled style="opacity:.5;cursor:not-allowed;">Нет в наличии</button>
             `}
             ${favButton(p.id, 'fav-inline btn btn-ghost')}
@@ -2006,8 +2010,8 @@ function pageProduct(id){
     <div class="qo-overlay" id="qoOverlay">
       <div class="qo-box">
         <button class="qo-close" id="qoClose" aria-label="Закрыть" type="button">✕</button>
-        <h3>Купить в 1 клик</h3>
-        <p class="qo-hint">Оставьте имя и телефон — мы перезвоним и подтвердим заказ «${p.name}».</p>
+        <h3>${isPreorder(p) ? 'Предзаказ в 1 клик' : 'Купить в 1 клик'}</h3>
+        <p class="qo-hint">Оставьте имя и телефон — мы перезвоним и подтвердим ${isPreorder(p) ? 'предзаказ' : 'заказ'} «${p.name}».${isPreorder(p) ? ' ' + escText(p.preorderNote || '') : ''}</p>
         <form id="qoForm">
           <div class="field"><label for="qo-name">Ваше имя</label><input id="qo-name" required></div>
           <div class="field"><label for="qo-phone">Телефон</label><input id="qo-phone" type="tel" placeholder="+7 ..." required></div>
