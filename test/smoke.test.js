@@ -184,7 +184,7 @@ test('customer: register, order with delivery, see it, cancel it', async () => {
     delivery: 'cdek', city: 'Казань', address: 'ПВЗ, ул. Баумана 1', comment: 'после 18:00',
   } });
   assert.equal(order.status, 200, JSON.stringify(order.data));
-  assert.equal(order.data.order.number, 1);
+  assert.equal(order.data.order.number, 1000, 'order numbers start at 1000');
   assert.equal(order.data.order.total, 1490 * 2 + 1290, 'server prices, client price ignored');
   assert.equal(order.data.order.items[1].size, 'M');
 
