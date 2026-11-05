@@ -627,7 +627,7 @@ function pageFingerprints(store) {
     map['/product/' + p.id] = h([p.name, p.price, p.discountPercent, p.desc, p.img, p.images, p.stock, p.specs, p.color, p.size, p.sizes]);
   });
   publishedArticles(store.articles).forEach(a => { map['/blog/' + a.slug] = h([a.title, a.description, a.body, a.cover]); });
-  map['/reviews'] = h(allPublicReviews(store).map(r => r.id));
+  map['/reviews'] = h(allPublicReviews(store).map(r => [r.id, r.reply && r.reply.text]));
   Object.keys(store.categories || {}).forEach(cat => {
     map['/catalog?cat=' + cat] = h([store.categories[cat], (store.categoryContent || {})[cat],
       store.products.filter(p => p.cat === cat && !p.hidden).map(p => [p.id, p.name, p.price, p.discountPercent, p.img])]);
@@ -903,7 +903,8 @@ function productRatings(reviews) {
   for (const [id, a] of Object.entries(acc)) out[id] = { avg: Math.round(a.sum / a.count * 10) / 10, count: a.count };
   return out;
 }
-const publicReview = r => ({ id: r.id, name: r.name, rating: r.rating, text: r.text, createdAt: r.createdAt, verified: !!r.verified });
+const publicReview = r => ({ id: r.id, name: r.name, rating: r.rating, text: r.text, createdAt: r.createdAt, verified: !!r.verified,
+  ...(r.reply && r.reply.text ? { reply: { text: r.reply.text, at: r.reply.at } } : {}) });
 
 // ?productId=… — one product's reviews; without it — every approved review of a visible
 // product, newest first, with the product's name and photo (the «Отзывы» page)
@@ -2570,14 +2571,22 @@ app.get('/api/admin/reviews', requireAdmin, (req, res) => {
 });
 
 app.patch('/api/admin/reviews/:id', requireAdmin, (req, res) => {
-  const { status } = req.body || {};
-  if (!['approved', 'hidden', 'pending'].includes(status)) return res.status(400).json({ error: 'Некорректный статус' });
+  // status: publish / hide; reply: the shop's answer shown under the review ('' removes it)
+  const { status, reply } = req.body || {};
+  if (status === undefined && reply === undefined) return res.status(400).json({ error: 'Нечего менять' });
+  if (status !== undefined && !['approved', 'hidden', 'pending'].includes(status)) return res.status(400).json({ error: 'Некорректный статус' });
   const store = readStore();
   const review = store.reviews.find(r => r.id === req.params.id);
   if (!review) return res.status(404).json({ error: 'Отзыв не найден' });
-  review.status = status;
+  if (status !== undefined) review.status = status;
+  if (reply !== undefined) {
+    const text = String(reply || '').trim().slice(0, 2000);
+    if (text) review.reply = { text, at: new Date().toISOString(), by: req.session.username || 'admin' };
+    else delete review.reply;
+  }
   writeStore(store);
-  res.json({ ok: true });
+  scheduleIndexNow();
+  res.json({ ok: true, reply: review.reply || null });
 });
 
 app.delete('/api/admin/reviews/:id', requireAdmin, (req, res) => {
@@ -3635,7 +3644,7 @@ function pageSeo(pathname, query) {
         ? `Отзывы покупателей Two Boots: средняя оценка ${String(avg).replace('.', ',')} из 5 по ${list.length} отзывам — чемоданы для коньков, скакалки и аксессуары для фигуристов.`
         : 'Отзывы покупателей Two Boots о чемоданах для коньков, скакалках и аксессуарах для фигуристов.',
       bodyHtml: `<section class="block"><div class="wrap"><h1>Отзывы покупателей</h1>${list.slice(0, 50).map(r =>
-        `<div class="review-item"><b>${escHtml(r.name)}</b> — ${r.rating} из 5 о <a href="/product/${escHtml(r.productId)}">${escHtml(r.productName)}</a><p>${escHtml(r.text)}</p></div>`).join('') || '<p>Отзывов пока нет.</p>'}</div></section>`,
+        `<div class="review-item"><b>${escHtml(r.name)}</b> — ${r.rating} из 5 о <a href="/product/${escHtml(r.productId)}">${escHtml(r.productName)}</a><p>${escHtml(r.text)}</p>${r.reply ? `<blockquote><b>Ответ Two Boots:</b> ${escHtml(r.reply.text)}</blockquote>` : ''}</div>`).join('') || '<p>Отзывов пока нет.</p>'}</div></section>`,
     };
   }
   if (pathname === '/blog') {

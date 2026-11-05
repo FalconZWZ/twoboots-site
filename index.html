@@ -283,6 +283,10 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   .review-head .date{color:var(--ink-faint);font-size:.82rem;}
   .review-badge{font-size:.72rem;font-weight:700;color:#1c7a3a;background:#dff3e0;padding:2px 8px;border-radius:999px;}
   .review-item p{color:var(--ink-soft);white-space:pre-wrap;margin:0;}
+  .review-reply{margin:12px 0 0 18px;padding:12px 14px;border-left:3px solid var(--accent);background:var(--surface);border-radius:0 var(--radius-s) var(--radius-s) 0;}
+  .review-reply-head{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:4px;font-size:.85rem;}
+  .review-reply-head b{color:var(--ink);} .review-reply-head .date{color:var(--ink-faint);font-size:.8rem;}
+  .review-reply p{font-size:.92rem;}
   .review-product{display:inline-flex;align-items:center;gap:10px;margin-bottom:10px;font-size:.85rem;font-weight:600;color:var(--ink);}
   .review-product:hover{color:var(--accent);}
   .review-product img{width:40px;height:40px;object-fit:cover;border-radius:8px;border:1px solid var(--border);flex:none;}
@@ -1893,10 +1897,13 @@ async function loadReviews(productId){
       ${reviews.map(r => `<div class="review-item">
         <div class="review-head"><b>${escText(r.name)}</b>${starsHtml(r.rating)}${r.verified ? '<span class="review-badge">Покупатель</span>' : ''}<span class="date">${new Date(r.createdAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</span></div>
         <p>${escText(r.text)}</p>
+        ${reviewReplyHtml(r)}
       </div>`).join('')}`;
   }catch(e){ wrap.innerHTML = '<p style="color:var(--ink-soft);">Не удалось загрузить отзывы.</p>'; }
 }
 
+// The shop's answer under a review
+const reviewReplyHtml = r => r.reply && r.reply.text ? `<div class="review-reply"><div class="review-reply-head"><b>Ответ Two Boots</b><span class="date">${new Date(r.reply.at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</span></div><p>${escText(r.reply.text)}</p></div>` : '';
 function bindReviews(productId){
   loadReviews(productId);
   // the review-request email links to /product/<id>#reviews
@@ -1996,6 +2003,7 @@ async function loadAllReviews(){
         <a class="review-product" href="/product/${encodeURIComponent(r.productId)}#reviews">${r.productImg ? `<img src="${escText(r.productImg)}" alt="" loading="lazy" decoding="async">` : ''}<span>${escText(r.productName)}</span></a>
         <div class="review-head"><b>${escText(r.name)}</b>${starsHtml(r.rating)}${r.verified ? '<span class="review-badge">Покупатель</span>' : ''}<span class="date">${new Date(r.createdAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</span></div>
         <p>${escText(r.text)}</p>
+        ${reviewReplyHtml(r)}
       </div>`).join('')}`;
     box.querySelectorAll('[data-stars]').forEach(b => b.addEventListener('click', () => { REVIEWS_STARS = Number(b.getAttribute('data-stars')); draw(); }));
   };
