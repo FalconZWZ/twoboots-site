@@ -675,6 +675,18 @@ test('admin: auth, promo code, stock, review moderation', async () => {
   assert.match(page.data, /<title>Отзывы покупателей — Two Boots<\/title>/);
   assert.match(page.data, /Отличные чехлы, рекомендую/);
   assert.match((await shopper('/sitemap.xml')).data, /\/reviews</);
+
+  // the shop answers a review: shown under it on the product page and on /reviews, escaped
+  assert.equal((await admin(`/api/admin/reviews/${pending.id}`, { method: 'PATCH', body: {} })).status, 400);
+  assert.equal((await admin(`/api/admin/reviews/${pending.id}`, { method: 'PATCH', body: { reply: '  Спасибо, Оля! <3  ' } })).status, 200);
+  const answered = (await shopper('/api/reviews?productId=dry-glide')).data.reviews[0];
+  assert.equal(answered.reply.text, 'Спасибо, Оля! <3');
+  assert.ok(answered.reply.at && !('by' in answered.reply), 'who answered stays in the admin');
+  assert.equal((await shopper('/api/reviews')).data.reviews[0].reply.text, 'Спасибо, Оля! <3');
+  assert.match((await shopper('/reviews')).data, /Ответ Two Boots:<\/b> Спасибо, Оля! &lt;3/);
+  assert.equal((await admin('/api/admin/reviews')).data.reviews.find(r => r.id === pending.id).status, 'approved', 'answering keeps the status');
+  await admin(`/api/admin/reviews/${pending.id}`, { method: 'PATCH', body: { reply: '' } });
+  assert.ok(!('reply' in (await shopper('/api/reviews?productId=dry-glide')).data.reviews[0]));
 });
 
 test('articles: drafts hidden, published ones rendered and escaped', async () => {

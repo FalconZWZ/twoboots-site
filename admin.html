@@ -1097,7 +1097,17 @@ async function loadAdminReviews(){
         <small style="font-weight:700;color:${color};">${label}</small>
       </div>
       <div style="white-space:pre-wrap;margin:6px 0 8px;font-size:.9rem;">${escHtml(r.text)}</div>
-      <div style="display:flex;gap:6px;">
+      ${r.reply ? `<div style="margin:0 0 8px 14px;padding:8px 12px;border-left:3px solid var(--accent);background:var(--surface-2,#f6f6f6);border-radius:6px;font-size:.88rem;"><b>Ваш ответ</b> <small style="color:var(--ink-soft);">${new Date(r.reply.at).toLocaleString('ru-RU')}</small><div style="white-space:pre-wrap;margin-top:4px;">${escHtml(r.reply.text)}</div></div>` : ''}
+      <div data-reply-form="${r.id}" hidden style="margin:0 0 8px;">
+        <textarea maxlength="2000" rows="3" style="width:100%;" placeholder="Ответ покупателю — будет виден на сайте под отзывом">${escHtml(r.reply ? r.reply.text : '')}</textarea>
+        <div style="display:flex;gap:6px;margin-top:6px;">
+          <button type="button" class="btn-primary btn-sm" data-reply-save="${r.id}">Сохранить ответ</button>
+          <button type="button" class="btn-ghost btn-sm" data-reply-cancel="${r.id}">Отмена</button>
+          ${r.reply ? `<button type="button" class="btn-ghost btn-sm" data-reply-remove="${r.id}">Удалить ответ</button>` : ''}
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button type="button" class="btn-ghost btn-sm" data-reply-open="${r.id}">${r.reply ? 'Изменить ответ' : 'Ответить'}</button>
         ${r.status !== 'approved' ? `<button type="button" class="btn-primary btn-sm" data-review-status="approved" data-review="${r.id}">Опубликовать</button>` : ''}
         ${r.status !== 'hidden' ? `<button type="button" class="btn-ghost btn-sm" data-review-status="hidden" data-review="${r.id}">Скрыть</button>` : ''}
         <button type="button" class="btn-danger btn-sm" data-review-del="${r.id}">Удалить</button>
@@ -1112,6 +1122,28 @@ async function loadAdminReviews(){
       });
       loadAdminReviews();
     }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+  }));
+  const replyForm = id => el('reviewsAdminList').querySelector(`[data-reply-form="${id}"]`);
+  const sendReply = async (id, reply) => {
+    try{
+      await api('/api/admin/reviews/' + id, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ reply }) });
+      const r = reviews.find(x => x.id === id);
+      showMsg(el('globalMsg'), reply ? (r && r.status === 'approved' ? 'Ответ опубликован под отзывом' : 'Ответ сохранён — появится на сайте, когда опубликуете отзыв') : 'Ответ удалён', 'ok');
+      loadAdminReviews();
+    }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+  };
+  el('reviewsAdminList').querySelectorAll('[data-reply-open]').forEach(btn => btn.addEventListener('click', () => {
+    const f = replyForm(btn.getAttribute('data-reply-open'));
+    f.hidden = false; f.querySelector('textarea').focus();
+  }));
+  el('reviewsAdminList').querySelectorAll('[data-reply-cancel]').forEach(btn => btn.addEventListener('click', () => { replyForm(btn.getAttribute('data-reply-cancel')).hidden = true; }));
+  el('reviewsAdminList').querySelectorAll('[data-reply-save]').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.getAttribute('data-reply-save'), text = replyForm(id).querySelector('textarea').value.trim();
+    if(!text){ showMsg(el('globalMsg'), 'Напишите ответ', 'error'); return; }
+    sendReply(id, text);
+  }));
+  el('reviewsAdminList').querySelectorAll('[data-reply-remove]').forEach(btn => btn.addEventListener('click', () => {
+    if(confirm('Удалить ответ на отзыв?')) sendReply(btn.getAttribute('data-reply-remove'), '');
   }));
   el('reviewsAdminList').querySelectorAll('[data-review-del]').forEach(btn => btn.addEventListener('click', async () => {
     if(!confirm('Удалить отзыв насовсем?')) return;
