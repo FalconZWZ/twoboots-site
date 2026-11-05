@@ -353,6 +353,25 @@
   </div>
 
   <div class="card" data-tab="settings">
+    <h2>Реквизиты для накладной</h2>
+    <p style="color:var(--ink-soft);font-size:.85rem;margin:0 0 12px;">Печатаются в накладной к заказу (Заказы → «Накладная»). Для ИП: «ИП Иванов Иван Иванович», ИНН 12 цифр, ОГРНИП 15 цифр.</p>
+    <div class="row">
+      <div class="field"><label>Продавец</label><input id="slName" maxlength="300" placeholder="ИП Иванов Иван Иванович"></div>
+      <div class="field" style="flex:none;width:180px;"><label>ИНН</label><input id="slInn" maxlength="12" inputmode="numeric"></div>
+      <div class="field" style="flex:none;width:200px;"><label>ОГРН / ОГРНИП</label><input id="slOgrn" maxlength="15" inputmode="numeric"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Адрес</label><input id="slAddress" maxlength="300" placeholder="г. Москва, ул. …"></div>
+      <div class="field" style="flex:none;width:200px;"><label>Телефон</label><input id="slPhone" maxlength="40"></div>
+      <div class="field" style="flex:none;width:220px;"><label>Email</label><input id="slEmail" maxlength="120"></div>
+    </div>
+    <div class="row" style="align-items:center;margin-top:4px;">
+      <button type="button" class="btn-primary btn-sm" id="slSaveBtn">Сохранить реквизиты</button>
+      <span id="slMsg" style="font-size:.85rem;"></span>
+    </div>
+  </div>
+
+  <div class="card" data-tab="settings">
     <h2>Поисковые системы</h2>
     <p style="color:var(--ink-soft);font-size:.85rem;margin:0 0 12px;">Яндекс уже подключён. Чтобы сайт находили в Google, Bing и Mail.ru, добавьте его в их кабинеты, выберите подтверждение <b>метатегом</b> и вставьте сюда код (можно весь тег целиком). Затем в кабинете нажмите «Подтвердить» и добавьте карту сайта: <code id="seSitemap"></code></p>
     <div class="row">
@@ -636,6 +655,7 @@ async function loadAll(){
   await loadDeliveryMethods();
   await loadCategoryContent();
   await loadSearchEngines();
+  await loadSeller();
   loadVisitorsNow();
   await loadPromos();
   await loadAdminReviews();
@@ -1427,7 +1447,8 @@ function renderOrders(orders){
         ${o.quick ? '' : `<div style="margin-top:6px;font-size:.8rem;">${o.trackNumber ? `Трек: ${o.trackUrl ? `<a href="${escHtml(o.trackUrl)}" target="_blank" rel="noopener">${escHtml(o.trackNumber)}</a>` : `<b>${escHtml(o.trackNumber)}</b>`}<br>` : ''}<button type="button" class="btn-ghost btn-sm" data-order-track="${o.id}" style="margin-top:2px;">${o.trackNumber ? 'Изменить трек' : 'Трек-номер'}</button></div>`}
       </td>
       <td style="max-width:220px;">${o.comment ? `<div style="white-space:pre-wrap;font-size:.82rem;">${escHtml(o.comment)}</div>` : ''}<button type="button" class="btn-ghost btn-sm" data-order-comment="${o.id}" style="margin-top:4px;">${o.comment ? 'Изменить' : 'Добавить'}</button></td>
-      <td style="white-space:nowrap;"><a class="btn-ghost btn-sm" href="/admin/orders/${o.id}/print" target="_blank" rel="noopener" style="display:inline-block;border:1px solid var(--border);border-radius:999px;text-decoration:none;color:inherit;font-weight:600;">Печать</a>
+      <td style="white-space:nowrap;"><a class="btn-ghost btn-sm" href="/admin/orders/${o.id}/invoice" target="_blank" rel="noopener" style="display:inline-block;border:1px solid var(--border);border-radius:999px;text-decoration:none;color:inherit;font-weight:600;" title="Накладная для покупателя: товары, сумма прописью, подписи">Накладная</a>
+        <a class="btn-ghost btn-sm" href="/admin/orders/${o.id}/print" target="_blank" rel="noopener" style="display:inline-block;border:1px solid var(--border);border-radius:999px;text-decoration:none;color:inherit;font-weight:600;" title="Лист сборки для склада">Лист сборки</a>
         ${IS_SUPER ? `<button class="btn-ghost btn-sm" data-delete-order="${o.id}">Удалить</button>` : ''}</td>
     </tr>
   `).join('') || `<tr><td colspan="8" style="color:var(--ink-soft)">${ALL_ORDERS.length ? 'Ничего не найдено.' : 'Заказов пока нет.'}</td></tr>`;
@@ -1549,6 +1570,16 @@ function renderIndexNow(se){
         `${host.includes('yandex') ? 'Яндекс' : 'Bing и др.'}: ${code === 200 || code === 202 ? '<span style="color:#1c5e26;">принято</span>' : `<span style="color:#8a2418;">${escHtml(String(code))}</span>`}`).join(', ')}`
     : 'С последнего перезапуска сервера отправок ещё не было.';
 }
+const SELLER_INPUTS = { name: 'slName', inn: 'slInn', ogrn: 'slOgrn', address: 'slAddress', phone: 'slPhone', email: 'slEmail' };
+function fillSeller(s){ Object.entries(SELLER_INPUTS).forEach(([k, id]) => { el(id).value = s[k] || ''; }); }
+async function loadSeller(){ fillSeller(await api('/api/admin/seller')); }
+el('slSaveBtn').addEventListener('click', async () => {
+  try{
+    const body = Object.fromEntries(Object.entries(SELLER_INPUTS).map(([k, id]) => [k, el(id).value]));
+    fillSeller(await api('/api/admin/seller', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }));
+    el('slMsg').innerHTML = '<span style="color:#1c5e26;">Сохранено</span>';
+  }catch(e){ el('slMsg').innerHTML = `<span style="color:#8a2418;">${escHtml(e.message)}</span>`; }
+});
 async function loadSearchEngines(){
   const se = await api('/api/admin/search-engines');
   el('seGoogle').value = se.google || ''; el('seBing').value = se.bing || ''; el('seMailru').value = se.mailru || '';

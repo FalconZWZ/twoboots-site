@@ -3308,6 +3308,112 @@ app.post('/api/admin/products/import', requireAdmin, catalogUpload.single('file'
   res.json({ dryRun, changes, errors, products: store.products.length });
 });
 
+/* ===== Seller details (for the delivery note) ===== */
+const SELLER_FIELDS = ['name', 'inn', 'ogrn', 'address', 'phone', 'email'];
+const SELLER_DEFAULTS = { name: 'Two Boots', inn: '', ogrn: '', address: '', phone: '+7 (926) 349-75-86', email: '' };
+const sellerOf = store => ({ ...SELLER_DEFAULTS, ...(store.seller || {}) });
+app.get('/api/admin/seller', requireAdmin, (req, res) => res.json(sellerOf(readStore())));
+app.put('/api/admin/seller', requireAdmin, (req, res) => {
+  const store = readStore();
+  const next = sellerOf(store);
+  for (const k of SELLER_FIELDS) if (req.body[k] !== undefined) next[k] = String(req.body[k]).replace(/\s+/g, ' ').trim().slice(0, 300);
+  if (next.inn && !/^(\d{10}|\d{12})$/.test(next.inn)) return res.status(400).json({ error: 'ИНН — 10 или 12 цифр' });
+  if (next.ogrn && !/^(\d{13}|\d{15})$/.test(next.ogrn)) return res.status(400).json({ error: 'ОГРН / ОГРНИП — 13 или 15 цифр' });
+  if (!next.name) next.name = SELLER_DEFAULTS.name;
+  store.seller = next;
+  writeStore(store);
+  res.json(next);
+});
+
+// 1 234 → «одна тысяча двести тридцать четыре рубля 00 копеек» (for the delivery note)
+function rublesInWords(amount) {
+  const rub = Math.floor(Math.abs(amount)), kop = Math.round((Math.abs(amount) - rub) * 100);
+  const ones = ['', 'один', 'два', 'три', 'четыре', 'пять', 'шесть', 'семь', 'восемь', 'девять'];
+  const onesF = ['', 'одна', 'две', 'три', 'четыре', 'пять', 'шесть', 'семь', 'восемь', 'девять'];
+  const teens = ['десять', 'одиннадцать', 'двенадцать', 'тринадцать', 'четырнадцать', 'пятнадцать', 'шестнадцать', 'семнадцать', 'восемнадцать', 'девятнадцать'];
+  const tens = ['', '', 'двадцать', 'тридцать', 'сорок', 'пятьдесят', 'шестьдесят', 'семьдесят', 'восемьдесят', 'девяносто'];
+  const hundreds = ['', 'сто', 'двести', 'триста', 'четыреста', 'пятьсот', 'шестьсот', 'семьсот', 'восемьсот', 'девятьсот'];
+  const form = (n, [one, few, many]) => { const t = n % 100, u = n % 10; return t >= 11 && t <= 14 ? many : u === 1 ? one : u >= 2 && u <= 4 ? few : many; };
+  const triad = (n, fem) => {
+    const h = Math.floor(n / 100), t = Math.floor(n / 10) % 10, u = n % 10;
+    return [hundreds[h], t === 1 ? teens[u] : tens[t], t === 1 ? '' : (fem ? onesF : ones)[u]].filter(Boolean).join(' ');
+  };
+  const scales = [[['', '', ''], false], [['тысяча', 'тысячи', 'тысяч'], true], [['миллион', 'миллиона', 'миллионов'], false], [['миллиард', 'миллиарда', 'миллиардов'], false]];
+  const parts = [];
+  let n = rub;
+  for (let i = 0; n > 0 && i < scales.length; i++, n = Math.floor(n / 1000)) {
+    const part = n % 1000;
+    if (!part) continue;
+    parts.unshift([triad(part, scales[i][1]), i ? form(part, scales[i][0]) : ''].filter(Boolean).join(' '));
+  }
+  const words = parts.join(' ') || 'ноль';
+  return `${words[0].toUpperCase()}${words.slice(1)} ${form(rub, ['рубль', 'рубля', 'рублей'])} ${String(kop).padStart(2, '0')} ${form(kop, ['копейка', 'копейки', 'копеек'])}`;
+}
+
+/* ===== Delivery note (накладная) =====
+   For the parcel or to hand over: seller, buyer, the goods with prices, the total in words and
+   lines to sign. Two copies on one A4 sheet when ?copies=2. */
+app.get('/admin/orders/:id/invoice', requireAdmin, (req, res) => {
+  const store = readStore();
+  const o = store.orders.find(x => x.id === req.params.id);
+  if (!o) return res.status(404).send('Заказ не найден');
+  const seller = sellerOf(store);
+  const user = o.userId && store.users.find(u => u.id === o.userId);
+  const money = n => (Number(n) || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const date = new Date(o.createdAt).toLocaleDateString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', year: 'numeric' });
+  const sellerLine = [seller.name, seller.inn && `ИНН ${seller.inn}`, seller.ogrn && `${seller.ogrn.length === 15 ? 'ОГРНИП' : 'ОГРН'} ${seller.ogrn}`, seller.address, seller.phone && `тел. ${seller.phone}`, seller.email].filter(Boolean).map(escHtml).join(', ');
+  const buyerLine = [o.name, o.phone && `тел. ${o.phone}`, o.email || (user && user.email), [o.city, o.address].filter(Boolean).join(', ')].filter(Boolean).map(escHtml).join(', ');
+  const rows = o.items.map(it => ({ name: it.name + (it.size ? ` (${it.size})` : ''), unit: 'шт.', qty: it.qty, price: it.price, sum: it.price * it.qty }));
+  const delivery = Number(o.deliveryCost) || 0;
+  if (delivery) rows.push({ name: `Доставка${o.delivery ? ' — ' + deliveryLabel(o) : ''}`, unit: 'усл.', qty: 1, price: delivery, sum: delivery });
+  const discount = o.promo ? Number(o.promo.discount) || 0 : 0;
+  const sum = rows.reduce((n, r) => n + r.sum, 0) - discount; // the goods' value; a certificate is a way to pay
+  const paid = [o.giftCard && `Оплачено подарочным сертификатом: ${money(o.giftCard.amount)} ₽.`,
+    o.paidAt ? `Оплачено онлайн: ${money(o.paidAmount)} ₽.` : o.total > 0 && o.status !== 'cancelled' ? `К оплате при получении: ${money(o.total)} ₽.` : ''].filter(Boolean).join('<br>');
+  const one = `<section class="note">
+<h1>Накладная № ${o.number} от ${date}</h1>
+<table class="parties">
+<tr><th>Поставщик:</th><td>${sellerLine}</td></tr>
+<tr><th>Покупатель:</th><td>${buyerLine || '—'}</td></tr>
+<tr><th>Основание:</th><td>Заказ № ${o.number} на сайте www.two-boots.ru</td></tr>
+</table>
+<table class="items"><thead><tr><th>№</th><th>Наименование товара</th><th>Ед.</th><th class="r">Кол-во</th><th class="r">Цена, ₽</th><th class="r">Сумма, ₽</th></tr></thead><tbody>
+${rows.map((r, i) => `<tr><td>${i + 1}</td><td>${escHtml(r.name)}</td><td>${r.unit}</td><td class="r">${r.qty}</td><td class="r">${money(r.price)}</td><td class="r">${money(r.sum)}</td></tr>`).join('')}
+</tbody><tfoot>
+${discount ? `<tr><td colspan="5" class="r">Скидка по промокоду ${escHtml(o.promo.code)}:</td><td class="r">−${money(discount)}</td></tr>` : ''}
+<tr class="total"><td colspan="5" class="r">Итого:</td><td class="r">${money(sum)}</td></tr>
+</tfoot></table>
+<p>Всего наименований ${rows.length}, на сумму ${money(sum)} ₽, без НДС<br><b>${rublesInWords(sum)}</b>${paid ? `<br>${paid}` : ''}</p>
+<div class="signs">
+<div>Отпустил <span class="line"></span><small>подпись / расшифровка</small></div>
+<div>Получил <span class="line"></span><small>подпись / расшифровка</small></div>
+</div>
+<p class="muted">Товар получен в полном объёме, претензий по количеству, комплектности и внешнему виду не имею.</p>
+</section>`;
+  const copies = req.query.copies === '2' ? 2 : 1;
+  res.set('Cache-Control', 'no-store').type('html').send(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Накладная №${o.number} — ${escHtml(seller.name)}</title>
+<style>
+  body{font-family:Arial,Helvetica,sans-serif;color:#000;margin:24px;font-size:12.5px;}
+  h1{font-size:17px;margin:0 0 12px;border-bottom:2px solid #000;padding-bottom:6px;}
+  table{border-collapse:collapse;width:100%;}
+  .parties{margin-bottom:12px;} .parties th{text-align:left;width:100px;vertical-align:top;padding:2px 8px 2px 0;} .parties td{padding:2px 0;}
+  .items th,.items td{border:1px solid #000;padding:4px 6px;text-align:left;vertical-align:top;}
+  .items th{background:#eee;} .items tfoot td{border:none;padding:3px 6px;} .r{text-align:right!important;white-space:nowrap;}
+  .total td{font-weight:700;font-size:14px;}
+  .signs{display:flex;gap:40px;margin-top:22px;} .signs>div{flex:1;}
+  .line{display:inline-block;width:65%;border-bottom:1px solid #000;margin-left:8px;height:14px;} .signs small{display:block;color:#555;margin:2px 0 0 80px;font-size:10px;}
+  .muted{color:#444;font-size:11px;margin-top:14px;}
+  .note+.note{border-top:1px dashed #888;margin-top:26px;padding-top:22px;}
+  .no-print{margin-bottom:16px;display:flex;gap:10px;align-items:center;} @media print{.no-print{display:none;} body{margin:10mm;}}
+</style></head><body>
+<div class="no-print"><button onclick="print()">Печать</button>
+<a href="?copies=${copies === 2 ? 1 : 2}">${copies === 2 ? 'Один экземпляр' : 'Два экземпляра на листе'}</a>
+${seller.inn ? '' : '<span style="color:#8a2418;">Реквизиты продавца не заполнены — админка → Настройки → «Реквизиты для накладной».</span>'}</div>
+${Array(copies).fill(one).join('')}
+<script>window.addEventListener('load', () => setTimeout(() => print(), 300));</script>
+</body></html>`);
+});
+
 /* ===== Printable order ===== */
 app.get('/admin/orders/:id/print', requireAdmin, (req, res) => {
   const store = readStore();

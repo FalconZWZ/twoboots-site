@@ -451,6 +451,19 @@ test('stock quantity: limits orders, goes out at 0, comes back on cancel; catalo
   assert.equal(print.status, 200);
   assert.match(print.data, /Заказ №\d+/);
   assert.match(print.data, /Склад/);
+
+  // delivery note: seller details from the settings, total in words, lines to sign
+  assert.equal((await fetch(BASE + '/admin/orders/' + first.data.order.id + '/invoice')).status, 401);
+  assert.equal((await admin('/api/admin/seller', { method: 'PUT', body: { inn: '12345' } })).status, 400);
+  const seller = await admin('/api/admin/seller', { method: 'PUT', body: { name: 'ИП Тестов <Т.Т.>', inn: '771234567890', ogrn: '312774600000012', address: 'г. Москва' } });
+  assert.equal(seller.status, 200, JSON.stringify(seller.data));
+  const note = await admin('/admin/orders/' + first.data.order.id + '/invoice');
+  assert.equal(note.status, 200);
+  assert.match(note.data, new RegExp(`Накладная № ${first.data.order.number} от \\d\\d\\.\\d\\d\\.\\d{4}`));
+  assert.match(note.data, /ИП Тестов &lt;Т\.Т\.&gt;, ИНН 771234567890, ОГРНИП 312774600000012/);
+  assert.match(note.data, /Одна тысяча триста рублей 00 копеек/);
+  assert.match(note.data, /Отпустил[\s\S]*Получил/);
+  assert.equal((await admin('/admin/orders/' + first.data.order.id + '/invoice?copies=2')).data.split('<section class="note">').length - 1, 2);
 });
 
 test('gift certificates: buy without delivery, issue once, pay in parts, refund on cancel', async () => {
