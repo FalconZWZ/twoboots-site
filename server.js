@@ -475,6 +475,13 @@ function linkColorModels(store) {
   return changed;
 }
 
+// The other products of p's model with the same size or variant (the colours of «30 ячеек»,
+// not the 60 and 120 of the same model)
+const variantLabelOf = p => p.size || (Array.isArray(p.sizes) && p.sizes.length === 1 ? String(p.sizes[0]) : '');
+function sameModelVariant(store, p) {
+  return store.products.filter(x => x.id !== p.id && p.group && x.group === p.group && variantLabelOf(x) === variantLabelOf(p));
+}
+
 // The model's name: the product name without its colour, whether that is in brackets at the
 // end («… (красный)») or just the last words («… Two Boots Белый», «… — белый»).
 function modelBaseName(p) {
@@ -3091,6 +3098,10 @@ app.put('/api/admin/products/:id', requireAdmin, productUpload, async (req, res)
   }
   store.products[idx] = updated;
   linkColorModels(store);
+  // «the same price for every colour»: the other colours of this model in the same size/variant
+  if (req.body.priceToModel === 'true' && updated.group) {
+    sameModelVariant(store, updated).forEach(p => { p.price = updated.price; });
+  }
   const restockDue = takeRestockSubs(store, [[existing, updated]]);
   writeStore(store);
   sendRestockEmails(restockDue);
@@ -3164,15 +3175,39 @@ app.patch('/api/admin/products/:id', requireAdmin, (req, res) => {
 });
 
 app.post('/api/admin/products/bulk', requireAdmin, (req, res) => {
-  const { ids, hidden, discountPercent, stock } = req.body || {};
+  const { ids, hidden, discountPercent, stock, price } = req.body || {};
   if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: 'Не выбраны товары' });
+  // price: { mode: 'set' | 'percent' | 'add', value, round: 0 | 1 | 10 | 50 | 100 }
+  let newPrice = null;
+  if (price !== undefined) {
+    const value = Number(String((price || {}).value).replace(',', '.').replace(/\s/g, ''));
+    const mode = (price || {}).mode;
+    const round = [1, 10, 50, 100].includes(Number(price.round)) ? Number(price.round) : 1;
+    if (!['set', 'percent', 'add'].includes(mode) || !Number.isFinite(value)) return res.status(400).json({ error: 'Укажите, как изменить цену' });
+    if (mode === 'set' && value <= 0) return res.status(400).json({ error: 'Цена должна быть больше 0' });
+    if (mode === 'percent' && (value <= -95 || value > 1000)) return res.status(400).json({ error: 'Изменение — от −95% до +1000%' });
+    newPrice = old => {
+      const raw = mode === 'set' ? value : mode === 'percent' ? old * (1 + value / 100) : old + value;
+      return Math.round(raw / round) * round;
+    };
+  }
   const store = readStore();
+  if (newPrice) {
+    const bad = store.products.find(p => ids.includes(p.id) && newPrice(p.price) < 1);
+    if (bad) return res.status(400).json({ error: `У «${bad.name}» цена станет меньше 1 ₽` });
+  }
   let count = 0;
   const pairs = [];
+  const prices = [];
   store.products.forEach(p => {
     if (!ids.includes(p.id)) return;
     count++;
     pairs.push([{ ...p }, p]);
+    if (newPrice) {
+      const next = Math.min(10000000, newPrice(p.price));
+      if (next !== p.price) prices.push({ id: p.id, name: p.name, from: p.price, to: next });
+      p.price = next;
+    }
     if (hidden !== undefined) {
       if (hidden) p.hidden = true;
       else delete p.hidden;
@@ -3190,7 +3225,7 @@ app.post('/api/admin/products/bulk', requireAdmin, (req, res) => {
   const restockDue = takeRestockSubs(store, pairs);
   writeStore(store);
   sendRestockEmails(restockDue);
-  res.json({ ok: true, count });
+  res.json({ ok: true, count, prices });
 });
 
 /* ===== Catalog in Excel: export and import =====
