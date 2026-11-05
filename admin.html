@@ -1396,7 +1396,7 @@ el('exportOrdersBtn').addEventListener('click', () => {
 });
 
 el('resetOrdersBtn').addEventListener('click', async () => {
-  if(!confirm('Удалить ВСЕ заказы и обнулить нумерацию? Отменить будет нельзя.')) return;
+  if(!confirm('Удалить ВСЕ заказы? Нумерация начнётся заново с №1000. Отменить будет нельзя.')) return;
   try{
     await api('/api/admin/orders', { method:'DELETE' });
     showMsg(el('globalMsg'), 'Заказы сброшены', 'ok');

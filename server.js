@@ -364,6 +364,12 @@ const PRODUCT_COLOR_SEEDS = [{
     ['бело-зелёный', '/images/kotosoty/kotosoty-30-belo-zelenyy.jpg'],
   ],
 }];
+// Order numbers start at ORDER_NUMBER_START (1000, 1001, …). Orders numbered before keep their
+// numbers; the next one continues from the larger of the counter and the start.
+const ORDER_NUMBER_START = 1000;
+function nextOrderNumber(store) {
+  return Math.max(Number(store.orderSeq) || 0, ORDER_NUMBER_START - 1) + 1;
+}
 function normalizeStore(store) {
   let changed = false;
   // Search engines: site-verification codes from the admin and the IndexNow key (made once)
@@ -1625,7 +1631,7 @@ app.post('/api/orders', orderLimiter, customerOrderLimiter, requireUser, async (
   }
   if (promo) promo.uses = (promo.uses || 0) + 1;
 
-  store.orderSeq = (store.orderSeq || 0) + 1;
+  store.orderSeq = nextOrderNumber(store);
   const order = {
     id: crypto.randomUUID(),
     number: store.orderSeq,
@@ -1711,7 +1717,7 @@ app.post('/api/quick-order', orderLimiter, customerOrderLimiter, (req, res) => {
   if (promoError) return res.status(400).json({ error: promoError });
   if (promo) promo.uses = (promo.uses || 0) + 1;
 
-  store.orderSeq = (store.orderSeq || 0) + 1;
+  store.orderSeq = nextOrderNumber(store);
   const order = {
     id: crypto.randomUUID(),
     number: store.orderSeq,
@@ -2003,8 +2009,8 @@ app.delete('/api/admin/orders/:id', requireSuperAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-// Deletes every order and resets the order-number counter to 0 — for
-// clearing out test orders before going live, so the next real order starts at №1.
+// Deletes every order and resets the order-number counter — for clearing out test orders
+// before going live, so the next real order starts again at №ORDER_NUMBER_START.
 app.delete('/api/admin/orders', requireSuperAdmin, (req, res) => {
   const store = readStore();
   store.orders = [];
