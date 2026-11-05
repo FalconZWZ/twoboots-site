@@ -406,7 +406,7 @@
     </div>
     <div class="cat-tabs" id="prodCatTabs" role="tablist" aria-label="Категории товаров"></div>
     <div class="row" style="align-items:flex-end;margin-bottom:10px;">
-      <div class="field" style="flex:none;width:260px;"><label>Выбрать модель целиком</label><select id="bulkModel"><option value="">— модель —</option></select></div>
+      <div class="field" style="flex:1 1 320px;max-width:440px;"><label>Отметить модель (или один размер)</label><select id="bulkModel"><option value="">— модель —</option></select></div>
       <div class="field" style="flex:none;width:170px;"><label>Цена (для выбранных)</label><select id="bulkPriceMode">
         <option value="set">Новая цена, ₽</option><option value="percent">Изменить на %</option><option value="add">Изменить на ₽</option>
       </select></div>
@@ -1862,28 +1862,50 @@ el('bulkPriceBtn').addEventListener('click', async () => {
 });
 // Tick every product of one model (all colours and sizes), switching to the «Все» tab
 // «Скакалка скоростная Two Boots (красный)» / «… 30 ячеек — бело-синий» → the model's name
+// The size or variant a product stands for within its model: «M», «30 ячеек» (none = '')
+const variantOf = p => p.size || (Array.isArray(p.sizes) && p.sizes.length === 1 ? String(p.sizes[0]) : '');
+// «Скакалка скоростная Two Boots (красный)» / «… «КотоСоты» 30 ячеек — бело-синий» → the model's name
 function modelTitle(p){
+  const norm = t => t.toLowerCase().replace(/ё/g, 'е');
   let n = String(p.name || '').replace(/\s*\([^)]*\)\s*$/, '').trim();
-  const c = String(p.color || '').toLowerCase().replace(/ё/g, 'е');
-  if(c && n.toLowerCase().replace(/ё/g, 'е').endsWith(c)) n = n.slice(0, n.length - c.length).replace(/[\s,—–-]+$/, '').trim();
+  const c = norm(String(p.color || ''));
+  if(c && norm(n).endsWith(c)) n = n.slice(0, n.length - c.length);
+  const v = norm(variantOf(p));
+  const at = v ? norm(n).lastIndexOf(v) : -1;
+  if(at > 0) n = n.slice(0, at); // «… 60 ячеек — бело-фиолетовый» → «…»
+  n = n.replace(/[\s,—–-]+$/, '').trim();
   return n || p.group;
 }
+// «Выбрать модель»: a model with several sizes/variants is offered per variant too, so a new
+// price for «30 ячеек» doesn't land on «60 ячеек». Value: group + '\u0001' + variant ('*' = all).
+const MODEL_SEP = '\u0001';
 function renderBulkModels(){
   const groups = {};
   STATE.products.forEach(p => { if(p.group) (groups[p.group] = groups[p.group] || []).push(p); });
   const keep = el('bulkModel').value;
-  el('bulkModel').innerHTML = '<option value="">— модель —</option>' + Object.entries(groups).filter(([, list]) => list.length > 1)
-    .map(([g, list]) => [g, list, modelTitle(list[0])]).sort((a, b) => a[2].localeCompare(b[2], 'ru'))
-    .map(([g, list, title]) => `<option value="${escHtml(g)}">${escHtml(title)} — ${list.length} шт.</option>`).join('');
+  const opt = (value, text) => `<option value="${escHtml(value)}">${escHtml(text)}</option>`;
+  el('bulkModel').innerHTML = '<option value="">— модель —</option>' + Object.entries(groups)
+    .map(([g, list]) => [g, list, list.map(modelTitle).sort((a, b) => a.length - b.length)[0]])
+    .sort((a, b) => a[2].localeCompare(b[2], 'ru'))
+    .map(([g, list, title]) => {
+      const variants = [...new Set(list.map(variantOf))];
+      if(variants.length < 2) return list.length > 1 ? opt(g + MODEL_SEP + '*', `${title} — ${list.length} шт.`) : '';
+      const order = ['XXS','XS','S','M','L','XL','XXL'];
+      const rank = v => { const i = order.indexOf(v.toUpperCase()); return i !== -1 ? i : parseFloat(v.replace(',', '.')) || 999; };
+      return `<optgroup label="${escHtml(title)}">${opt(g + MODEL_SEP + '*', `${title} — все варианты, ${list.length} шт.`)}${
+        variants.sort((a, b) => rank(a) - rank(b)).map(v => opt(g + MODEL_SEP + v, `${title} · ${v || 'без варианта'} — ${list.filter(p => variantOf(p) === v).length} шт.`)).join('')}</optgroup>`;
+    }).join('');
   el('bulkModel').value = keep;
+  if(el('bulkModel').value !== keep) el('bulkModel').value = '';
 }
 el('bulkModel').addEventListener('change', () => {
-  const g = el('bulkModel').value;
-  if(!g) return;
-  if(PROD_CAT){ PROD_CAT = ''; renderProducts(); el('bulkModel').value = g; }
-  const ids = new Set(STATE.products.filter(p => p.group === g).map(p => p.id));
+  const value = el('bulkModel').value;
+  if(!value) return;
+  const [g, v] = value.split(MODEL_SEP);
+  if(PROD_CAT){ PROD_CAT = ''; renderProducts(); el('bulkModel').value = value; }
+  const ids = new Set(STATE.products.filter(p => p.group === g && (v === '*' || variantOf(p) === v)).map(p => p.id));
   el('productsBody').querySelectorAll('.prod-chk').forEach(c => { c.checked = ids.has(c.value); });
-  showMsg(el('globalMsg'), `Выбрано товаров модели: ${ids.size}`, 'ok');
+  showMsg(el('globalMsg'), `Отмечено товаров: ${ids.size}${v && v !== '*' ? ' (' + escHtml(v) + ')' : ''} — можно менять цену, скидку или наличие`, 'ok');
 });
 
 function specRow(k, v){
