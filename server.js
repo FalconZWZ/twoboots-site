@@ -621,6 +621,7 @@ function pageFingerprints(store) {
     map['/product/' + p.id] = h([p.name, p.price, p.discountPercent, p.desc, p.img, p.images, p.stock, p.specs, p.color, p.size, p.sizes]);
   });
   publishedArticles(store.articles).forEach(a => { map['/blog/' + a.slug] = h([a.title, a.description, a.body, a.cover]); });
+  map['/reviews'] = h(allPublicReviews(store).map(r => r.id));
   Object.keys(store.categories || {}).forEach(cat => {
     map['/catalog?cat=' + cat] = h([store.categories[cat], (store.categoryContent || {})[cat],
       store.products.filter(p => p.cat === cat && !p.hidden).map(p => [p.id, p.name, p.price, p.discountPercent, p.img])]);
@@ -898,9 +899,19 @@ function productRatings(reviews) {
 }
 const publicReview = r => ({ id: r.id, name: r.name, rating: r.rating, text: r.text, createdAt: r.createdAt, verified: !!r.verified });
 
+// ?productId=… — one product's reviews; without it — every approved review of a visible
+// product, newest first, with the product's name and photo (the «Отзывы» page)
+function allPublicReviews(store) {
+  const shown = new Map(store.products.filter(p => !p.hidden).map(p => [p.id, p]));
+  return (store.reviews || [])
+    .filter(r => r.status === 'approved' && shown.has(r.productId))
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .map(r => { const p = shown.get(r.productId); return { ...publicReview(r), productId: p.id, productName: p.name, productImg: p.img || (p.images || [])[0] || null }; });
+}
 app.get('/api/reviews', (req, res) => {
-  const { reviews } = readStore();
-  const list = reviews
+  const store = readStore();
+  if (req.query.productId === undefined) return res.json({ reviews: allPublicReviews(store).slice(0, 500) });
+  const list = store.reviews
     .filter(r => r.productId === req.query.productId && r.status === 'approved')
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
     .map(publicReview);
@@ -1020,7 +1031,7 @@ app.get('/health', (req, res) => {
 
 app.get('/sitemap.xml', (req, res) => {
   const { categories, products } = readStore();
-  const staticUrls = ['/', '/catalog', '/gift', '/about', '/contact', '/delivery', '/privacy'];
+  const staticUrls = ['/', '/catalog', '/gift', '/reviews', '/about', '/contact', '/delivery', '/privacy'];
   const articleUrls = publishedArticles(readStore().articles).map(a => `/blog/${a.slug}`);
   if (articleUrls.length) staticUrls.push('/blog', ...articleUrls);
   const catalogUrls = Object.keys(categories).map(cat => `/catalog?cat=${cat}`);
@@ -2279,7 +2290,7 @@ function visitorsOnline() {
 // Human names for page keys in the admin: products and articles by title
 function visitPageLabel(key, store) {
   const titles = { '/': 'Главная', '/catalog': 'Каталог', '/about': 'О нас', '/contact': 'Контакты', '/delivery': 'Доставка и оплата',
-    '/privacy': 'Политика конфиденциальности', '/consent': 'Согласие на обработку данных', '/blog': 'Статьи', '/cart': 'Корзина', '/account': 'Личный кабинет' };
+    '/privacy': 'Политика конфиденциальности', '/consent': 'Согласие на обработку данных', '/blog': 'Статьи', '/reviews': 'Отзывы', '/cart': 'Корзина', '/account': 'Личный кабинет' };
   if (titles[key]) return titles[key];
   const [p, q] = key.split('?cat=');
   if (p === '/catalog' && q) return 'Каталог: ' + (store.categories[q] || q);
@@ -3609,6 +3620,18 @@ function pageSeo(pathname, query) {
   if (pathname === '/favorites') return { title: 'Избранное — Two Boots', url, noindex: true };
   if (pathname === '/gift') return { title: 'Подарочный сертификат — Two Boots', url,
     description: 'Подарочный сертификат Two Boots на 1 000–10 000 ₽ — подарок фигуристу, который сам выберет чехлы, сумку, скакалку или аксессуары. Действует год, можно тратить частями.' };
+  if (pathname === '/reviews') {
+    const list = allPublicReviews(store);
+    const avg = list.length ? Math.round(list.reduce((n, r) => n + r.rating, 0) / list.length * 10) / 10 : 0;
+    return {
+      title: 'Отзывы покупателей — Two Boots', url,
+      description: list.length
+        ? `Отзывы покупателей Two Boots: средняя оценка ${String(avg).replace('.', ',')} из 5 по ${list.length} отзывам — чемоданы для коньков, скакалки и аксессуары для фигуристов.`
+        : 'Отзывы покупателей Two Boots о чемоданах для коньков, скакалках и аксессуарах для фигуристов.',
+      bodyHtml: `<section class="block"><div class="wrap"><h1>Отзывы покупателей</h1>${list.slice(0, 50).map(r =>
+        `<div class="review-item"><b>${escHtml(r.name)}</b> — ${r.rating} из 5 о <a href="/product/${escHtml(r.productId)}">${escHtml(r.productName)}</a><p>${escHtml(r.text)}</p></div>`).join('') || '<p>Отзывов пока нет.</p>'}</div></section>`,
+    };
+  }
   if (pathname === '/blog') {
     const list = publishedArticles(store.articles);
     if (!list.length) return { status: 404, title: 'Страница не найдена — Two Boots', url };

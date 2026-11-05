@@ -663,6 +663,18 @@ test('admin: auth, promo code, stock, review moderation', async () => {
   assert.equal((await shopper('/api/reviews?productId=dry-glide')).data.reviews.length, 1);
   const product = (await shopper('/api/data')).data.products.find(p => p.id === 'dry-glide');
   assert.deepEqual(product.rating, { avg: 5, count: 1 });
+
+  // the «Отзывы» page: every approved review with its product, pre-rendered for search engines
+  const all = (await shopper('/api/reviews')).data.reviews;
+  assert.equal(all.length, 1);
+  assert.equal(all[0].productId, 'dry-glide');
+  assert.equal(all[0].productName, product.name);
+  assert.ok(!('userId' in all[0]) && !('status' in all[0]));
+  const page = await shopper('/reviews');
+  assert.equal(page.status, 200);
+  assert.match(page.data, /<title>Отзывы покупателей — Two Boots<\/title>/);
+  assert.match(page.data, /Отличные чехлы, рекомендую/);
+  assert.match((await shopper('/sitemap.xml')).data, /\/reviews</);
 });
 
 test('articles: drafts hidden, published ones rendered and escaped', async () => {

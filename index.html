@@ -283,6 +283,9 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   .review-head .date{color:var(--ink-faint);font-size:.82rem;}
   .review-badge{font-size:.72rem;font-weight:700;color:#1c7a3a;background:#dff3e0;padding:2px 8px;border-radius:999px;}
   .review-item p{color:var(--ink-soft);white-space:pre-wrap;margin:0;}
+  .review-product{display:inline-flex;align-items:center;gap:10px;margin-bottom:10px;font-size:.85rem;font-weight:600;color:var(--ink);}
+  .review-product:hover{color:var(--accent);}
+  .review-product img{width:40px;height:40px;object-fit:cover;border-radius:8px;border:1px solid var(--border);flex:none;}
   .reviews-summary{display:flex;gap:12px;align-items:baseline;margin-bottom:18px;}
   .reviews-summary .big{font-size:2.2rem;font-weight:800;font-family:var(--font-display);}
   .star-input{display:flex;gap:4px;margin-bottom:14px;}
@@ -555,12 +558,14 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
   .contact-card div{font-weight:700;font-size:1.02rem;}
   .field{margin-bottom:18px;}
   .field label{display:block;font-size:.85rem;font-weight:700;color:var(--ink-soft);margin-bottom:8px;}
-  .field input,.field textarea{
+  .field input,.field textarea,.field select{
     width:100%;padding:13px 16px;border-radius:var(--radius-s);border:1px solid var(--border);
     background:var(--surface);color:var(--ink);
   }
   .field textarea{min-height:110px;resize:vertical;}
   .field input:focus,.field textarea:focus{border-color:var(--accent);}
+  .field select{max-width:100%;min-width:0;text-overflow:ellipsis;}
+  .reviews-grid>*{min-width:0;}
   .faq-item{border-top:1px solid var(--border);padding:18px 0;}
   .faq-item:last-child{border-bottom:1px solid var(--border);}
   .faq-item summary{cursor:pointer;font-weight:700;display:flex;justify-content:space-between;align-items:center;list-style:none;}
@@ -724,6 +729,7 @@ if (location.pathname === '/reset-password' && location.hash.length > 1) {
       <a href="/catalog" data-route="/catalog">Каталог</a>
       <span id="navCats" class="nav-cats"></span>
       <a href="/gift" data-route="/gift">Сертификаты</a>
+      <a href="/reviews" data-route="/reviews">Отзывы</a>
       <a href="/blog" data-route="/blog" id="navBlog" hidden>Статьи</a>
       <a href="/about" data-route="/about" class="nav-menu-only">О бренде</a>
       <a href="/contact" data-route="/contact">Контакты</a>
@@ -1899,6 +1905,10 @@ function bindReviews(productId){
     e.preventDefault();
     document.getElementById('reviews').scrollIntoView({ behavior: 'smooth' });
   }));
+  bindReviewForm(productId);
+}
+// The «Оставить отзыв» form: on a product page for that product, on /reviews for the one picked
+function bindReviewForm(productId){
   let rating = 0;
   const stars = document.querySelectorAll('#starInput button');
   const paint = n => stars.forEach(b => b.classList.toggle('on', Number(b.getAttribute('data-star')) <= n));
@@ -1914,6 +1924,9 @@ function bindReviews(productId){
     errEl.innerHTML = '';
     const btn = form.querySelector('button[type="submit"]');
     try{
+      const picker = document.getElementById('rv-product');
+      if(picker) productId = picker.value;
+      if(!productId) throw new Error('Выберите товар, о котором отзыв');
       if(!rating) throw new Error('Поставьте оценку — нажмите на звёзды');
       btn.disabled = true;
       const res = await fetch('/api/reviews', {
@@ -1929,6 +1942,64 @@ function bindReviews(productId){
       btn.disabled = false;
     }
   });
+}
+
+/* ===== All reviews (/reviews) ===== */
+function reviewFormHtml(picker){
+  return `<div class="contact-card" id="reviewFormWrap">
+    <h3 style="font-size:1.1rem;margin-bottom:14px;">Оставить отзыв</h3>
+    <form id="reviewForm">
+      ${picker ? `<div class="field"><label for="rv-product">Товар</label><select id="rv-product" required><option value="">— выберите товар —</option>${
+        PRODUCTS.filter(p => !p.hidden).map(p => `<option value="${escText(p.id)}">${escText(p.name)}</option>`).join('')}</select></div>` : ''}
+      <div class="star-input" id="starInput" role="radiogroup" aria-label="Оценка">
+        ${[1,2,3,4,5].map(n => `<button type="button" data-star="${n}" aria-label="${n} из 5">★</button>`).join('')}
+      </div>
+      <div class="field"><label for="rv-name">Ваше имя</label><input id="rv-name" required maxlength="60" value="${escText(CURRENT_USER ? CURRENT_USER.name : '')}"></div>
+      <div class="field"><label for="rv-text">Отзыв</label><textarea id="rv-text" required minlength="10" maxlength="2000" placeholder="Что понравилось, что нет, подошёл ли размер"></textarea></div>
+      ${consentField('rv-consent')}
+      <div id="reviewErr"></div>
+      <button type="submit" class="btn btn-primary btn-block">Отправить отзыв</button>
+    </form>
+  </div>`;
+}
+function pageReviews(){
+  return `<section class="block" style="padding-top:32px;">
+    <div class="wrap">
+      <div class="section-head"><div><span class="eyebrow">Отзывы</span><h1 style="margin-top:8px;">Что говорят покупатели</h1></div></div>
+      <div class="reviews-grid">
+        <div id="allReviews"><p style="color:var(--ink-soft);">Загрузка отзывов…</p></div>
+        ${reviewFormHtml(true)}
+      </div>
+    </div>
+  </section>`;
+}
+let REVIEWS_STARS = 0; // 0 = all, else only this rating
+async function loadAllReviews(){
+  const wrap = document.getElementById('allReviews');
+  let reviews;
+  try{ ({ reviews } = await fetchJson('/api/reviews', 8000)); }
+  catch(e){ if(wrap) wrap.innerHTML = '<p style="color:var(--ink-soft);">Не удалось загрузить отзывы.</p>'; return; }
+  const draw = () => {
+    const box = document.getElementById('allReviews');
+    if(!box) return; // navigated away meanwhile
+    if(!reviews.length){ box.innerHTML = '<p style="color:var(--ink-soft);">Отзывов пока нет — станьте первым: выберите товар и расскажите о нём.</p>'; return; }
+    const avg = Math.round(reviews.reduce((s, r) => s + r.rating, 0) / reviews.length * 10) / 10;
+    const count = n => reviews.filter(r => r.rating === n).length;
+    const shown = REVIEWS_STARS ? reviews.filter(r => r.rating === REVIEWS_STARS) : reviews;
+    box.innerHTML = `
+      <div class="reviews-summary"><span class="big">${avg.toString().replace('.', ',')}</span>${starsHtml(avg)}<span style="color:var(--ink-soft);">${reviews.length} ${reviewsWord(reviews.length)}</span></div>
+      <div class="filter-row" style="margin-bottom:18px;">
+        <button type="button" class="pill ${REVIEWS_STARS ? '' : 'active'}" data-stars="0">Все</button>
+        ${[5,4,3,2,1].filter(count).map(n => `<button type="button" class="pill ${REVIEWS_STARS === n ? 'active' : ''}" data-stars="${n}">${n} ★ <small>${count(n)}</small></button>`).join('')}
+      </div>
+      ${shown.map(r => `<div class="review-item">
+        <a class="review-product" href="/product/${encodeURIComponent(r.productId)}#reviews">${r.productImg ? `<img src="${escText(r.productImg)}" alt="" loading="lazy" decoding="async">` : ''}<span>${escText(r.productName)}</span></a>
+        <div class="review-head"><b>${escText(r.name)}</b>${starsHtml(r.rating)}${r.verified ? '<span class="review-badge">Покупатель</span>' : ''}<span class="date">${new Date(r.createdAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</span></div>
+        <p>${escText(r.text)}</p>
+      </div>`).join('')}`;
+    box.querySelectorAll('[data-stars]').forEach(b => b.addEventListener('click', () => { REVIEWS_STARS = Number(b.getAttribute('data-stars')); draw(); }));
+  };
+  draw();
 }
 
 function selectedSize(){
@@ -2038,19 +2109,7 @@ function pageProduct(id){
       <div class="section-head"><h2>Отзывы</h2></div>
       <div class="reviews-grid">
         <div id="reviewsList"><p style="color:var(--ink-soft);">Загрузка отзывов…</p></div>
-        <div class="contact-card" id="reviewFormWrap">
-          <h3 style="font-size:1.1rem;margin-bottom:14px;">Оставить отзыв</h3>
-          <form id="reviewForm">
-            <div class="star-input" id="starInput" role="radiogroup" aria-label="Оценка">
-              ${[1,2,3,4,5].map(n => `<button type="button" data-star="${n}" aria-label="${n} из 5">★</button>`).join('')}
-            </div>
-            <div class="field"><label for="rv-name">Ваше имя</label><input id="rv-name" required maxlength="60" value="${escText(CURRENT_USER ? CURRENT_USER.name : '')}"></div>
-            <div class="field"><label for="rv-text">Отзыв</label><textarea id="rv-text" required minlength="10" maxlength="2000" placeholder="Что понравилось, что нет, подошёл ли размер"></textarea></div>
-            ${consentField('rv-consent')}
-            <div id="reviewErr"></div>
-            <button type="submit" class="btn btn-primary btn-block">Отправить отзыв</button>
-          </form>
-        </div>
+        ${reviewFormHtml(false)}
       </div>
     </div>
   </section>
@@ -2635,6 +2694,9 @@ function render(){
   } else if(path === '/gift'){
     html = pageGift();
     setMeta('Подарочный сертификат — Two Boots', 'Подарочный сертификат Two Boots на 1 000–10 000 ₽ — подарок фигуристу, который сам выберет экипировку. Действует год, можно тратить частями.');
+  } else if(path === '/reviews'){
+    html = pageReviews();
+    setMeta('Отзывы покупателей — Two Boots', 'Отзывы покупателей Two Boots о чемоданах для коньков, скакалках и аксессуарах для фигуристов.');
   } else if(path === '/favorites'){
     html = pageFavorites();
     setMeta('Избранное — Two Boots');
@@ -2707,6 +2769,10 @@ function bindPageEvents(path, params){
     sortEl.addEventListener('change', refresh);
   }
 
+  if(path === '/reviews'){
+    loadAllReviews();
+    bindReviewForm(null);
+  }
   if(path.startsWith('/product/')){
     const pdpId = path.replace('/product/','');
     document.querySelectorAll('.swatch').forEach(sw => {
