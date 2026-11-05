@@ -405,6 +405,17 @@
       <button type="button" class="btn-primary btn-sm" id="addProductBtn">+ Добавить товар</button>
     </div>
     <div class="cat-tabs" id="prodCatTabs" role="tablist" aria-label="Категории товаров"></div>
+    <div class="row" style="align-items:flex-end;margin-bottom:10px;">
+      <div class="field" style="flex:none;width:260px;"><label>Выбрать модель целиком</label><select id="bulkModel"><option value="">— модель —</option></select></div>
+      <div class="field" style="flex:none;width:170px;"><label>Цена (для выбранных)</label><select id="bulkPriceMode">
+        <option value="set">Новая цена, ₽</option><option value="percent">Изменить на %</option><option value="add">Изменить на ₽</option>
+      </select></div>
+      <div class="field" style="flex:none;width:120px;"><label id="bulkPriceLabel">Цена, ₽</label><input id="bulkPriceValue" type="number" step="any" placeholder="1500"></div>
+      <div class="field" style="flex:none;width:150px;"><label>Округлить</label><select id="bulkPriceRound">
+        <option value="1">до рубля</option><option value="10">до 10 ₽</option><option value="50">до 50 ₽</option><option value="100">до 100 ₽</option>
+      </select></div>
+      <div class="field" style="flex:none;align-self:flex-end;"><button type="button" class="btn-primary btn-sm" id="bulkPriceBtn">Применить цену</button></div>
+    </div>
     <div id="bulkBar" class="row" style="align-items:flex-end;margin-bottom:14px;">
       <div class="field" style="flex:none;width:140px;"><label>Скидка, % (для выбранных)</label><input id="bulkDiscount" type="number" min="0" max="95" placeholder="0"></div>
       <div class="field" style="flex:none;align-self:flex-end;"><button type="button" class="btn-primary btn-sm" id="bulkApplyDiscountBtn">Применить скидку</button></div>
@@ -445,7 +456,10 @@
         <div class="field"><label>Название</label><input id="pName" required></div>
       </div>
       <div class="row">
-        <div class="field"><label>Цена, ₽</label><input id="pPrice" type="number" min="0" required></div>
+        <div class="field"><label>Цена, ₽</label><input id="pPrice" type="number" min="0" required>
+          <div id="pPriceToModelWrap" hidden><label style="display:flex;align-items:center;gap:6px;font-size:.8rem;font-weight:500;color:var(--ink-soft);margin-top:6px;">
+            <input type="checkbox" id="pPriceToModel" style="width:auto;"> <span id="pPriceToModelText"></span>
+          </label></div></div>
         <div class="field"><label>Цвет (необязательно)</label><input id="pColor" placeholder="например: красный"></div>
         <div class="field"><label>Размер (необязательно)</label><input id="pSize"></div>
       </div>
@@ -1722,6 +1736,7 @@ function renderProdCatTabs(){
 
 function renderProducts(){
   renderProdCatTabs();
+  renderBulkModels();
   el('groupList').innerHTML = [...new Set(STATE.products.map(p => p.group).filter(Boolean))].map(g => `<option value="${escHtml(g)}">`).join('');
   const shown = STATE.products.filter(p => !PROD_CAT || (PROD_CAT === NO_CAT ? !STATE.categories[p.cat] : p.cat === PROD_CAT));
   el('productsBody').innerHTML = shown.map(p => `
@@ -1821,6 +1836,56 @@ el('bulkHideBtn').addEventListener('click', () => bulkUpdate({ hidden: true }));
 el('bulkShowBtn').addEventListener('click', () => bulkUpdate({ hidden: false }));
 el('bulkStockBtn').addEventListener('click', () => bulkUpdate({ stock: el('bulkStock').value }));
 
+// Price for the ticked products: a new price, or up/down by % or by roubles, rounded
+const PRICE_MODE_LABELS = { set: ['Цена, ₽', '1500'], percent: ['На %, напр. 10 или −10', '10'], add: ['На ₽, напр. 200 или −200', '200'] };
+el('bulkPriceMode').addEventListener('change', () => {
+  const [label, ph] = PRICE_MODE_LABELS[el('bulkPriceMode').value];
+  el('bulkPriceLabel').textContent = label; el('bulkPriceValue').placeholder = ph;
+});
+el('bulkPriceBtn').addEventListener('click', async () => {
+  const ids = selectedProductIds();
+  if(!ids.length){ showMsg(el('globalMsg'), 'Сначала выберите товары галочками или модель в списке', 'error'); return; }
+  const mode = el('bulkPriceMode').value, value = Number(String(el('bulkPriceValue').value).replace(',', '.'));
+  if(!el('bulkPriceValue').value.trim() || !Number.isFinite(value) || (mode === 'set' && value <= 0) || (mode !== 'set' && value === 0)){
+    showMsg(el('globalMsg'), mode === 'set' ? 'Укажите новую цену' : 'Укажите, на сколько изменить цену', 'error'); return;
+  }
+  const what = mode === 'set' ? `цену ${value.toLocaleString('ru-RU')} ₽` : mode === 'percent' ? `изменение цены на ${value > 0 ? '+' : ''}${value}%` : `изменение цены на ${value > 0 ? '+' : ''}${value.toLocaleString('ru-RU')} ₽`;
+  if(!confirm(`Установить ${what} для ${ids.length} товаров?`)) return;
+  try{
+    const r = await api('/api/admin/products/bulk', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ ids, price: { mode, value, round: Number(el('bulkPriceRound').value) } }) });
+    const sample = r.prices.slice(0, 3).map(x => `${x.from.toLocaleString('ru-RU')} → ${x.to.toLocaleString('ru-RU')} ₽`).join(', ');
+    showMsg(el('globalMsg'), `Цена изменена у ${r.prices.length} из ${r.count} товаров${sample ? ': ' + sample + (r.prices.length > 3 ? '…' : '') : ''}`, 'ok');
+    el('bulkPriceValue').value = '';
+    await loadAll();
+  }catch(e){ showMsg(el('globalMsg'), e.message, 'error'); }
+});
+// Tick every product of one model (all colours and sizes), switching to the «Все» tab
+// «Скакалка скоростная Two Boots (красный)» / «… 30 ячеек — бело-синий» → the model's name
+function modelTitle(p){
+  let n = String(p.name || '').replace(/\s*\([^)]*\)\s*$/, '').trim();
+  const c = String(p.color || '').toLowerCase().replace(/ё/g, 'е');
+  if(c && n.toLowerCase().replace(/ё/g, 'е').endsWith(c)) n = n.slice(0, n.length - c.length).replace(/[\s,—–-]+$/, '').trim();
+  return n || p.group;
+}
+function renderBulkModels(){
+  const groups = {};
+  STATE.products.forEach(p => { if(p.group) (groups[p.group] = groups[p.group] || []).push(p); });
+  const keep = el('bulkModel').value;
+  el('bulkModel').innerHTML = '<option value="">— модель —</option>' + Object.entries(groups).filter(([, list]) => list.length > 1)
+    .map(([g, list]) => [g, list, modelTitle(list[0])]).sort((a, b) => a[2].localeCompare(b[2], 'ru'))
+    .map(([g, list, title]) => `<option value="${escHtml(g)}">${escHtml(title)} — ${list.length} шт.</option>`).join('');
+  el('bulkModel').value = keep;
+}
+el('bulkModel').addEventListener('change', () => {
+  const g = el('bulkModel').value;
+  if(!g) return;
+  if(PROD_CAT){ PROD_CAT = ''; renderProducts(); el('bulkModel').value = g; }
+  const ids = new Set(STATE.products.filter(p => p.group === g).map(p => p.id));
+  el('productsBody').querySelectorAll('.prod-chk').forEach(c => { c.checked = ids.has(c.value); });
+  showMsg(el('globalMsg'), `Выбрано товаров модели: ${ids.size}`, 'ok');
+});
+
 function specRow(k, v){
   const row = document.createElement('div');
   row.className = 'specs-row';
@@ -1851,6 +1916,7 @@ function resetForm(){
   el('pId').value = '';
   el('specsList').innerHTML = '';
   el('currentImgWrap').hidden = true;
+  el('pPriceToModelWrap').hidden = true;
   EDIT_EXTRAS = [];
   renderExtraImgs();
   renderRelatedPicker();
@@ -1893,6 +1959,13 @@ function startEdit(id){
   el('pCat').value = p.cat;
   el('pName').value = p.name;
   el('pPrice').value = p.price;
+  {
+    const label = x => x.size || (Array.isArray(x.sizes) && x.sizes.length === 1 ? String(x.sizes[0]) : '');
+    const others = p.group ? STATE.products.filter(x => x.id !== p.id && x.group === p.group && label(x) === label(p)) : [];
+    el('pPriceToModel').checked = false;
+    el('pPriceToModelWrap').hidden = !others.length;
+    el('pPriceToModelText').textContent = `Та же цена для других цветов модели${label(p) ? ' (' + label(p) + ')' : ''}: ещё ${others.length} шт.`;
+  }
   el('pColor').value = p.color || '';
   el('pSize').value = p.size || '';
   el('pSizes').value = (p.sizes || []).join(', ');
@@ -1928,6 +2001,7 @@ el('productForm').addEventListener('submit', async (e) => {
   fd.append('cat', el('pCat').value);
   fd.append('name', el('pName').value);
   fd.append('price', el('pPrice').value);
+  if(!el('pPriceToModelWrap').hidden && el('pPriceToModel').checked) fd.append('priceToModel', 'true');
   fd.append('color', el('pColor').value);
   fd.append('size', el('pSize').value);
   fd.append('sizes', el('pSizes').value);

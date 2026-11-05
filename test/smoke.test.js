@@ -889,6 +889,38 @@ test('pre-order: an out-of-stock product the admin marked can still be ordered, 
   assert.equal((await client()('/api/quick-order', { method: 'POST', body: { productId: ID, qty: 1, name: 'Пред', phone: '+7 904 434-27-34', consent: true } })).status, 400);
 });
 
+test('prices for a group of products: bulk set / % / ₽ with rounding, and one price for every colour', async () => {
+  const admin = await adminClient();
+  const form = fields => { const f = new FormData(); for (const [k, v] of Object.entries(fields)) f.append(k, v); return f; };
+  const mk = async (color, sizes, price) => (await admin('/api/admin/products', { method: 'POST', form: form({ cat: 'access', name: `Ценник ${sizes} ${color}`, color, sizes, price, group: 'cennik' }) })).data;
+  const a = await mk('красный', '30 ячеек', '1000'), b = await mk('синий', '30 ячеек', '1200'), c = await mk('красный', '60 ячеек', '2000');
+  const ids = [a.id, b.id, c.id];
+  const bulk = price => admin('/api/admin/products/bulk', { method: 'POST', body: { ids, price } });
+  const prices = async () => { const all = (await admin('/api/admin/data')).data.products; return ids.map(id => all.find(p => p.id === id).price); };
+
+  assert.equal((await bulk({ mode: 'set', value: 0 })).status, 400);
+  assert.equal((await bulk({ mode: 'what', value: 5 })).status, 400);
+  assert.equal((await bulk({ mode: 'add', value: -1500 })).status, 400, 'no price below 1 ₽');
+  assert.deepEqual(await prices(), [1000, 1200, 2000], 'a refused change changes nothing');
+
+  const up = await bulk({ mode: 'percent', value: 7, round: 10 });
+  assert.equal(up.status, 200);
+  assert.deepEqual(await prices(), [1070, 1280, 2140]);
+  assert.equal(up.data.prices.length, 3);
+  await bulk({ mode: 'add', value: -70 });
+  assert.deepEqual(await prices(), [1000, 1210, 2070]);
+  await bulk({ mode: 'set', value: 1500 });
+  assert.deepEqual(await prices(), [1500, 1500, 1500]);
+
+  // one product's price for the other colours of the same size; the 60-cell one keeps its own
+  await admin('/api/admin/products/' + c.id, { method: 'PUT', form: form({ cat: 'access', name: c.name, color: 'красный', sizes: '60 ячеек', price: '2700', group: 'cennik' }) });
+  await admin('/api/admin/products/' + a.id, { method: 'PUT', form: form({ cat: 'access', name: a.name, color: 'красный', sizes: '30 ячеек', price: '1490', group: 'cennik', priceToModel: 'true' }) });
+  assert.deepEqual(await prices(), [1490, 1490, 2700]);
+  await admin('/api/admin/products/' + a.id, { method: 'PUT', form: form({ cat: 'access', name: a.name, color: 'красный', sizes: '30 ячеек', price: '1390', group: 'cennik' }) });
+  assert.deepEqual(await prices(), [1390, 1490, 2700], 'without the tick only this product changes');
+  for (const id of ids) await admin('/api/admin/products/' + id, { method: 'DELETE' });
+});
+
 test('order sources, sales funnel and sales breakdown in the admin', async () => {
   const ua = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0) Funnel test' };
   const hit = body => fetch(BASE + '/api/hit', { method: 'POST', headers: { 'Content-Type': 'application/json', ...ua }, body: JSON.stringify(body) });
