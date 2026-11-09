@@ -1456,31 +1456,44 @@ function createGiftCard(store, amount, extra = {}) {
   store.giftCards.push(card);
   return card;
 }
-function findGiftCard(store, raw) {
+// goodsTotal: the order's goods after discounts — checked against the card's minOrder
+// (left out when only looking the card up, as /api/gift/check does).
+function findGiftCard(store, raw, goodsTotal) {
   const wanted = normGiftCode(raw);
   if (!wanted) return {};
   const card = store.giftCards.find(g => normGiftCode(g.code) === wanted);
   if (!card) return { error: 'Сертификат с таким кодом не найден' };
   if (!card.active) return { error: 'Этот сертификат отключён' };
   if (card.expiresAt < moscowDay(new Date().toISOString())) return { error: 'Срок действия сертификата истёк' };
-  if (card.balance <= 0) return { error: 'На сертификате не осталось денег' };
+  if (card.balance <= 0) return { error: card.singleUse && card.history.length ? 'Этот сертификат уже использован' : 'На сертификате не осталось денег' };
+  if (card.minOrder && goodsTotal !== undefined && goodsTotal < card.minOrder) {
+    return { error: `Сертификат действует при заказе от ${card.minOrder.toLocaleString('ru-RU')} ₽ — добавьте товаров ещё на ${(card.minOrder - goodsTotal).toLocaleString('ru-RU')} ₽` };
+  }
   return { card };
 }
+// What the storefront may know about a card
+const publicGiftCard = card => ({ code: card.code, balance: card.balance, expiresAt: card.expiresAt,
+  ...(card.minOrder ? { minOrder: card.minOrder } : {}), ...(card.singleUse ? { singleUse: true } : {}) });
 // Cancelling an order returns what it took from a certificate; reviving it takes it again.
 function setOrderGiftHold(store, order, newStatus) {
   if (!order.giftCard) return;
   const card = store.giftCards.find(g => g.code === order.giftCard.code);
   if (!card) return;
+  // a single-use card is spent whole: what the order didn't need is lost (burned), and comes
+  // back with the rest if the order is cancelled
+  const burned = order.giftCard.burned || 0;
   if (order.giftHeld && newStatus === 'cancelled') {
-    card.balance += order.giftCard.amount;
-    card.history.push({ orderNumber: order.number, amount: order.giftCard.amount, at: new Date().toISOString(), refund: true });
+    card.balance += order.giftCard.amount + burned;
+    card.history.push({ orderNumber: order.number, amount: order.giftCard.amount + burned, at: new Date().toISOString(), refund: true });
     order.giftHeld = false;
   } else if (!order.giftHeld && newStatus !== 'cancelled') {
     const amount = Math.min(card.balance, order.giftCard.amount);
-    card.balance -= amount;
-    card.history.push({ orderNumber: order.number, amount: -amount, at: new Date().toISOString() });
+    const rest = card.singleUse ? card.balance - amount : 0;
+    card.balance -= amount + rest;
+    card.history.push({ orderNumber: order.number, amount: -(amount + rest), at: new Date().toISOString() });
     order.total += order.giftCard.amount - amount;
     order.giftCard.amount = amount;
+    if (rest) order.giftCard.burned = rest; else delete order.giftCard.burned;
     order.giftHeld = true;
   }
 }
@@ -1624,7 +1637,7 @@ app.post('/api/orders', orderLimiter, customerOrderLimiter, requireUser, async (
   // a certificate pays for goods and delivery, not for other certificates
   let giftCard = null;
   if (req.body.giftCode) {
-    const { card, error } = findGiftCard(store, req.body.giftCode);
+    const { card, error } = findGiftCard(store, req.body.giftCode, goodsSubtotal - discount);
     if (error) return res.status(400).json({ error });
     const amount = Math.min(card.balance, goodsSubtotal - discount + quote.cost);
     if (amount <= 0) return res.status(400).json({ error: 'Сертификатом нельзя оплатить другие сертификаты' });
@@ -1909,7 +1922,7 @@ app.post('/api/gift/check', promoLimiter, (req, res) => {
   const { card, error } = findGiftCard(readStore(), (req.body || {}).code);
   if (error) return res.status(400).json({ error });
   if (!card) return res.status(400).json({ error: 'Введите код сертификата' });
-  res.json({ code: card.code, balance: card.balance, expiresAt: card.expiresAt });
+  res.json(publicGiftCard(card));
 });
 
 app.post('/api/admin/orders/:id/issue-gifts', requireAdmin, (req, res) => {
@@ -1936,6 +1949,108 @@ app.post('/api/admin/gift-cards', requireAdmin, (req, res) => {
   const card = createGiftCard(store, amount, { note: String(req.body.note || '').trim().slice(0, 200) || undefined });
   writeStore(store);
   res.json({ giftCard: card });
+});
+
+// A batch of printed certificates: N cards with the same face value and terms — single-use and
+// «from N ₽» if asked — that share a batch id, so they can be printed together.
+app.post('/api/admin/gift-cards/batch', requireAdmin, (req, res) => {
+  const body = req.body || {};
+  const count = Math.round(Number(body.count));
+  const amount = Math.round(Number(body.amount));
+  const minOrder = Math.max(0, Math.round(Number(body.minOrder) || 0));
+  if (!(count >= 1 && count <= 200)) return res.status(400).json({ error: 'Количество — от 1 до 200' });
+  if (!(amount >= 100 && amount <= 100000)) return res.status(400).json({ error: 'Номинал — от 100 до 100 000 ₽' });
+  if (minOrder > 10000000) return res.status(400).json({ error: 'Слишком большая минимальная сумма' });
+  let expiresAt;
+  if (body.expiresAt) {
+    expiresAt = String(body.expiresAt);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(expiresAt) || expiresAt < moscowDay(new Date().toISOString())) return res.status(400).json({ error: 'Укажите дату окончания в будущем' });
+  }
+  const store = readStore();
+  const batch = crypto.randomBytes(4).toString('hex');
+  const note = String(body.note || '').trim().slice(0, 200) || `Пачка из ${count} шт.`;
+  const cards = Array.from({ length: count }, (_, i) => createGiftCard(store, amount, {
+    note, batch, batchNo: i + 1,
+    ...(minOrder ? { minOrder } : {}), ...(body.singleUse ? { singleUse: true } : {}), ...(expiresAt ? { expiresAt } : {}),
+  }));
+  writeStore(store);
+  res.json({ batch, giftCards: cards });
+});
+
+// Printable certificates, one A4 (landscape) page each: /admin/gift-cards/print?batch=… or ?codes=A,B
+app.get('/admin/gift-cards/print', requireAdmin, (req, res) => {
+  const store = readStore();
+  const codes = String(req.query.codes || '').split(',').map(c => c.trim()).filter(Boolean);
+  const cards = req.query.batch
+    ? store.giftCards.filter(g => g.batch === String(req.query.batch)).sort((a, b) => (a.batchNo || 0) - (b.batchNo || 0))
+    : store.giftCards.filter(g => codes.includes(g.code));
+  if (!cards.length) return res.status(404).send('Сертификаты не найдены');
+  const rub = n => n.toLocaleString('ru-RU').replace(/ /g, ' ');
+  const date = d => d.split('-').reverse().join('.');
+  const mark = `<svg viewBox="0 0 100 100"><g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M12 40 C 30 18, 48 18, 50 38 C 52 58, 70 58, 88 36" stroke="#0F161D" stroke-width="9"/><path d="M12 62 C 30 84, 48 84, 50 64 C 52 44, 70 44, 88 66" stroke="#FF4B2B" stroke-width="9"/><circle cx="12" cy="40" r="5.5" fill="#0F161D"/><circle cx="88" cy="66" r="5.5" fill="#FF4B2B"/></g></svg>`;
+  const page = g => {
+    const terms = [
+      g.minOrder ? `Действует при заказе от <b>${rub(g.minOrder)} ₽</b>` : '',
+      g.singleUse ? 'Одноразовый: используется в одном заказе, вся сумма списывается сразу' : 'Можно тратить частями',
+      'Оплачивает товары и доставку, на деньги не обменивается',
+    ].filter(Boolean);
+    return `<section class="card">
+  <div class="left">
+    <div class="brand"><div class="m">${mark}</div><div class="word"><span class="cap">T</span><span class="low">w</span><span class="cap acc">O</span> <span class="low">b</span><span class="cap acc">OO</span><span class="low">ts</span></div><small>www.two-boots.ru</small></div>
+    <div class="kicker">Подарочный сертификат${g.batchNo ? ` <span class="no">№ ${String(g.batchNo).padStart(2, '0')}</span>` : ''}</div>
+    <div class="sum">${rub(g.initial)}<span>₽</span></div>
+    <div class="lead">на покупку в Two Boots — чемоданы для коньков, скакалки и экипировка для фигуристов</div>
+    <div class="fields">
+      <div class="f code"><label>Код сертификата</label><div class="v">${escHtml(g.code)}</div></div>
+      <div class="f"><label>Действует до</label><div class="v d">${date(g.expiresAt)}</div></div>
+    </div>
+    <ul class="terms">${terms.map(t => `<li>${t}</li>`).join('')}</ul>
+    <div class="steps"><b>Как воспользоваться:</b> выберите товары на <b>two-boots.ru</b> и при оформлении заказа введите код в поле «Подарочный сертификат».</div>
+  </div>
+  <div class="right"><div class="blob"></div><div class="ribbon">Подарок фигуристу</div><img src="/images/certificate-suitcases.jpg" alt=""><div class="caption"><b>Алюминиевые чемоданы Two Boots</b> · M и XL</div></div>
+</section>`;
+  };
+  res.set('Cache-Control', 'no-store').type('html').send(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Сертификаты (${cards.length} шт.) — Two Boots</title>
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700;800;900&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+<style>
+@page{size:297mm 210mm;margin:0}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#fff;color:#0F161D;font-family:Manrope,Arial,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.sheet{width:297mm;height:210mm;position:relative;page-break-after:always;break-after:page;overflow:hidden}
+.sheet:last-child{page-break-after:auto;break-after:auto}
+.card{position:absolute;inset:8mm;border-radius:6mm;overflow:hidden;display:grid;grid-template-columns:1fr 112mm;background:#F3F6F8}
+.left{padding:12mm 12mm 11mm 14mm;display:flex;flex-direction:column;gap:4.6mm;background:#fff;position:relative}
+.left::after{content:'';position:absolute;left:0;top:0;bottom:0;width:4mm;background:#FF4B2B}
+.brand{display:flex;align-items:center;gap:2.5mm}.brand .m{width:11mm;height:11mm}.brand svg{width:100%;height:100%}
+.word{font-family:Unbounded,Arial,sans-serif;font-size:7.5mm;white-space:nowrap}.cap{font-weight:800}.low{font-weight:500}.acc{color:#FF4B2B}
+.brand small{margin-left:auto;font-size:3.4mm;font-weight:700;color:#5a6873}
+.kicker{font-family:Unbounded,Arial,sans-serif;font-weight:700;font-size:5.2mm;letter-spacing:.16em;text-transform:uppercase;color:#FF4B2B;margin-top:2mm}
+.kicker .no{color:#9aa6af;letter-spacing:.06em;margin-left:2mm}
+.sum{font-family:Unbounded,Arial,sans-serif;font-weight:900;font-size:32mm;line-height:.9;letter-spacing:-.03em;white-space:nowrap}
+.sum span{font-size:19mm;font-weight:800;margin-left:2mm}
+.lead{font-size:4.6mm;font-weight:600;line-height:1.35;color:#3d4954;max-width:135mm}
+.fields{display:grid;grid-template-columns:1.35fr 1fr;gap:6mm;margin-top:2mm}
+.f{display:flex;flex-direction:column;gap:1.4mm}.f label{font-size:2.9mm;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#7b8893}
+.f .v{font-family:'Courier New',monospace;font-weight:700;font-size:6.2mm;letter-spacing:.06em;padding:2.2mm 3mm;border:.45mm dashed #FF4B2B;border-radius:2mm;white-space:nowrap}
+.f .v.d{border:0;border-bottom:.35mm solid #0F161D;border-radius:0;padding-left:0;font-family:Manrope,Arial,sans-serif;font-size:5.2mm}
+.terms{list-style:none;display:flex;flex-direction:column;gap:1.4mm;font-size:3.5mm;font-weight:600;color:#3d4954;margin-top:1mm}
+.terms li::before{content:'';display:inline-block;width:1.8mm;height:1.8mm;border-radius:50%;background:#FF4B2B;margin-right:2.2mm;vertical-align:.5mm}
+.terms b{color:#0F161D}
+.steps{margin-top:auto;font-size:3.3mm;font-weight:600;line-height:1.4;color:#3d4954}.steps b{color:#0F161D}
+.right{position:relative;overflow:hidden;background:radial-gradient(120% 80% at 50% 60%,#fff 0%,#F3F6F8 55%,#E7ECF0 100%);display:flex;align-items:center;justify-content:center}
+.right img{width:122mm;height:122mm;margin-top:4mm;object-fit:contain;mix-blend-mode:multiply;position:relative;z-index:1}
+.blob{position:absolute;width:92mm;height:92mm;border-radius:50%;background:#FF4B2B;opacity:.10;top:50%;left:50%;transform:translate(-50%,-46%)}
+.ribbon{position:absolute;top:10mm;right:10mm;z-index:2;background:#0F161D;color:#fff;font-family:Unbounded,Arial,sans-serif;font-weight:700;font-size:3.6mm;padding:2.6mm 4.5mm;border-radius:999px}
+.caption{position:absolute;bottom:10mm;left:0;right:0;text-align:center;font-size:3.6mm;font-weight:700;color:#3d4954;z-index:2}
+.caption b{font-family:Unbounded,Arial,sans-serif;font-weight:700;color:#0F161D}
+.bar{position:sticky;top:0;z-index:5;background:#0F161D;color:#fff;padding:10px 16px;font:600 14px Arial,sans-serif;display:flex;gap:14px;align-items:center}
+.bar button{font:700 14px Arial,sans-serif;padding:8px 16px;border-radius:999px;border:0;background:#FF4B2B;color:#fff;cursor:pointer}
+@media screen{body{background:#cfd6dc}.sheet{margin:12px auto;box-shadow:0 2px 12px rgba(0,0,0,.2);background:#fff}}
+@media print{.bar{display:none}}
+</style></head><body>
+<div class="bar"><button onclick="print()">Печать</button><span>${cards.length} шт. · A4 альбомная, по одному на лист. В окне печати выберите «Альбомная» и включите «Фон / цвета».</span></div>
+${cards.map(g => `<div class="sheet">${page(g)}</div>`).join('\n')}
+</body></html>`);
 });
 
 app.patch('/api/admin/gift-cards/:code', requireAdmin, (req, res) => {

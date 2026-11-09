@@ -322,8 +322,19 @@
       <div class="field"><label>Для кого / заметка (необязательно)</label><input id="giftNote" maxlength="200" placeholder="например: розыгрыш в Telegram"></div>
       <div class="field" style="flex:none;"><button class="btn-primary" type="submit">Выпустить</button></div>
     </form>
+    <h3 style="font-size:.95rem;margin:16px 0 6px;">Пачка печатных сертификатов</h3>
+    <p style="color:var(--ink-soft);font-size:.85rem;margin:0 0 10px;">Выпускает сразу несколько сертификатов с разными кодами и одинаковыми условиями. Затем «Печать пачки»: каждый на отдельном листе A4 с кодом и сроком.</p>
+    <form id="giftBatchForm" class="row" style="align-items:flex-end;flex-wrap:wrap;">
+      <div class="field" style="flex:none;width:110px;"><label>Сколько, шт.</label><input id="gbCount" type="number" min="1" max="200" required value="18"></div>
+      <div class="field" style="flex:none;width:130px;"><label>Номинал, ₽</label><input id="gbAmount" type="number" min="100" max="100000" required value="2000"></div>
+      <div class="field" style="flex:none;width:170px;"><label>Заказ от, ₽ (0 — любой)</label><input id="gbMin" type="number" min="0" value="10000"></div>
+      <div class="field" style="flex:none;width:170px;"><label>Действует до (пусто — год)</label><input id="gbExpires" type="date"></div>
+      <div class="field" style="flex:none;align-self:center;padding-top:14px;"><label style="display:flex;align-items:center;gap:8px;font-weight:600;color:var(--ink);"><input type="checkbox" id="gbSingle" checked style="width:auto;"> Одноразовый</label></div>
+      <div class="field" style="min-width:200px;"><label>Заметка (необязательно)</label><input id="gbNote" maxlength="200" placeholder="например: ярмарка, раздаём в зале"></div>
+      <div class="field" style="flex:none;"><button class="btn-primary" type="submit">Выпустить пачку</button></div>
+    </form>
     <div style="overflow-x:auto;"><table>
-      <thead><tr><th>Код</th><th class="num">Номинал</th><th class="num">Остаток</th><th>Действует до</th><th>Откуда</th><th>Статус</th><th></th></tr></thead>
+      <thead><tr><th>Код</th><th class="num">Номинал</th><th class="num">Остаток</th><th>Действует до</th><th>Условия</th><th>Откуда</th><th>Статус</th><th></th></tr></thead>
       <tbody id="giftCardsBody"></tbody>
     </table></div>
   </div>
@@ -1284,16 +1295,19 @@ async function loadGiftCards(){
       : g.expiresAt < today ? '<span style="color:#e0433a;">Истёк</span>'
       : g.balance <= 0 ? '<span style="color:var(--ink-soft);">Использован</span>'
       : '<span style="color:#1c5e26;">Действует</span>';
+    const terms = [g.singleUse ? 'одноразовый' : '', g.minOrder ? `заказ от ${g.minOrder.toLocaleString('ru-RU')} ₽` : ''].filter(Boolean).join(', ') || '—';
     return `<tr>
-      <td style="font-family:monospace;font-weight:700;">${escHtml(g.code)}</td>
+      <td style="font-family:monospace;font-weight:700;white-space:nowrap;">${escHtml(g.code)}</td>
       <td class="num">${g.initial.toLocaleString('ru-RU')} ₽</td>
       <td class="num">${g.balance.toLocaleString('ru-RU')} ₽</td>
       <td>${g.expiresAt.split('-').reverse().join('.')}</td>
-      <td>${g.orderNumber ? 'заказ №' + g.orderNumber : escHtml(g.note || 'вручную')}</td>
+      <td><small>${terms}</small></td>
+      <td>${g.orderNumber ? 'заказ №' + g.orderNumber : escHtml(g.note || 'вручную')}${g.batch ? `<br><small style="color:var(--ink-soft);">№ ${g.batchNo} · <a href="/admin/gift-cards/print?batch=${encodeURIComponent(g.batch)}" target="_blank" rel="noopener">печать пачки</a></small>` : ''}</td>
       <td>${status}</td>
-      <td><button type="button" class="btn-ghost btn-sm" data-gift-toggle="${escHtml(g.code)}" data-active="${g.active ? '1' : '0'}">${g.active ? 'Выключить' : 'Включить'}</button></td>
+      <td style="white-space:nowrap;"><a class="btn-ghost btn-sm" href="/admin/gift-cards/print?codes=${encodeURIComponent(g.code)}" target="_blank" rel="noopener" style="display:inline-block;border:1px solid var(--border);border-radius:999px;text-decoration:none;color:inherit;font-weight:600;">Печать</a>
+        <button type="button" class="btn-ghost btn-sm" data-gift-toggle="${escHtml(g.code)}" data-active="${g.active ? '1' : '0'}">${g.active ? 'Выключить' : 'Включить'}</button></td>
     </tr>`;
-  }).join('') || '<tr><td colspan="7" style="color:var(--ink-soft)">Сертификатов пока нет.</td></tr>';
+  }).join('') || '<tr><td colspan="8" style="color:var(--ink-soft)">Сертификатов пока нет.</td></tr>';
 }
 el('giftForm').addEventListener('submit', async e => {
   e.preventDefault();
@@ -1302,6 +1316,18 @@ el('giftForm').addEventListener('submit', async e => {
       body: JSON.stringify({ amount: el('giftAmount').value, note: el('giftNote').value }) });
     el('giftForm').reset();
     showMsg(el('globalMsg'), `Сертификат выпущен: <b style="font-family:monospace;">${escHtml(giftCard.code)}</b> на ${giftCard.initial.toLocaleString('ru-RU')} ₽`, 'ok');
+    loadGiftCards();
+  }catch(err){ showMsg(el('globalMsg'), err.message, 'error'); }
+});
+el('giftBatchForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const count = Number(el('gbCount').value);
+  if(!confirm(`Выпустить ${count} сертификатов по ${Number(el('gbAmount').value).toLocaleString('ru-RU')} ₽?`)) return;
+  try{
+    const { batch, giftCards } = await api('/api/admin/gift-cards/batch', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ count, amount: el('gbAmount').value, minOrder: el('gbMin').value, expiresAt: el('gbExpires').value || undefined,
+        singleUse: el('gbSingle').checked, note: el('gbNote').value }) });
+    showMsg(el('globalMsg'), `Выпущено ${giftCards.length} сертификатов. <a href="/admin/gift-cards/print?batch=${encodeURIComponent(batch)}" target="_blank" rel="noopener"><b>Открыть для печати →</b></a>`, 'ok');
     loadGiftCards();
   }catch(err){ showMsg(el('globalMsg'), err.message, 'error'); }
 });
