@@ -370,6 +370,37 @@ const ORDER_NUMBER_START = 1000;
 function nextOrderNumber(store) {
   return Math.max(Number(store.orderSeq) || 0, ORDER_NUMBER_START - 1) + 1;
 }
+// Batches of printed certificates the owner asked for, issued once on the live store. The codes
+// are made on the server (this repository is public, so they are never written here); the admin
+// shows them under Промокоды → Подарочные сертификаты with «печать пачки». A batch is issued
+// only once: remembered in seededGiftBatches and on its cards, so restoring an older backup
+// doesn't issue it again.
+const GIFT_VALID_DAYS = 365;
+const GIFT_BATCH_SEEDS = [
+  { key: 'print-2000-x18', count: 18, amount: 2000, minOrder: 10000, singleUse: true, note: 'Печатные сертификаты 2 000 ₽ (от 10 000 ₽)', liveOnly: true },
+];
+function seedGiftBatches(store) {
+  if (!Array.isArray(store.giftCards)) return false;
+  let changed = false;
+  const done = new Set(store.seededGiftBatches || []);
+  for (const seed of GIFT_BATCH_SEEDS) {
+    if (done.has(seed.key)) continue;
+    // a fresh install (tests, a new server) has no orders yet: these are for the live shop only
+    if (seed.liveOnly && !(store.orders || []).length) continue;
+    if (!store.giftCards.some(g => g.seed === seed.key)) {
+      const batch = crypto.randomBytes(4).toString('hex');
+      for (let i = 1; i <= seed.count; i++) {
+        createGiftCard(store, seed.amount, { note: seed.note, batch, batchNo: i, seed: seed.key,
+          ...(seed.minOrder ? { minOrder: seed.minOrder } : {}), ...(seed.singleUse ? { singleUse: true } : {}) });
+      }
+      console.log(`Выпущена пачка сертификатов «${seed.note}»: ${seed.count} шт.`);
+    }
+    done.add(seed.key);
+    store.seededGiftBatches = [...done];
+    changed = true;
+  }
+  return changed;
+}
 function normalizeStore(store) {
   let changed = false;
   // Search engines: site-verification codes from the admin and the IndexNow key (made once)
@@ -411,6 +442,7 @@ function normalizeStore(store) {
     }
   }
   if (Array.isArray(store.products) && seedProductColors(store)) changed = true;
+  if (seedGiftBatches(store)) changed = true;
   if (Array.isArray(store.products) && linkColorModels(store)) changed = true;
   // Starter texts and FAQ for the category pages; the owner edits them in the admin.
   if (!store.categoryContent) {
@@ -1429,7 +1461,6 @@ function priceItems(store, items) {
    (not for other certificates), can be spent in parts, lasts a year, and a cancelled order
    gives back what it took from it. */
 const GIFT_AMOUNTS = [1000, 2000, 3000, 5000, 10000];
-const GIFT_VALID_DAYS = 365;
 function giftAmount(id) {
   const m = /^gift-(\d+)$/.exec(String(id || ''));
   const n = m ? Number(m[1]) : 0;

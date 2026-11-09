@@ -986,6 +986,34 @@ test('prices for a group of products: bulk set / % / ₽ with rounding, and one 
   for (const id of ids) await admin('/api/admin/products/' + id, { method: 'DELETE' });
 });
 
+test('the printed certificate batch is issued once on a live store (one with orders)', async () => {
+  const AdmZip = require('adm-zip');
+  const admin = await adminClient();
+  const restoreWith = async edit => {
+    const zip = new AdmZip((await admin('/api/admin/backup')).data);
+    const store = JSON.parse(zip.readAsText('store.json'));
+    edit(store);
+    zip.updateFile('store.json', Buffer.from(JSON.stringify(store)));
+    const f = new FormData(); f.append('backup', new Blob([zip.toBuffer()]), 'b.zip');
+    assert.equal((await admin('/api/admin/restore', { method: 'POST', form: f })).status, 200);
+    return (await admin('/api/admin/gift-cards')).data.giftCards.filter(g => g.seed === 'print-2000-x18');
+  };
+  let cards = await restoreWith(st => { delete st.seededGiftBatches; st.giftCards = st.giftCards.filter(g => !g.seed); });
+  assert.equal(cards.length, 18);
+  assert.equal(new Set(cards.map(g => g.code)).size, 18);
+  assert.ok(cards.every(g => g.initial === 2000 && g.balance === 2000 && g.minOrder === 10000 && g.singleUse && g.active));
+  assert.equal(new Set(cards.map(g => g.batch)).size, 1);
+  assert.deepEqual(cards.map(g => g.batchNo).sort((a, b) => a - b), Array.from({ length: 18 }, (_, i) => i + 1));
+  const sheet = await admin('/admin/gift-cards/print?batch=' + cards[0].batch);
+  assert.equal(sheet.data.split('<div class="sheet">').length - 1, 18);
+  // never issued twice: not on the next start, not from a backup without the flag
+  assert.equal((await restoreWith(() => {})).length, 18);
+  assert.equal((await restoreWith(st => { delete st.seededGiftBatches; })).length, 18);
+  // a fresh shop with no orders doesn't get them
+  const fresh = await restoreWith(st => { delete st.seededGiftBatches; st.giftCards = st.giftCards.filter(g => !g.seed); st.orders = []; });
+  assert.equal(fresh.length, 0);
+});
+
 test('order sources, sales funnel and sales breakdown in the admin', async () => {
   const ua = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0) Funnel test' };
   const hit = body => fetch(BASE + '/api/hit', { method: 'POST', headers: { 'Content-Type': 'application/json', ...ua }, body: JSON.stringify(body) });
