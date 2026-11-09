@@ -543,7 +543,17 @@ test('gift certificates: buy without delivery, issue once, pay in parts, refund 
   assert.match(sheet.data, /Действует при заказе от <b>2 000 ₽<\/b>/);
   assert.match(sheet.data, /Одноразовый/);
   assert.equal((await admin('/admin/gift-cards/print?codes=' + c2.code)).data.split('<div class="sheet">').length - 1, 1);
-  assert.equal((await fetch(BASE + '/images/certificate-suitcases.jpg')).status, 200);
+  assert.equal((await fetch(BASE + '/images/certificate-suitcases.png')).status, 200);
+  assert.match(sheet.data, /Скачать PDF/);
+  for (const m of sheet.data.matchAll(/<script src="(\/vendor\/[^"]+)"/g)) assert.equal((await fetch(BASE + m[1])).status, 200, m[1] + ' is served from the site, not a CDN');
+  // the codes as a table for a print shop
+  assert.equal((await fetch(BASE + '/admin/gift-cards/export.csv?batch=' + batch.data.batch)).status, 401);
+  const csv = await admin('/admin/gift-cards/export.csv?batch=' + batch.data.batch);
+  assert.match(csv.headers.get('content-type'), /text\/csv/);
+  assert.match(csv.headers.get('content-disposition'), /sertifikaty-500-3sht-kody\.csv/);
+  const lines = csv.data.trim().split('\r\n');
+  assert.equal(lines.length, 4);
+  assert.equal(lines[1], `"1";"${batch.data.giftCards[0].code}";"500";"2000";"да";"${batch.data.giftCards[0].expiresAt.split('-').reverse().join('.')}"`);
 });
 
 test('category texts and FAQ: shown, pre-rendered with FAQPage markup, editable', async () => {

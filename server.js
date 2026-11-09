@@ -623,6 +623,9 @@ app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '30d', immutable: true
 // package.json, data/ and (when DATA_DIR is unset) data-runtime/store.json.
 // Everything else, "/" and /index.html included, reaches the SPA fallback below.
 app.use('/images', express.static(path.join(__dirname, 'images'), { maxAge: '1d' }));
+// Libraries the admin's printable pages use (PDF of a certificate batch), served from here rather
+// than a CDN that may be slow or blocked
+app.use('/vendor', express.static(path.join(__dirname, 'vendor'), { maxAge: '30d', immutable: true }));
 const PUBLIC_ROOT_FILES = ['favicon.svg', 'robots.txt', 'yandex_1c7e02c88165d0f5.html', 'colors.js'];
 PUBLIC_ROOT_FILES.forEach(file => {
   app.get('/' + file, (req, res) => res.sendFile(path.join(__dirname, file)));
@@ -2008,6 +2011,23 @@ app.post('/api/admin/gift-cards/batch', requireAdmin, (req, res) => {
   res.json({ batch, giftCards: cards });
 });
 
+// The codes of a batch as a table — for a print shop that prints one design with a list of codes
+// («персонализация»). «;» and a BOM, so Russian Excel opens it with columns and Cyrillic intact.
+app.get('/admin/gift-cards/export.csv', requireAdmin, (req, res) => {
+  const store = readStore();
+  const codes = String(req.query.codes || '').split(',').map(c => c.trim()).filter(Boolean);
+  const cards = req.query.batch
+    ? store.giftCards.filter(g => g.batch === String(req.query.batch)).sort((a, b) => (a.batchNo || 0) - (b.batchNo || 0))
+    : store.giftCards.filter(g => codes.includes(g.code));
+  if (!cards.length) return res.status(404).send('Сертификаты не найдены');
+  const cell = v => `"${String(v).replace(/"/g, '""')}"`;
+  const rows = [['№', 'Код', 'Номинал, ₽', 'Заказ от, ₽', 'Одноразовый', 'Действует до'],
+    ...cards.map((g, i) => [g.batchNo || i + 1, g.code, g.initial, g.minOrder || '', g.singleUse ? 'да' : 'нет', g.expiresAt.split('-').reverse().join('.')])];
+  res.set('Cache-Control', 'no-store').type('text/csv; charset=utf-8')
+    .attachment(`sertifikaty-${cards[0].initial}-${cards.length}sht-kody.csv`)
+    .send('\ufeff' + rows.map(r => r.map(cell).join(';')).join('\r\n') + '\r\n');
+});
+
 // Printable certificates, one A4 (landscape) page each: /admin/gift-cards/print?batch=… or ?codes=A,B
 app.get('/admin/gift-cards/print', requireAdmin, (req, res) => {
   const store = readStore();
@@ -2017,6 +2037,9 @@ app.get('/admin/gift-cards/print', requireAdmin, (req, res) => {
     : store.giftCards.filter(g => codes.includes(g.code));
   if (!cards.length) return res.status(404).send('Сертификаты не найдены');
   const rub = n => n.toLocaleString('ru-RU').replace(/ /g, ' ');
+  const query = req.query.batch ? 'batch=' + encodeURIComponent(String(req.query.batch)) : 'codes=' + encodeURIComponent(codes.join(','));
+  const csvHref = '/admin/gift-cards/export.csv?' + query;
+  const fileBase = `sertifikaty-${cards[0].initial}-${cards.length}sht`;
   const date = d => d.split('-').reverse().join('.');
   const mark = `<svg viewBox="0 0 100 100"><g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M12 40 C 30 18, 48 18, 50 38 C 52 58, 70 58, 88 36" stroke="#0F161D" stroke-width="9"/><path d="M12 62 C 30 84, 48 84, 50 64 C 52 44, 70 44, 88 66" stroke="#FF4B2B" stroke-width="9"/><circle cx="12" cy="40" r="5.5" fill="#0F161D"/><circle cx="88" cy="66" r="5.5" fill="#FF4B2B"/></g></svg>`;
   const page = g => {
@@ -2038,7 +2061,7 @@ app.get('/admin/gift-cards/print', requireAdmin, (req, res) => {
     <ul class="terms">${terms.map(t => `<li>${t}</li>`).join('')}</ul>
     <div class="steps"><b>Как воспользоваться:</b> выберите товары на <b>two-boots.ru</b> и при оформлении заказа введите код в поле «Подарочный сертификат».</div>
   </div>
-  <div class="right"><div class="blob"></div><div class="ribbon">Подарок фигуристу</div><img src="/images/certificate-suitcases.jpg" alt=""><div class="caption"><b>Алюминиевые чемоданы Two Boots</b> · M и XL</div></div>
+  <div class="right"><div class="blob"></div><div class="ribbon">Подарок фигуристу</div><img src="/images/certificate-suitcases.png" alt=""><div class="caption"><b>Алюминиевые чемоданы Two Boots</b> · M и XL</div></div>
 </section>`;
   };
   res.set('Cache-Control', 'no-store').type('html').send(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Сертификаты (${cards.length} шт.) — Two Boots</title>
@@ -2069,7 +2092,7 @@ html,body{background:#fff;color:#0F161D;font-family:Manrope,Arial,sans-serif;-we
 .terms b{color:#0F161D}
 .steps{margin-top:auto;font-size:3.3mm;font-weight:600;line-height:1.4;color:#3d4954}.steps b{color:#0F161D}
 .right{position:relative;overflow:hidden;background:radial-gradient(120% 80% at 50% 60%,#fff 0%,#F3F6F8 55%,#E7ECF0 100%);display:flex;align-items:center;justify-content:center}
-.right img{width:122mm;height:122mm;margin-top:4mm;object-fit:contain;mix-blend-mode:multiply;position:relative;z-index:1}
+.right img{width:122mm;height:122mm;margin-top:4mm;object-fit:contain;position:relative;z-index:1}
 .blob{position:absolute;width:92mm;height:92mm;border-radius:50%;background:#FF4B2B;opacity:.10;top:50%;left:50%;transform:translate(-50%,-46%)}
 .ribbon{position:absolute;top:10mm;right:10mm;z-index:2;background:#0F161D;color:#fff;font-family:Unbounded,Arial,sans-serif;font-weight:700;font-size:3.6mm;padding:2.6mm 4.5mm;border-radius:999px}
 .caption{position:absolute;bottom:10mm;left:0;right:0;text-align:center;font-size:3.6mm;font-weight:700;color:#3d4954;z-index:2}
@@ -2079,8 +2102,32 @@ html,body{background:#fff;color:#0F161D;font-family:Manrope,Arial,sans-serif;-we
 @media screen{body{background:#cfd6dc}.sheet{margin:12px auto;box-shadow:0 2px 12px rgba(0,0,0,.2);background:#fff}}
 @media print{.bar{display:none}}
 </style></head><body>
-<div class="bar"><button onclick="print()">Печать</button><span>${cards.length} шт. · A4 альбомная, по одному на лист. В окне печати выберите «Альбомная» и включите «Фон / цвета».</span></div>
+<div class="bar"><button onclick="print()">Печать</button><button id="pdfBtn" type="button">Скачать PDF</button><a href="${csvHref}" download>Скачать коды (CSV)</a><span id="pdfMsg">${cards.length} шт. · A4 альбомная, по одному на лист. PDF — готовый файл для типографии.</span></div>
 ${cards.map(g => `<div class="sheet">${page(g)}</div>`).join('\n')}
+<script src="/vendor/html2canvas-1.4.1.min.js"></script>
+<script src="/vendor/jspdf-2.5.1.umd.min.js"></script>
+<script>
+// A ready file for the print shop: every sheet drawn at 300 dpi into one A4-landscape PDF
+document.getElementById('pdfBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('pdfBtn'), msg = document.getElementById('pdfMsg');
+  if (!window.html2canvas || !window.jspdf) { msg.textContent = 'Не загрузились библиотеки для PDF — проверьте интернет и обновите страницу'; return; }
+  btn.disabled = true;
+  try {
+    await document.fonts.ready;
+    const sheets = [...document.querySelectorAll('.sheet')];
+    const pdf = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4', compress: true });
+    for (let i = 0; i < sheets.length; i++) {
+      msg.textContent = 'Готовлю PDF: ' + (i + 1) + ' из ' + sheets.length + '…';
+      const canvas = await html2canvas(sheets[i], { scale: 300 / 96, backgroundColor: '#ffffff', useCORS: true, logging: false });
+      if (i) pdf.addPage('a4', 'landscape');
+      pdf.addImage(canvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, 297, 210, undefined, 'FAST');
+    }
+    pdf.save(${JSON.stringify(fileBase)} + '.pdf');
+    msg.textContent = 'Готово: файл ' + ${JSON.stringify(fileBase)} + '.pdf сохранён в «Загрузки»';
+  } catch (e) { msg.textContent = 'Не получилось сделать PDF: ' + e.message; }
+  btn.disabled = false;
+});
+</script>
 </body></html>`);
 });
 

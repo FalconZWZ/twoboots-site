@@ -323,7 +323,7 @@
       <div class="field" style="flex:none;"><button class="btn-primary" type="submit">Выпустить</button></div>
     </form>
     <h3 style="font-size:.95rem;margin:16px 0 6px;">Пачка печатных сертификатов</h3>
-    <p style="color:var(--ink-soft);font-size:.85rem;margin:0 0 10px;">Выпускает сразу несколько сертификатов с разными кодами и одинаковыми условиями. Затем «Печать пачки»: каждый на отдельном листе A4 с кодом и сроком.</p>
+    <p style="color:var(--ink-soft);font-size:.85rem;margin:0 0 10px;">Выпускает сразу несколько сертификатов с разными кодами и одинаковыми условиями. Затем «печать / PDF пачки»: каждый на отдельном листе A4 с кодом и сроком — можно распечатать или скачать PDF для типографии. «Коды CSV» — список кодов, если типография печатает один макет со списком.</p>
     <form id="giftBatchForm" class="row" style="align-items:flex-end;flex-wrap:wrap;">
       <div class="field" style="flex:none;width:110px;"><label>Сколько, шт.</label><input id="gbCount" type="number" min="1" max="200" required value="18"></div>
       <div class="field" style="flex:none;width:130px;"><label>Номинал, ₽</label><input id="gbAmount" type="number" min="100" max="100000" required value="2000"></div>
@@ -1302,7 +1302,7 @@ async function loadGiftCards(){
       <td class="num">${g.balance.toLocaleString('ru-RU')} ₽</td>
       <td>${g.expiresAt.split('-').reverse().join('.')}</td>
       <td><small>${terms}</small></td>
-      <td>${g.orderNumber ? 'заказ №' + g.orderNumber : escHtml(g.note || 'вручную')}${g.batch ? `<br><small style="color:var(--ink-soft);">№ ${g.batchNo} · <a href="/admin/gift-cards/print?batch=${encodeURIComponent(g.batch)}" target="_blank" rel="noopener">печать пачки</a></small>` : ''}</td>
+      <td>${g.orderNumber ? 'заказ №' + g.orderNumber : escHtml(g.note || 'вручную')}${g.batch ? `<br><small style="color:var(--ink-soft);">№ ${g.batchNo} · <a href="/admin/gift-cards/print?batch=${encodeURIComponent(g.batch)}" target="_blank" rel="noopener">печать / PDF пачки</a> · <a href="/admin/gift-cards/export.csv?batch=${encodeURIComponent(g.batch)}" download>коды CSV</a></small>` : ''}</td>
       <td>${status}</td>
       <td style="white-space:nowrap;"><a class="btn-ghost btn-sm" href="/admin/gift-cards/print?codes=${encodeURIComponent(g.code)}" target="_blank" rel="noopener" style="display:inline-block;border:1px solid var(--border);border-radius:999px;text-decoration:none;color:inherit;font-weight:600;">Печать</a>
         <button type="button" class="btn-ghost btn-sm" data-gift-toggle="${escHtml(g.code)}" data-active="${g.active ? '1' : '0'}">${g.active ? 'Выключить' : 'Включить'}</button></td>
@@ -1327,7 +1327,7 @@ el('giftBatchForm').addEventListener('submit', async e => {
     const { batch, giftCards } = await api('/api/admin/gift-cards/batch', { method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ count, amount: el('gbAmount').value, minOrder: el('gbMin').value, expiresAt: el('gbExpires').value || undefined,
         singleUse: el('gbSingle').checked, note: el('gbNote').value }) });
-    showMsg(el('globalMsg'), `Выпущено ${giftCards.length} сертификатов. <a href="/admin/gift-cards/print?batch=${encodeURIComponent(batch)}" target="_blank" rel="noopener"><b>Открыть для печати →</b></a>`, 'ok');
+    showMsg(el('globalMsg'), `Выпущено ${giftCards.length} сертификатов. <a href="/admin/gift-cards/print?batch=${encodeURIComponent(batch)}" target="_blank" rel="noopener"><b>Открыть для печати и PDF →</b></a> · <a href="/admin/gift-cards/export.csv?batch=${encodeURIComponent(batch)}" download>коды CSV</a>`, 'ok');
     loadGiftCards();
   }catch(err){ showMsg(el('globalMsg'), err.message, 'error'); }
 });
