@@ -503,6 +503,47 @@ test('gift certificates: buy without delivery, issue once, pay in parts, refund 
   await admin('/api/admin/gift-cards/' + manual.data.giftCard.code, { method: 'PATCH', body: { active: false } });
   assert.match((await client()('/api/gift/check', { method: 'POST', body: { code: manual.data.giftCard.code } })).data.error, /отключён/);
   assert.equal((await client()('/gift')).status, 200);
+
+  // a batch of printed certificates: single-use, valid from a minimum order
+  assert.equal((await admin('/api/admin/gift-cards/batch', { method: 'POST', body: { count: 0, amount: 500 } })).status, 400);
+  const batch = await admin('/api/admin/gift-cards/batch', { method: 'POST', body: { count: 3, amount: 500, minOrder: 2000, singleUse: true } });
+  assert.equal(batch.status, 200, JSON.stringify(batch.data));
+  const [c1, c2] = batch.data.giftCards;
+  assert.equal(new Set(batch.data.giftCards.map(g => g.code)).size, 3, 'every certificate has its own code');
+  assert.deepEqual(batch.data.giftCards.map(g => g.batchNo), [1, 2, 3]);
+  assert.deepEqual((await client()('/api/gift/check', { method: 'POST', body: { code: c1.code } })).data,
+    { code: c1.code, balance: 500, expiresAt: c1.expiresAt, minOrder: 2000, singleUse: true });
+  const small = await friend('/api/orders', { method: 'POST', body: { items: [{ id: 'dry-glide', qty: 1 }], delivery: 'pickup', giftCode: c1.code } });
+  assert.equal(small.status, 400);
+  assert.match(small.data.error, /от 2.000 ₽ — добавьте товаров ещё на 510 ₽/);
+  const big = await friend('/api/orders', { method: 'POST', body: { items: [{ id: 'dry-glide', qty: 2 }], delivery: 'pickup', giftCode: c1.code } });
+  assert.equal(big.status, 200, JSON.stringify(big.data));
+  assert.equal(big.data.order.giftCard.amount, 500);
+  assert.equal(big.data.order.total, 2980 - 500);
+  assert.match((await client()('/api/gift/check', { method: 'POST', body: { code: c1.code } })).data.error, /уже использован/, 'single use');
+
+  // single-use and bigger than the order: the rest is spent too, and comes back with a cancel
+  const wide = await admin('/api/admin/gift-cards/batch', { method: 'POST', body: { count: 1, amount: 5000, singleUse: true } });
+  const w = wide.data.giftCards[0];
+  const part = await giver('/api/orders', { method: 'POST', body: { items: [{ id: 'dry-glide', qty: 2 }], delivery: 'pickup', giftCode: w.code } });
+  assert.equal(part.status, 200, JSON.stringify(part.data));
+  assert.equal(part.data.order.giftCard.amount, 2980);
+  assert.equal(part.data.order.total, 0);
+  assert.match((await client()('/api/gift/check', { method: 'POST', body: { code: w.code } })).data.error, /уже использован/);
+  assert.equal((await giver(`/api/orders/${part.data.order.id}/cancel`, { method: 'PATCH' })).status, 200);
+  assert.equal((await client()('/api/gift/check', { method: 'POST', body: { code: w.code } })).data.balance, 5000, 'cancelling returns all of it');
+
+  // printing: one A4 page per certificate, with its code, number and terms
+  assert.equal((await fetch(BASE + '/admin/gift-cards/print?batch=' + batch.data.batch)).status, 401);
+  const sheet = await admin('/admin/gift-cards/print?batch=' + batch.data.batch);
+  assert.equal(sheet.status, 200);
+  assert.equal(sheet.data.split('<div class="sheet">').length - 1, 3);
+  assert.ok(batch.data.giftCards.every(g => sheet.data.includes(g.code)));
+  assert.match(sheet.data, /№ 01[\s\S]*№ 02[\s\S]*№ 03/);
+  assert.match(sheet.data, /Действует при заказе от <b>2 000 ₽<\/b>/);
+  assert.match(sheet.data, /Одноразовый/);
+  assert.equal((await admin('/admin/gift-cards/print?codes=' + c2.code)).data.split('<div class="sheet">').length - 1, 1);
+  assert.equal((await fetch(BASE + '/images/certificate-suitcases.jpg')).status, 200);
 });
 
 test('category texts and FAQ: shown, pre-rendered with FAQPage markup, editable', async () => {

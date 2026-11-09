@@ -1325,7 +1325,9 @@ function afterSignIn(user, message){
   showToast(message);
 }
 
-let APPLIED_GIFT = null; // {code, balance}
+let APPLIED_GIFT = null; // {code, balance, minOrder?, singleUse?}
+// the certificate's «from N ₽» is met by the goods after discounts
+const giftUsable = goods => !!APPLIED_GIFT && !(APPLIED_GIFT.minOrder && goods < APPLIED_GIFT.minOrder);
 function paymentChoiceHtml(){
   if(!PAYMENTS_ONLINE) return '';
   const online = CHECKOUT.pay !== 'later';
@@ -1343,7 +1345,7 @@ function checkoutFormHtml(subtotal, discount){
   const m = giftOnly ? null : deliveryMethod(c.delivery) || DELIVERY[0];
   const quote = m ? deliveryQuote(m, goods) : { cost: 0, text: '' };
   // a certificate pays for goods and delivery, not for other certificates
-  const giftPay = APPLIED_GIFT && !giftOnly ? Math.min(APPLIED_GIFT.balance, goods + quote.cost) : 0;
+  const giftPay = giftUsable(goods) && !giftOnly ? Math.min(APPLIED_GIFT.balance, goods + quote.cost) : 0;
   if(giftOnly) return `
     <form id="checkoutForm">
       <div class="promo-note hint" style="margin:0 0 12px;">Сертификат электронный: после подтверждения оплаты код придёт на ${escText(CURRENT_USER.email)} и появится в личном кабинете.</div>
@@ -1369,7 +1371,8 @@ function checkoutFormHtml(subtotal, discount){
       ${m && hint[m.kind] ? `<div class="co-field"><input id="co-address" placeholder="${hint[m.kind]}" value="${escText(c.address)}" required maxlength="300"></div>` : ''}
       <div class="co-field"><textarea id="co-comment" placeholder="Комментарий к заказу (необязательно)" maxlength="1000">${c.comment.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</textarea></div>
       ${APPLIED_GIFT ? `<div class="row promo"><span>Сертификат ${escText(APPLIED_GIFT.code)}<a class="remove" id="giftRemove">убрать</a></span><span>−${fmt(giftPay)} ₽</span></div>
-        ${APPLIED_GIFT.balance > giftPay ? `<div class="promo-note hint">Останется на сертификате: ${fmt(APPLIED_GIFT.balance - giftPay)} ₽</div>` : ''}`
+        ${!giftUsable(goods) ? `<div class="promo-note err">Сертификат действует при заказе от ${fmt(APPLIED_GIFT.minOrder)} ₽ — добавьте товаров ещё на ${fmt(APPLIED_GIFT.minOrder - goods)} ₽</div>`
+          : APPLIED_GIFT.balance > giftPay ? `<div class="promo-note hint">${APPLIED_GIFT.singleUse ? `Сертификат одноразовый: оставшиеся ${fmt(APPLIED_GIFT.balance - giftPay)} ₽ сгорят` : `Останется на сертификате: ${fmt(APPLIED_GIFT.balance - giftPay)} ₽`}</div>` : ''}`
         : `<div class="promo-form" style="margin-bottom:6px;"><input id="giftInput" placeholder="Подарочный сертификат" autocomplete="off" aria-label="Код подарочного сертификата"><button type="button" class="btn btn-ghost btn-sm" id="giftApply">Применить</button></div><div id="giftErr"></div>`}
       ${discount ? `<div class="row promo"><span>Промокод ${APPLIED_PROMO.code}</span><span>−${fmt(discount)} ₽</span></div>` : ''}
       ${certs ? `<div class="row"><span>Сертификаты</span><span>${fmt(certs)} ₽</span></div>` : ''}
@@ -1432,7 +1435,7 @@ document.getElementById('cartFoot').addEventListener('click', e => {
       .then(r => r.json().then(d => ({ ok: r.ok, d })))
       .then(({ ok, d }) => {
         if(!ok){ document.getElementById('giftErr').innerHTML = `<div class="promo-note err">${escText(d.error || 'Не удалось проверить сертификат')}</div>`; return; }
-        APPLIED_GIFT = { code: d.code, balance: d.balance };
+        APPLIED_GIFT = { code: d.code, balance: d.balance, minOrder: d.minOrder || 0, singleUse: !!d.singleUse };
         updateCartUI();
       }).catch(() => {});
     return;
@@ -1481,7 +1484,7 @@ document.getElementById('cartFoot').addEventListener('submit', async e => {
         consent: !!consentBox,
         // below the promo's minimum the code gives nothing — don't send it, or the server rejects the order
         promoCode: APPLIED_PROMO && promoDiscount(cartGoodsTotal()) ? APPLIED_PROMO.code : undefined,
-        giftCode: APPLIED_GIFT && !cart.every(isGiftLine) ? APPLIED_GIFT.code : undefined,
+        giftCode: giftUsable(cartGoodsTotal() - (APPLIED_PROMO ? promoDiscount(cartGoodsTotal()) : 0)) && !cart.every(isGiftLine) ? APPLIED_GIFT.code : undefined,
         payOnline: PAYMENTS_ONLINE && CHECKOUT.pay !== 'later',
         delivery: CHECKOUT.delivery, city: CHECKOUT.city, address: CHECKOUT.address, comment: CHECKOUT.comment,
         source: orderSource(),
